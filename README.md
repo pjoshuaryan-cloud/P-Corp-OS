@@ -19,7 +19,7 @@ Then: summarize your understanding, flag any architectural concerns, and propose
 |---|---|---|
 | [FOUNDER_BRIEF.md](FOUNDER_BRIEF.md) | Vision, philosophy, architecture, working rules | Authoritative |
 | [MASTER_SPEC.md](MASTER_SPEC.md) | Functional/technical spec | Stub |
-| [ENGINEERING_MANUAL.md](ENGINEERING_MANUAL.md) | Coding standards, process | Stub |
+| [ENGINEERING_MANUAL.md](ENGINEERING_MANUAL.md) | Coding standards, process | Active |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture (3 layers) | Skeleton |
 | [ROADMAP.md](ROADMAP.md) | Phased plan | Skeleton |
 | [TECH_STACK.md](TECH_STACK.md) | Technology decisions | Skeleton — all core decisions made; only iOS companion specifics open |
