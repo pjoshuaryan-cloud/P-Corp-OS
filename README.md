@@ -22,7 +22,7 @@ Then: summarize your understanding, flag any architectural concerns, and propose
 | [ENGINEERING_MANUAL.md](ENGINEERING_MANUAL.md) | Coding standards, process | Stub |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture (3 layers) | Skeleton |
 | [ROADMAP.md](ROADMAP.md) | Phased plan | Skeleton |
-| [TECH_STACK.md](TECH_STACK.md) | Technology decisions | Stub — undecided |
+| [TECH_STACK.md](TECH_STACK.md) | Technology decisions | Skeleton — UI shell decided (SwiftUI, Apple-only) |
 | [UI_GUIDELINES.md](UI_GUIDELINES.md) | Design philosophy ("War Room") | Skeleton |
 | [PERSONALITY_SPEC.md](PERSONALITY_SPEC.md) | Frank's personality/voice | Skeleton |
 | [MEMORY_SYSTEM.md](MEMORY_SYSTEM.md) | Cross-device memory architecture | Stub |
