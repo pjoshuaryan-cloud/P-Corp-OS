@@ -1,6 +1,6 @@
 # Roadmap
 
-**Status:** Skeleton — phase order is decided, timing deliberately is not.
+**Status:** Active — Phase 1 underway as of 2026-07-20.
 
 ## Purpose
 
@@ -8,9 +8,9 @@ Sequence the work so P Corp OS gets built "slowly, correctly, layer by layer" wi
 
 ## Phases
 
-**Phase 0 — Foundations (current).** Documentation and repo structure only. No production code. Trading robot remains the active priority outside this repo. Exit condition: Joshua decides he has bandwidth to start Phase 1 — not a fixed date.
+**Phase 0 — Foundations. Complete as of 2026-07-20.** Documentation and repo structure (this repo), `TECH_STACK.md`'s full decision set, and `ENGINEERING_MANUAL.md`. No production code was written, per the brief's own instruction. Trading robot remained the active priority throughout.
 
-**Phase 1 — The interview.** Multi-session process where Frank (via Claude) interviews Joshua to build a mental model of his personality, communication, decision-making, values, goals, risk tolerance, etc. (full list in FOUNDER_BRIEF.md → Before Frank Exists). This happens before any Layer 2 code, not alongside it.
+**Phase 1 — The interview. In progress, started 2026-07-20.** Multi-session process where Frank (via Claude) interviews Joshua to build a mental model of his personality, communication, decision-making, values, goals, risk tolerance, etc. (full list in FOUNDER_BRIEF.md → Before Frank Exists). This happens before any Layer 2 code, not alongside it. Open thread within this phase: how interview content gets recorded, especially for sensitive categories (marriage, health, finances) — flagged in `MEMORY_SYSTEM.md`/`SECURITY.md` as needing privacy handling that doesn't exist yet, so nothing sensitive is being committed to this repo verbatim until that's resolved with Joshua directly.
 
 **Phase 2 — Platform layer (Layer 1).** Build the minimum P Corp OS platform needed to support one real use case end to end — likely memory + sync, since everything else depends on it.
 

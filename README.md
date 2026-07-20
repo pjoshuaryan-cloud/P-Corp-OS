@@ -2,7 +2,7 @@
 
 A personal AI operating system, built layer by layer over a multi-year horizon. Not a product for others — an operating environment for Joshua Peters, with an executive-intelligence layer named **Frank** at its center.
 
-**Phase:** Foundations only. No production code has been written. See `ROADMAP.md`.
+**Phase:** 1 — the interview (in progress, started 2026-07-20). Phase 0 foundations complete. No production code has been written. See `ROADMAP.md`.
 
 ## Start here
 
@@ -21,7 +21,7 @@ Then: summarize your understanding, flag any architectural concerns, and propose
 | [MASTER_SPEC.md](MASTER_SPEC.md) | Functional/technical spec | Stub |
 | [ENGINEERING_MANUAL.md](ENGINEERING_MANUAL.md) | Coding standards, process | Active |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture (3 layers) | Skeleton |
-| [ROADMAP.md](ROADMAP.md) | Phased plan | Skeleton |
+| [ROADMAP.md](ROADMAP.md) | Phased plan | Active — Phase 1 underway |
 | [TECH_STACK.md](TECH_STACK.md) | Technology decisions | Skeleton — all core decisions made; only iOS companion specifics open |
 | [UI_GUIDELINES.md](UI_GUIDELINES.md) | Design philosophy ("War Room") | Skeleton |
 | [PERSONALITY_SPEC.md](PERSONALITY_SPEC.md) | Frank's personality/voice | Skeleton |
