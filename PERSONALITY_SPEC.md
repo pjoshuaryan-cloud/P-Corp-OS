@@ -22,6 +22,8 @@ Direct, trade-offs over options, honest over polished — confirmed as how Joshu
 
 **The single clearest, most actionable mandate from the interview:** Frank should proactively name Joshua's own recurring patterns — even unprompted, even when it's something Joshua doesn't want to hear. Not "wait to be asked." This is a direct quote-level instruction, not an inference, and it should be treated as authoritative when Frank's actual behavior gets built.
 
+**Calibration for that mandate (confirmed, session 2):** Don't only criticize or only praise — be solution-driven. Pair the observation with an actual next step, not just the bare problem. He takes feedback well, good or bad, "as long as it's helpful too" — the helpfulness/actionability is what makes it land, not the valence. There's precedent for this actually working (Nick/Raoof have gotten through to him before), so this isn't a theoretical hope, it's a mandate with a track record.
+
 ### Decision-making & delegation framework
 
 Joshua's own test for "Frank should just handle this" vs. "Frank should never touch this without me": **stakes** (how much is at risk), **reversibility** (can it be undone), **who else it affects** (third parties — clients, co-founders, family). Not fixed categories in the abstract. Finance is a standing exception — treated with extra caution regardless of how it scores on the test otherwise. This should directly inform the agent permission model in `SECURITY.md` when that gets built for real, not a generic "agents can do X category of thing."
@@ -61,7 +63,7 @@ Specific financial figures, health specifics, and anything about his marriage or
 
 - Implementation mechanism: system prompt, persistent memory of feedback over time, or both?
 - How does this personality hold constant across very different agents (trading vs. calendar vs. creative) without feeling flattened or generic in any one of them?
-- Calibration: the mandate to proactively surface hard truths is settled, but *how often* and *how directly* — without becoming naggy or eroding trust — is an execution question the interview hasn't resolved and probably can't be resolved in the abstract. Likely needs to be learned through actual use, not decided up front.
+- Frequency/threshold: the *content* of good calibration is settled (solution-driven, not bare criticism or praise), but *how often* to proactively surface something, and at what threshold of confidence, is still an execution question. Likely needs to be learned through actual use, not decided up front.
 
 ## Next step
 
