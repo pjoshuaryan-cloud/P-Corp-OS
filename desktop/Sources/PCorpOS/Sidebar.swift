@@ -57,12 +57,14 @@ private struct NavRow: View {
             Image(systemName: item.systemImage)
                 .font(.system(size: 15))
                 .frame(width: 20)
+                .foregroundStyle(isSelected ? Color.black : Color.black.opacity(0.55))
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title)
                     .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.black)
                 Text(item.subtitle)
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.black.opacity(0.45))
             }
             Spacer(minLength: 0)
         }

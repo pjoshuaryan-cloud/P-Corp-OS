@@ -29,13 +29,13 @@ struct QuickAction: Identifiable {
 enum PlaceholderData {
     static let navItems: [NavItem] = [
         NavItem(title: "War Room", subtitle: "Mission Control", systemImage: "square.grid.2x2"),
-        NavItem(title: "Frank", subtitle: "Executive Intelligence", systemImage: "circle.hexagongrid"),
+        NavItem(title: "Frank", subtitle: "Executive Intelligence", systemImage: "brain"),
         NavItem(title: "Alpha Mode", subtitle: "Business Operations", systemImage: "briefcase"),
         NavItem(title: "Trading Division", subtitle: "Markets & Strategies", systemImage: "chart.line.uptrend.xyaxis"),
         NavItem(title: "Personal", subtitle: "Life & Relationships", systemImage: "person"),
-        NavItem(title: "Finance", subtitle: "Wealth & Investments", systemImage: "creditcard"),
-        NavItem(title: "Knowledge", subtitle: "Files & Insights", systemImage: "doc"),
-        NavItem(title: "Agents", subtitle: "AI Team", systemImage: "circle.grid.3x3"),
+        NavItem(title: "Finance", subtitle: "Wealth & Investments", systemImage: "banknote"),
+        NavItem(title: "Knowledge", subtitle: "Files & Insights", systemImage: "books.vertical"),
+        NavItem(title: "Agents", subtitle: "AI Team", systemImage: "person.3"),
         NavItem(title: "Automations", subtitle: "Workflows", systemImage: "bolt"),
         NavItem(title: "Calendar", subtitle: "Schedule & Events", systemImage: "calendar"),
         NavItem(title: "Settings", subtitle: "Preferences", systemImage: "gearshape"),

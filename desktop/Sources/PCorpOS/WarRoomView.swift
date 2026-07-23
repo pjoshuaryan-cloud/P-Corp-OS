@@ -114,40 +114,60 @@ private struct FrankOrb: View {
         ZStack {
             // Soft contact shadow — grounds the shape so the float reads as
             // floating rather than just sliding up and down in empty space.
+            // Wider and lighter while up, tighter and darker while down, like
+            // a real cast shadow responding to height above the surface.
             Ellipse()
-                .fill(Color.black.opacity(floatUp ? 0.08 : 0.14))
-                .frame(width: floatUp ? 120 : 150, height: 18)
-                .blur(radius: 8)
-                .offset(y: 100)
+                .fill(Color.black.opacity(floatUp ? 0.10 : 0.22))
+                .frame(width: floatUp ? 150 : 105, height: floatUp ? 20 : 14)
+                .blur(radius: 10)
+                .offset(y: 108)
 
             BlobShape()
                 .fill(
-                    LinearGradient(
-                        colors: [Color(white: 0.16), Color.black],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+                    RadialGradient(
+                        colors: [Color(white: 0.30), Color(white: 0.05), Color.black],
+                        center: UnitPoint(x: 0.32, y: 0.28),
+                        startRadius: 4,
+                        endRadius: 160
                     )
                 )
                 .overlay(
+                    // Tight, bright specular highlight — glossy/liquid surfaces
+                    // catch light in a small defined spot, not a broad soft glow.
                     BlobShape()
-                        .fill(Color.white.opacity(0.10))
-                        .blur(radius: 14)
-                        .offset(x: -28, y: -32)
+                        .fill(Color.white.opacity(0.55))
+                        .blur(radius: 6)
+                        .frame(width: 46, height: 30)
+                        .offset(x: -34, y: -46)
                         .mask(BlobShape())
                 )
-                .offset(y: floatUp ? -12 : 12)
+                .overlay(
+                    // Faint rim light along the lower edge, as if reflecting
+                    // ambient light from the surface below — reinforces volume.
+                    BlobShape()
+                        .fill(Color.white.opacity(0.08))
+                        .blur(radius: 10)
+                        .offset(x: 20, y: 40)
+                        .mask(BlobShape())
+                )
+                .offset(y: floatUp ? -14 : 14)
         }
-        .animation(.easeInOut(duration: 3.2).repeatForever(autoreverses: true), value: floatUp)
+        .animation(.easeInOut(duration: 3.4).repeatForever(autoreverses: true), value: floatUp)
         .onAppear { floatUp = true }
     }
 }
 
 /// A fixed, irregular closed shape — not a perfect circle. Built by taking
 /// points around a circle with per-point radius variance, then smoothing
-/// through their midpoints so the outline reads as organic rather than
-/// polygonal. Deterministic (no randomness) so it looks the same every launch.
+/// through their midpoints so the outline reads as organic and liquid rather
+/// than polygonal or faceted. More points and gentler variance than a first
+/// pass reads as "melty" instead of "gem-like." Deterministic (no randomness)
+/// so it looks the same every launch.
 private struct BlobShape: Shape {
-    private let radiusVariance: [CGFloat] = [1.0, 1.1, 0.92, 1.05, 0.88, 1.12, 0.95, 1.02, 0.90, 1.06]
+    private let radiusVariance: [CGFloat] = [
+        1.00, 1.04, 1.02, 1.07, 0.97, 1.03, 0.94, 1.05,
+        0.98, 1.06, 0.95, 1.02, 0.99, 1.05, 0.96, 1.01,
+    ]
 
     func path(in rect: CGRect) -> Path {
         let center = CGPoint(x: rect.midX, y: rect.midY)
