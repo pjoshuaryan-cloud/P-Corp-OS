@@ -210,44 +210,20 @@ private struct BlobShape: Shape {
     }
 }
 
-/// A custom geometric "P" mark for the top bar — not a system icon and not
-/// rendered text. A faceted, folded-ribbon-style silhouette (straight edges,
-/// a sharp top peak, a concave notch where the "bowl" folds away from the
-/// stem) built as a single closed polygon, approximating Joshua's reference
-/// image. This is a best-effort geometric approximation, not a pixel trace —
-/// Claude can't extract exact vector coordinates from an image. If the
-/// angles are off, the more reliable fix is dropping in the actual source
-/// asset (an SVG/PDF export of the real mark) as an image resource instead
-/// of continuing to hand-tune points here.
-private struct PLogoShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let w = rect.width
-        let h = rect.height
-
-        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + x * w, y: rect.minY + y * h)
-        }
-
-        var path = Path()
-        path.move(to: pt(0.22, 1.00))       // bottom-left of stem
-        path.addLine(to: pt(0.44, 1.00))    // bottom-right of stem
-        path.addLine(to: pt(0.50, 0.55))    // up the stem's right edge
-        path.addLine(to: pt(0.30, 0.47))    // concave notch — the fold
-        path.addLine(to: pt(0.37, 0.20))    // up to the base of the top peak
-        path.addLine(to: pt(0.64, 0.00))    // sharp top peak
-        path.addLine(to: pt(0.90, 0.23))    // down the peak's right edge
-        path.addLine(to: pt(0.58, 0.52))    // back in toward center — outer bowl edge
-        path.addLine(to: pt(0.40, 0.63))    // closes the bowl loop near the stem
-        path.addLine(to: pt(0.22, 0.63))    // down the stem's left edge
-        path.closeSubpath()
-        return path
-    }
-}
-
+/// The P Corp OS mark for the top bar. Joshua pointed to the simpler P shown
+/// in his own reference mockup (not the angular folded-ribbon version from a
+/// different reference image) — a clean, bold, fairly conventional P
+/// letterform. After two rounds of hand-built vector paths that didn't quite
+/// land, a styled system-font glyph is the more reliable choice at this size
+/// and simplicity than continuing to guess coordinates: a well-chosen bold,
+/// rounded-design "P" naturally has the soft, consistent proportions the
+/// mockup shows, without more approximation error. If this still isn't a
+/// match, the reliable fix is the same as before — the actual source asset.
 private struct PLogoMark: View {
     var body: some View {
-        PLogoShape()
-            .fill(Color.black)
-            .frame(width: 16, height: 22)
+        Text("P")
+            .font(.system(size: 24, weight: .bold, design: .rounded))
+            .foregroundStyle(Color.black)
+            .frame(width: 16, height: 22, alignment: .center)
     }
 }
