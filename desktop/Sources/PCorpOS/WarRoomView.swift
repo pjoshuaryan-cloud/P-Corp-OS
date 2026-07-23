@@ -23,9 +23,20 @@ struct WarRoomView: View {
 
             Spacer(minLength: 20)
 
-            FrankOrb()
-                .frame(width: 150, height: 150)
-                .frame(maxWidth: .infinity)
+            ZStack {
+                HStack(spacing: 0) {
+                    HandParticles(systemName: "hand.point.right.fill", dotColor: theme.textPrimary)
+                        .frame(width: 260, height: 170)
+                    Spacer(minLength: 90)
+                    HandParticles(systemName: "hand.point.left.fill", dotColor: theme.textPrimary)
+                        .frame(width: 260, height: 170)
+                }
+                .frame(maxWidth: 700)
+
+                FrankOrb()
+                    .frame(width: 150, height: 150)
+            }
+            .frame(maxWidth: .infinity)
 
             Spacer(minLength: 20)
 
