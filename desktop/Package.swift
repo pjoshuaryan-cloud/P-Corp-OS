@@ -12,7 +12,8 @@ let package = Package(
             path: "Sources/PCorpOS",
             resources: [
                 .copy("Resources/P_logo.pdf"),
-                .copy("Resources/alpha_mode_logo.png")
+                .copy("Resources/alpha_mode_logo.png"),
+                .copy("Resources/p_logo_black.png")
             ]
         )
     ]

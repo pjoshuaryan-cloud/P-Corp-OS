@@ -222,18 +222,44 @@ private struct SeededGenerator: RandomNumberGenerator {
     }
 }
 
-/// Placeholder P mark — a plain styled glyph, deliberately not the real
-/// logo. Three rendering attempts at the actual mark (a hand-built rounded
-/// stem+bowl path, a hand-built angular folded-ribbon path, and rendering
-/// Joshua's real P_logo.pdf via PDFKit) all fell short on direct feedback.
-/// Rather than keep tuning something not working, Joshua asked to park it —
-/// the real source file still lives at `Resources/P_logo.pdf` and is still
-/// bundled in `Package.swift` for whenever the logo work picks back up.
+/// The real P mark, finally. Three hand-built vector-path attempts (a
+/// rounded stem+bowl, an angular folded-ribbon, and rendering the original
+/// P_logo.pdf via PDFKit) all fell short — this shape is intricate enough
+/// (angled facets, a beveled bowl, diagonal notches in the stem) that
+/// guessing coordinates was never going to land. Joshua's actual reference
+/// (a gold/metallic textured render, `p_logo_black.png` in Resources) was
+/// processed directly instead: thresholded by luminance to separate the
+/// bright letterform from its solid-black background, recolored to a flat
+/// black silhouette with anti-aliased edges, and cropped to content bounds —
+/// reading real pixel data rather than approximating from a description.
 private struct PLogoMark: View {
+    /// `.template` rendering mode treats the PNG as an alpha mask, so it
+    /// tints via `theme.textPrimary` — black in light mode (matching
+    /// Joshua's "make it black" request) but white in dark mode, so it
+    /// doesn't go invisible against a dark background the way a hardcoded
+    /// black fill would (same reasoning as the particle blob's theming).
+    private static let image: Image? = {
+        guard let url = Bundle.module.url(forResource: "p_logo_black", withExtension: "png"),
+              let nsImage = NSImage(contentsOf: url)
+        else { return nil }
+        return Image(nsImage: nsImage)
+    }()
+
+    @Environment(\.appTheme) private var theme
+
     var body: some View {
-        Text("P")
-            .font(.system(size: 22, weight: .bold, design: .rounded))
-            .foregroundStyle(Color.black)
-            .frame(width: 20, height: 24, alignment: .center)
+        Group {
+            if let image = Self.image {
+                image
+                    .resizable()
+                    .renderingMode(.template)
+                    .scaledToFit()
+                    .foregroundStyle(theme.textPrimary)
+            } else {
+                // Fallback only if the resource fails to load at runtime.
+                Text("P").font(.system(size: 22, weight: .bold, design: .rounded))
+            }
+        }
+        .frame(width: 20, height: 24, alignment: .center)
     }
 }
