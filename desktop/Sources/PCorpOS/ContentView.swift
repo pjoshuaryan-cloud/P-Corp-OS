@@ -17,9 +17,12 @@ struct ContentView: View {
             Sidebar(selectedID: $selectedID)
 
             Group {
-                if selectedItem.title == "War Room" {
+                switch selectedItem.title {
+                case "War Room":
                     WarRoomView()
-                } else {
+                case "Settings":
+                    SettingsView()
+                default:
                     SectionPlaceholderView(item: selectedItem)
                 }
             }
