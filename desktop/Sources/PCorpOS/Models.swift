@@ -1,0 +1,65 @@
+import SwiftUI
+
+struct NavItem: Identifiable {
+    let id = UUID()
+    let title: String
+    let subtitle: String
+    let systemImage: String
+}
+
+struct AgendaItem: Identifiable {
+    let id = UUID()
+    let time: String
+    let title: String
+}
+
+struct InsightItem: Identifiable {
+    let id = UUID()
+    let systemImage: String
+    let title: String
+    let detail: String
+}
+
+struct QuickAction: Identifiable {
+    let id = UUID()
+    let title: String
+    let systemImage: String
+}
+
+enum PlaceholderData {
+    static let navItems: [NavItem] = [
+        NavItem(title: "War Room", subtitle: "Mission Control", systemImage: "square.grid.2x2"),
+        NavItem(title: "Frank", subtitle: "Executive Intelligence", systemImage: "circle.hexagongrid"),
+        NavItem(title: "Alpha Mode", subtitle: "Business Operations", systemImage: "briefcase"),
+        NavItem(title: "Trading Division", subtitle: "Markets & Strategies", systemImage: "chart.line.uptrend.xyaxis"),
+        NavItem(title: "Personal", subtitle: "Life & Relationships", systemImage: "person"),
+        NavItem(title: "Finance", subtitle: "Wealth & Investments", systemImage: "creditcard"),
+        NavItem(title: "Knowledge", subtitle: "Files & Insights", systemImage: "doc"),
+        NavItem(title: "Agents", subtitle: "AI Team", systemImage: "circle.grid.3x3"),
+        NavItem(title: "Automations", subtitle: "Workflows", systemImage: "bolt"),
+        NavItem(title: "Calendar", subtitle: "Schedule & Events", systemImage: "calendar"),
+        NavItem(title: "Settings", subtitle: "Preferences", systemImage: "gearshape"),
+    ]
+
+    static let agenda: [AgendaItem] = [
+        AgendaItem(time: "08:30", title: "Morning Brief with Frank"),
+        AgendaItem(time: "09:00", title: "Alpha Mode Leadership Call"),
+        AgendaItem(time: "10:30", title: "Client Presentation"),
+        AgendaItem(time: "13:00", title: "Deep Work Block"),
+        AgendaItem(time: "15:30", title: "Trading Strategy Review"),
+        AgendaItem(time: "17:30", title: "Workout"),
+    ]
+
+    static let insights: [InsightItem] = [
+        InsightItem(systemImage: "target", title: "Placeholder Insight", detail: "Example of an opportunity Frank might surface here."),
+        InsightItem(systemImage: "chart.line.uptrend.xyaxis", title: "Placeholder Signal", detail: "Example of a trading-related note Frank might surface here."),
+        InsightItem(systemImage: "clock", title: "Placeholder Optimization", detail: "Example of a scheduling note Frank might surface here."),
+    ]
+
+    static let quickActions: [QuickAction] = [
+        QuickAction(title: "New Task", systemImage: "plus"),
+        QuickAction(title: "Start Deep Work", systemImage: "timer"),
+        QuickAction(title: "Ask Frank", systemImage: "waveform"),
+        QuickAction(title: "Run Report", systemImage: "chart.bar"),
+    ]
+}

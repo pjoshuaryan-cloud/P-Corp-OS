@@ -2,7 +2,7 @@
 
 A personal AI operating system, built layer by layer over a multi-year horizon. Not a product for others — an operating environment for Joshua Peters, with an executive-intelligence layer named **Frank** at its center.
 
-**Phase:** 1 — the interview (in progress, started 2026-07-20). Phase 0 foundations complete. No production code has been written. See `ROADMAP.md`.
+**Phase:** 2 — platform layer (desktop UI shell started 2026-07-23). Phase 0 (foundations) and the Phase 1 interview baseline are complete; Phase 1 continues informally per FOUNDER_BRIEF.md. See `ROADMAP.md`.
 
 ## Start here
 
@@ -33,6 +33,16 @@ Then: summarize your understanding, flag any architectural concerns, and propose
 | [CHANGELOG.md](CHANGELOG.md) | Log of what actually changed, when | Active |
 
 "Skeleton" = grounded only in decisions already stated in the Founder Brief, plus explicit open questions. "Stub" = purpose and open questions only, no decisions made yet. Nothing here should read as more finished than it is — see `FOUNDER_BRIEF.md` → Working Rules on not writing speculative fiction ahead of real design work.
+
+## Code
+
+`desktop/` — the SwiftUI desktop shell, a Swift Package Manager executable (no Xcode project yet — see `ENGINEERING_MANUAL.md` → Repo layout). Static visual layout only right now: sidebar, War Room center, right rail. No backend, no wired-up logic, no real data. Build and run with:
+
+```
+cd desktop && swift run
+```
+
+No `backend/` yet — the Python backend hasn't been started.
 
 ## Current priority
 

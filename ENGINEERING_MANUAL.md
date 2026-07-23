@@ -26,7 +26,7 @@ Rationale: the SwiftUI shell and Python backend are tightly coupled through the 
 
 Not permanent by default: if an individual Layer 3 agent grows substantial enough to warrant independent versioning or its own release cadence, it can be split into its own repo later. That's a reversible operational choice, not a structural commitment — the same phasing pattern used for sync hosting and process lifecycle in `TECH_STACK.md`.
 
-Actual directory structure isn't specified yet. It should emerge from the first real prototype (`ROADMAP.md` → Phase 2/3), not be designed in the abstract before any code exists — designing a folder tree for code that doesn't exist yet is the same speculative-fiction risk this whole documentation pass has been avoiding.
+**Structure as of the first real prototype (2026-07-23):** `desktop/` holds the SwiftUI app as a Swift Package Manager executable target (`desktop/Package.swift`, sources under `desktop/Sources/PCorpOS/`) — not a full Xcode project, since only command-line developer tools are installed on the build machine, not full Xcode. SPM + SwiftUI's native `App` lifecycle builds and runs (`swift build` / `swift run`) without needing Xcode at all; a full `.xcodeproj` can be introduced later if/when Xcode-specific tooling (asset catalogs, entitlements for `SMAppService`, notarization) is actually needed. No `backend/` directory yet — the Python backend hasn't been started; this first prototype is UI shell only, per Joshua's explicit scope (static layout, no backend calls, no wired-up logic).
 
 ## Languages & tooling
 
