@@ -12,7 +12,9 @@ Opening the app should feel like entering headquarters, not opening another appl
 
 ## Decided from building the first shell (2026-07-23)
 
-**Visual language:** white/near-white surfaces, black text and accents, no color beyond that, generous whitespace, no visible seams between layout regions (background-tone contrast instead of hard divider lines — Joshua explicitly flagged divider lines as looking wrong on first look). Currently a fixed light appearance only, deliberately not adapting to system dark mode yet (see `desktop/Sources/PCorpOS/PCorpOSApp.swift`) — a real dark mode is future work, not an oversight; don't let it silently reappear via semantic colors (`.primary`/`.secondary`) that auto-adapt.
+**Visual language:** white/near-white surfaces, black text and accents, no color beyond that, generous whitespace, no visible seams between layout regions (background-tone contrast instead of hard divider lines — Joshua explicitly flagged divider lines as looking wrong on first look).
+
+**Dark mode: real, designed, and user-controlled (added 2026-07-24)** — not a system-appearance flag. `Theme.swift` defines a light and a dark `AppTheme` (background, surface, borders, three text tiers, accent fill/text) injected via a custom environment key; every view reads colors from `@Environment(\.appTheme)` instead of hardcoded `Color.white`/`.black`. Toggled from Settings ("Dark Mode" under Appearance), backed by `@AppStorage` — the toggle, not the OS's own appearance setting, is the single source of truth for which mode is active (`.preferredColorScheme` is set explicitly to `.light` or `.dark`, never `.automatic`). Frank's orb and the P mark are deliberately NOT themed — they're fixed brand/identity elements regardless of mode, not chrome that flips for contrast.
 
 **Frank's on-screen presence:** an irregular, organic "blob" shape — not a circle, not a mascot, no face. Built from a fixed set of points around a circle with gentle per-point radius variance, smoothed into one continuous outline (see `BlobShape` in `desktop/Sources/PCorpOS/WarRoomView.swift`), rendered with a radial gradient, a tight bright specular highlight, and a faint rim light for a liquid/3D feel rather than a flat disc. It floats — a slow vertical bob with a contact shadow beneath that widens/lightens as it rises and tightens/darkens as it falls, so the motion reads as floating rather than just sliding. Presence comes from shape, material, and motion only — consistent with FOUNDER_BRIEF.md's explicit direction that Frank's identity shouldn't come from a character on screen.
 
@@ -22,7 +24,6 @@ Opening the app should feel like entering headquarters, not opening another appl
 
 ## Open questions
 
-- Real dark mode — deferred on purpose, not designed yet.
 - How much of "premium and disciplined" is achievable long-term depends partly on native SwiftUI's ceiling vs. custom `Shape`/`Canvas` work — the blob shape is a first data point that custom drawing is viable here, not a final answer.
 - Desktop/mobile visual consistency: same design language adapted per platform, or deliberately different (desktop = command center, mobile = quick access)? Still unresolved — no mobile work has started.
 - How far the military-language principle extends — confirmed for tasks/home-screen framing; other copy (e.g. "Frank's Insights," "Today's Agenda," "Quick Actions") hasn't been explicitly reviewed against it yet.
