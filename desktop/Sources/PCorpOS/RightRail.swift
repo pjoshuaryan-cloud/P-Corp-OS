@@ -37,6 +37,7 @@ private struct CardContainer<Content: View>: View {
             RoundedRectangle(cornerRadius: 18)
                 .strokeBorder(theme.surfaceBorder)
         )
+        .shadow(color: theme.cardShadow, radius: 12, x: 0, y: 4)
     }
 }
 

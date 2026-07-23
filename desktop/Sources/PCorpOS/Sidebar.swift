@@ -57,6 +57,7 @@ private struct NavRow: View {
     let item: NavItem
     let isSelected: Bool
     @Environment(\.appTheme) private var theme
+    @State private var isHovering = false
 
     /// Alpha Mode Media's real brand mark, bundled from its actual brand
     /// assets (`Resources/alpha_mode_logo.png`) rather than a generic system
@@ -101,8 +102,17 @@ private struct NavRow: View {
         .padding(.vertical, 11)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(isSelected ? theme.textPrimary.opacity(0.06) : Color.clear)
+                .fill(rowBackground)
         )
         .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
+        }
+    }
+
+    private var rowBackground: Color {
+        if isSelected { return theme.textPrimary.opacity(0.06) }
+        if isHovering { return theme.textPrimary.opacity(0.035) }
+        return .clear
     }
 }

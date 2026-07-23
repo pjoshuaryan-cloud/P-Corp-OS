@@ -54,18 +54,29 @@ struct WarRoomView: View {
 
             Spacer()
 
-            HStack(spacing: 16) {
-                Image(systemName: "magnifyingglass")
-                Image(systemName: "waveform.circle.fill")
+            HStack(spacing: 4) {
+                Button {
+                    // no-op: shell only, not wired up yet
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .buttonStyle(.icon)
+
+                Button {
+                    // no-op: shell only, not wired up yet
+                } label: {
+                    Image(systemName: "waveform.circle.fill")
+                }
+                .buttonStyle(.icon)
+
                 Button {
                     // no-op: shell only, not wired up yet
                 } label: {
                     Label("Mission", systemImage: "plus")
                 }
                 .buttonStyle(.pillFilled)
+                .padding(.leading, 8)
             }
-            .font(.system(size: 15))
-            .foregroundStyle(theme.textPrimary)
         }
         .padding(.horizontal, 32)
         .padding(.vertical, 20)
@@ -101,6 +112,7 @@ struct WarRoomView: View {
             RoundedRectangle(cornerRadius: 24)
                 .strokeBorder(theme.surfaceBorder)
         )
+        .shadow(color: theme.cardShadow, radius: 16, x: 0, y: 6)
     }
 }
 

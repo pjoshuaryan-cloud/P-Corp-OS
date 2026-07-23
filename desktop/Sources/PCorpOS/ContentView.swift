@@ -26,6 +26,9 @@ struct ContentView: View {
                     SectionPlaceholderView(item: selectedItem)
                 }
             }
+            .id(selectedItem.id) // forces a fresh view per section, so the transition below actually triggers
+            .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .center)))
+            .animation(.easeOut(duration: 0.18), value: selectedID)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             RightRail()

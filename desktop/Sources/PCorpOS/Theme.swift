@@ -15,6 +15,10 @@ struct AppTheme {
     let accentFill: Color
     let accentText: Color
     let divider: Color
+    /// Card/surface drop shadow. Subtle black works against light
+    /// backgrounds; against dark ones a black shadow is nearly invisible, so
+    /// dark mode leans on a faint white shadow instead to read as elevation.
+    let cardShadow: Color
 
     static let light = AppTheme(
         background: .white,
@@ -25,7 +29,8 @@ struct AppTheme {
         textTertiary: Color.black.opacity(0.45),
         accentFill: .black,
         accentText: .white,
-        divider: Color.black.opacity(0.08)
+        divider: Color.black.opacity(0.08),
+        cardShadow: Color.black.opacity(0.06)
     )
 
     static let dark = AppTheme(
@@ -37,7 +42,8 @@ struct AppTheme {
         textTertiary: Color.white.opacity(0.45),
         accentFill: .white,
         accentText: .black,
-        divider: Color.white.opacity(0.1)
+        divider: Color.white.opacity(0.1),
+        cardShadow: Color.black.opacity(0.4)
     )
 }
 

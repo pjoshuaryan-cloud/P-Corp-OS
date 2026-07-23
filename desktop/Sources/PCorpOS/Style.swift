@@ -53,3 +53,33 @@ extension ButtonStyle where Self == PillButtonStyle {
     static var pillFilled: PillButtonStyle { PillButtonStyle(filled: true) }
     static var pillTinted: PillButtonStyle { PillButtonStyle(filled: false) }
 }
+
+/// A circular icon-only button with real hover/press feedback — replaces
+/// bare `Image(systemName:)` glyphs sitting unstyled in toolbars (the top
+/// bar's search/mic icons had none of this before).
+struct IconButtonStyle: ButtonStyle {
+    @Environment(\.appTheme) private var theme
+    @State private var isHovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 15))
+            .foregroundStyle(theme.textPrimary)
+            .frame(width: 34, height: 34)
+            .background(
+                Circle().fill(
+                    configuration.isPressed
+                        ? theme.textPrimary.opacity(0.10)
+                        : (isHovering ? theme.textPrimary.opacity(0.06) : Color.clear)
+                )
+            )
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.12), value: isHovering)
+            .onHover { isHovering = $0 }
+    }
+}
+
+extension ButtonStyle where Self == IconButtonStyle {
+    static var icon: IconButtonStyle { IconButtonStyle() }
+}
