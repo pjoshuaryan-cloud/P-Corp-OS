@@ -11,9 +11,9 @@ struct WarRoomView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 Text("Good morning, Joshx.")
-                    .font(.system(size: 34, weight: .semibold))
+                    .font(PCorpFont.display(38, weight: .bold))
                 Text("I'm Frank. How can I help you today?")
-                    .font(.system(size: 17))
+                    .font(PCorpFont.body(17))
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -38,9 +38,9 @@ struct WarRoomView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Good morning, Joshx.")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(PCorpFont.body(13, weight: .semibold))
                 Text(Date.now.formatted(date: .complete, time: .omitted))
-                    .font(.system(size: 11))
+                    .font(PCorpFont.body(11))
                     .foregroundStyle(.secondary)
             }
 
@@ -59,10 +59,8 @@ struct WarRoomView: View {
                     // no-op: shell only, not wired up yet
                 } label: {
                     Label("Mission", systemImage: "plus")
-                        .font(.system(size: 12, weight: .medium))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.black)
+                .buttonStyle(.pillFilled)
             }
             .font(.system(size: 15))
             .foregroundStyle(.primary)
@@ -77,7 +75,7 @@ struct WarRoomView: View {
                 .foregroundStyle(.secondary)
             TextField("Talk to Frank...", text: $inputText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 14))
+                .font(PCorpFont.body(14))
 
             Button {
                 // no-op: shell only, not wired up yet

@@ -5,12 +5,13 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("P CORP OS")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(PCorpFont.display(15))
+                    .trackedLabel(1.8)
                 Text("EXECUTIVE INTELLIGENCE")
-                    .font(.system(size: 10, weight: .medium))
-                    .tracking(1.0)
+                    .font(PCorpFont.label(9.5))
+                    .trackedLabel(1.8)
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 20)
@@ -30,15 +31,15 @@ struct Sidebar: View {
             Spacer(minLength: 0)
 
             Divider()
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("SYSTEM STATUS")
-                    .font(.system(size: 10, weight: .medium))
-                    .tracking(1.0)
+                    .font(PCorpFont.label(9.5))
+                    .trackedLabel(1.8)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 6) {
                     Circle().fill(Color.black).frame(width: 6, height: 6)
                     Text("All Systems Operational")
-                        .font(.system(size: 12, weight: .regular))
+                        .font(PCorpFont.body(12))
                 }
             }
             .padding(20)
@@ -60,10 +61,10 @@ private struct NavRow: View {
                 .foregroundStyle(isSelected ? Color.black : Color.black.opacity(0.55))
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(PCorpFont.body(13, weight: .semibold))
                     .foregroundStyle(Color.black)
                 Text(item.subtitle)
-                    .font(.system(size: 11))
+                    .font(PCorpFont.body(11))
                     .foregroundStyle(Color.black.opacity(0.45))
             }
             Spacer(minLength: 0)
@@ -71,7 +72,7 @@ private struct NavRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 12)
                 .fill(isSelected ? Color.black.opacity(0.06) : Color.clear)
         )
         .contentShape(Rectangle())

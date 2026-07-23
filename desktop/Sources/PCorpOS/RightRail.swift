@@ -27,11 +27,11 @@ private struct CardContainer<Content: View>: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 14)
+            RoundedRectangle(cornerRadius: 18)
                 .fill(Color.white)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
+            RoundedRectangle(cornerRadius: 18)
                 .strokeBorder(Color.black.opacity(0.06))
         )
     }
@@ -41,8 +41,8 @@ private struct SectionLabel: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(.system(size: 10, weight: .semibold))
-            .tracking(1.0)
+            .font(PCorpFont.label(9.5))
+            .trackedLabel(1.6)
             .foregroundStyle(.secondary)
     }
 }
@@ -58,17 +58,17 @@ private struct MissionStatusCard: View {
                 Spacer()
                 HStack(spacing: 4) {
                     Circle().fill(Color.black).frame(width: 6, height: 6)
-                    Text("Active").font(.system(size: 11, weight: .medium))
+                    Text("Active").font(PCorpFont.body(11, weight: .semibold))
                 }
             }
             Text("Create Leverage.\nFreedom Tomorrow.")
-                .font(.system(size: 18, weight: .semibold))
+                .font(PCorpFont.display(19))
                 .fixedSize(horizontal: false, vertical: true)
 
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3).fill(Color.black.opacity(0.08))
-                    RoundedRectangle(cornerRadius: 3).fill(Color.black)
+                    Capsule().fill(Color.black.opacity(0.08))
+                    Capsule().fill(Color.black)
                         .frame(width: proxy.size.width * progress)
                 }
             }
@@ -76,11 +76,11 @@ private struct MissionStatusCard: View {
 
             HStack {
                 Text("Focus: Build systems that scale")
-                    .font(.system(size: 11))
+                    .font(PCorpFont.body(11))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text("\(Int(progress * 100))%")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(PCorpFont.body(11, weight: .semibold))
             }
         }
     }
@@ -94,18 +94,18 @@ private struct AgendaCard: View {
                 ForEach(PlaceholderData.agenda) { item in
                     HStack(spacing: 10) {
                         Text(item.time)
-                            .font(.system(size: 12, weight: .medium))
+                            .font(PCorpFont.body(12, weight: .semibold))
                             .foregroundStyle(.secondary)
                             .frame(width: 44, alignment: .leading)
                         Text(item.title)
-                            .font(.system(size: 12.5))
+                            .font(PCorpFont.body(12.5))
                     }
                 }
             }
             HStack {
                 Spacer()
                 Text("View full calendar")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(PCorpFont.body(11, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
         }
@@ -118,7 +118,7 @@ private struct InsightsCard: View {
             HStack {
                 SectionLabel(text: "FRANK'S INSIGHTS")
                 Spacer()
-                Text("View all").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                Text("View all").font(PCorpFont.body(11, weight: .semibold)).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(PlaceholderData.insights) { insight in
@@ -128,9 +128,9 @@ private struct InsightsCard: View {
                             .frame(width: 22, height: 22)
                             .background(Circle().fill(Color.black.opacity(0.06)))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(insight.title).font(.system(size: 12.5, weight: .medium))
+                            Text(insight.title).font(PCorpFont.body(12.5, weight: .semibold))
                             Text(insight.detail)
-                                .font(.system(size: 11.5))
+                                .font(PCorpFont.body(11.5))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -153,13 +153,12 @@ private struct QuickActionsCard: View {
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: action.systemImage)
-                                .font(.system(size: 12))
+                                .font(.system(size: 11.5))
                             Text(action.title)
-                                .font(.system(size: 12))
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pillTinted)
                 }
             }
         }
