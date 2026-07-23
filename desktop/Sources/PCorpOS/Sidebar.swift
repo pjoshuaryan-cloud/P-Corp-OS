@@ -3,6 +3,7 @@ import SwiftUI
 struct Sidebar: View {
     @Binding var selectedID: UUID?
     @Environment(\.appTheme) private var theme
+    @Namespace private var selectionNamespace
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -23,8 +24,12 @@ struct Sidebar: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(PlaceholderData.navItems) { item in
-                        NavRow(item: item, isSelected: item.id == selectedID)
-                            .onTapGesture { selectedID = item.id }
+                        NavRow(item: item, isSelected: item.id == selectedID, namespace: selectionNamespace)
+                            .onTapGesture {
+                                withAnimation(.easeOut(duration: 0.22)) {
+                                    selectedID = item.id
+                                }
+                            }
                     }
                 }
                 .padding(.horizontal, 14)
@@ -56,6 +61,7 @@ struct Sidebar: View {
 private struct NavRow: View {
     let item: NavItem
     let isSelected: Bool
+    let namespace: Namespace.ID
     @Environment(\.appTheme) private var theme
     @State private var isHovering = false
 
@@ -100,19 +106,22 @@ private struct NavRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 11)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(rowBackground)
-        )
+        .background {
+            // Only the selected row carries this ID at any given moment, so
+            // matchedGeometryEffect animates it sliding from the old row's
+            // position to the new one instead of just appearing/disappearing.
+            if isSelected {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(theme.textPrimary.opacity(0.06))
+                    .matchedGeometryEffect(id: "navSelection", in: namespace)
+            } else if isHovering {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(theme.textPrimary.opacity(0.035))
+            }
+        }
         .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
         }
-    }
-
-    private var rowBackground: Color {
-        if isSelected { return theme.textPrimary.opacity(0.06) }
-        if isHovering { return theme.textPrimary.opacity(0.035) }
-        return .clear
     }
 }
