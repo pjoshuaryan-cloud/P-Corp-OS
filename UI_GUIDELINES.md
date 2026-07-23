@@ -26,6 +26,7 @@ Opening the app should feel like entering headquarters, not opening another appl
 - How much of "premium and disciplined" is achievable long-term depends partly on native SwiftUI's ceiling vs. custom `Shape`/`Canvas` work — the blob shape is a first data point that custom drawing is viable here, not a final answer.
 - Desktop/mobile visual consistency: same design language adapted per platform, or deliberately different (desktop = command center, mobile = quick access)? Still unresolved — no mobile work has started.
 - How far the military-language principle extends — confirmed for tasks/home-screen framing; other copy (e.g. "Frank's Insights," "Today's Agenda," "Quick Actions") hasn't been explicitly reviewed against it yet.
+- **The actual logo mark — explicitly parked.** Three attempts (a hand-built rounded stem+bowl path, a hand-built angular folded-ribbon path, and rendering the real source file `desktop/Sources/PCorpOS/Resources/P_logo.pdf` via PDFKit) all fell short on direct look. The shell currently uses a plain placeholder "P" glyph. The real source PDF is still bundled and ready — this needs a dedicated session, not more incremental guessing inside other UI work.
 
 ## Next step
 
