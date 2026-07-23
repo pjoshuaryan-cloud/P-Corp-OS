@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct Sidebar: View {
-    @State private var selected: UUID? = PlaceholderData.navItems.first?.id
+    @Binding var selectedID: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -21,8 +21,8 @@ struct Sidebar: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(PlaceholderData.navItems) { item in
-                        NavRow(item: item, isSelected: item.id == selected)
-                            .onTapGesture { selected = item.id }
+                        NavRow(item: item, isSelected: item.id == selectedID)
+                            .onTapGesture { selectedID = item.id }
                     }
                 }
                 .padding(.horizontal, 12)
