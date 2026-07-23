@@ -7,9 +7,7 @@ struct ContentView: View {
     var body: some View {
         HStack(spacing: 0) {
             Sidebar()
-            Divider()
             WarRoomView()
-            Divider()
             RightRail()
         }
         .frame(minWidth: 1100, minHeight: 700)
