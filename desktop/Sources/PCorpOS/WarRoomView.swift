@@ -28,7 +28,7 @@ struct WarRoomView: View {
             // built, but pulled from the layout per direct feedback. Revisit
             // as its own session rather than tuning it inside other work.
             FrankOrb()
-                .frame(width: 150, height: 150)
+                .frame(width: 185, height: 185)
                 .frame(maxWidth: .infinity)
 
             Spacer(minLength: 20)
