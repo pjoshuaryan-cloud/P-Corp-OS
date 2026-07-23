@@ -73,7 +73,7 @@ private struct NavRow: View {
                     .resizable()
                     .renderingMode(.template)
                     .scaledToFit()
-                    .frame(width: 16, height: 16)
+                    .frame(width: 15, height: 15)
                     .frame(width: 20)
                     .foregroundStyle(isSelected ? Color.black : Color.black.opacity(0.55))
             } else {
