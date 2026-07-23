@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct RightRail: View {
+    @Binding var selectedID: UUID?
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -9,7 +10,7 @@ struct RightRail: View {
                 MissionStatusCard()
                 AgendaCard()
                 InsightsCard()
-                QuickActionsCard()
+                QuickActionsCard(selectedID: $selectedID)
             }
             .padding(22)
         }
@@ -166,6 +167,7 @@ private struct InsightsCard: View {
 }
 
 private struct QuickActionsCard: View {
+    @Binding var selectedID: UUID?
     private let columns = [GridItem(.flexible()), GridItem(.flexible())]
 
     var body: some View {
@@ -174,7 +176,14 @@ private struct QuickActionsCard: View {
             LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(PlaceholderData.quickActions) { action in
                     Button {
-                        // no-op: shell only, not wired up yet
+                        // Honest navigation to a real (if not-yet-built)
+                        // section — not faking functionality that isn't
+                        // built. See targetNavTitle in Models.swift.
+                        if let target = PlaceholderData.navItems.first(where: { $0.title == action.targetNavTitle }) {
+                            withAnimation(.easeOut(duration: 0.22)) {
+                                selectedID = target.id
+                            }
+                        }
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: action.systemImage)

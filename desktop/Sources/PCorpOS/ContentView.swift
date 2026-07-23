@@ -31,7 +31,7 @@ struct ContentView: View {
             .animation(.easeOut(duration: 0.18), value: selectedID)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            RightRail()
+            RightRail(selectedID: $selectedID)
         }
         .frame(minWidth: 1100, minHeight: 700)
     }

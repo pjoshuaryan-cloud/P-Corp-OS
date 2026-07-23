@@ -24,6 +24,9 @@ struct QuickAction: Identifiable {
     let id = UUID()
     let title: String
     let systemImage: String
+    /// Which nav section this navigates to when clicked — honest routing to
+    /// a real (if not-yet-built) section, not a fake action.
+    let targetNavTitle: String
 }
 
 enum PlaceholderData {
@@ -57,9 +60,9 @@ enum PlaceholderData {
     ]
 
     static let quickActions: [QuickAction] = [
-        QuickAction(title: "New Mission", systemImage: "plus"),
-        QuickAction(title: "Start Deep Work", systemImage: "timer"),
-        QuickAction(title: "Ask Frank", systemImage: "waveform"),
-        QuickAction(title: "Run Report", systemImage: "chart.bar"),
+        QuickAction(title: "New Mission", systemImage: "plus", targetNavTitle: "War Room"),
+        QuickAction(title: "Start Deep Work", systemImage: "timer", targetNavTitle: "Calendar"),
+        QuickAction(title: "Ask Frank", systemImage: "waveform", targetNavTitle: "War Room"),
+        QuickAction(title: "Run Report", systemImage: "chart.bar", targetNavTitle: "Trading Division"),
     ]
 }
