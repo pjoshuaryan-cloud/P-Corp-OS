@@ -210,20 +210,31 @@ private struct BlobShape: Shape {
     }
 }
 
-/// The P Corp OS mark for the top bar. Joshua pointed to the simpler P shown
-/// in his own reference mockup (not the angular folded-ribbon version from a
-/// different reference image) — a clean, bold, fairly conventional P
-/// letterform. After two rounds of hand-built vector paths that didn't quite
-/// land, a styled system-font glyph is the more reliable choice at this size
-/// and simplicity than continuing to guess coordinates: a well-chosen bold,
-/// rounded-design "P" naturally has the soft, consistent proportions the
-/// mockup shows, without more approximation error. If this still isn't a
-/// match, the reliable fix is the same as before — the actual source asset.
+/// The real P Corp OS mark — Joshua's actual source file (`Resources/P_logo.pdf`,
+/// bundled via SPM resources in Package.swift), not a hand-built approximation.
+/// Ends the guesswork from the two prior attempts (a rounded stem+bowl path,
+/// then an angular folded-ribbon path) — this renders the exact vector he
+/// provided.
 private struct PLogoMark: View {
+    private static let image: NSImage? = {
+        guard let url = Bundle.module.url(forResource: "P_logo", withExtension: "pdf") else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
+    }()
+
     var body: some View {
-        Text("P")
-            .font(.system(size: 24, weight: .bold, design: .rounded))
-            .foregroundStyle(Color.black)
-            .frame(width: 16, height: 22, alignment: .center)
+        Group {
+            if let nsImage = Self.image {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                // Fallback only if the resource fails to load at runtime —
+                // should not happen if the build succeeded.
+                Text("P").font(.system(size: 24, weight: .bold, design: .rounded))
+            }
+        }
+        .frame(width: 20, height: 24)
     }
 }

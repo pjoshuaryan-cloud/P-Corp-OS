@@ -9,7 +9,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "PCorpOS",
-            path: "Sources/PCorpOS"
+            path: "Sources/PCorpOS",
+            resources: [
+                .copy("Resources/P_logo.pdf")
+            ]
         )
     ]
 )
