@@ -57,6 +57,7 @@ private struct MissionStatusCard: View {
     // Placeholder value — not wired to anything real yet.
     private let progress: Double = 0.68
     @Environment(\.appTheme) private var theme
+    @State private var animatedProgress: Double = 0
 
     var body: some View {
         CardContainer {
@@ -77,10 +78,15 @@ private struct MissionStatusCard: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(theme.textPrimary.opacity(0.1))
                     Capsule().fill(theme.textPrimary)
-                        .frame(width: proxy.size.width * progress)
+                        .frame(width: proxy.size.width * animatedProgress)
                 }
             }
             .frame(height: 5)
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.9).delay(0.15)) {
+                    animatedProgress = progress
+                }
+            }
 
             HStack {
                 Text("Focus: Build systems that scale")

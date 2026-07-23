@@ -34,6 +34,7 @@ extension View {
 struct PillButtonStyle: ButtonStyle {
     var filled: Bool = true
     @Environment(\.appTheme) private var theme
+    @State private var isHovering = false
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -41,11 +42,23 @@ struct PillButtonStyle: ButtonStyle {
             .padding(.horizontal, 16)
             .padding(.vertical, 9)
             .background(
-                Capsule().fill(filled ? theme.accentFill : theme.textPrimary.opacity(0.06))
+                Capsule().fill(fillColor(pressed: configuration.isPressed))
             )
             .foregroundStyle(filled ? theme.accentText : theme.textPrimary)
-            .opacity(configuration.isPressed ? 0.85 : 1)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .scaleEffect(configuration.isPressed ? 0.97 : (isHovering ? 1.015 : 1))
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.12), value: isHovering)
+            .onHover { isHovering = $0 }
+    }
+
+    private func fillColor(pressed: Bool) -> Color {
+        if filled {
+            return pressed ? theme.accentFill.opacity(0.85) : theme.accentFill
+        }
+        if pressed { return theme.textPrimary.opacity(0.11) }
+        if isHovering { return theme.textPrimary.opacity(0.09) }
+        return theme.textPrimary.opacity(0.055)
     }
 }
 

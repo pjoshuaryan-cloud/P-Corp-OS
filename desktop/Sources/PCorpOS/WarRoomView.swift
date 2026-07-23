@@ -3,6 +3,7 @@ import SwiftUI
 struct WarRoomView: View {
     @State private var inputText: String = ""
     @Environment(\.appTheme) private var theme
+    @FocusState private var isInputFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -93,6 +94,7 @@ struct WarRoomView: View {
                 .textFieldStyle(.plain)
                 .font(PCorpFont.body(14))
                 .foregroundStyle(theme.textPrimary)
+                .focused($isInputFocused)
 
             Button {
                 // no-op: shell only, not wired up yet
@@ -113,9 +115,10 @@ struct WarRoomView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 24)
-                .strokeBorder(theme.surfaceBorder)
+                .strokeBorder(isInputFocused ? theme.textPrimary.opacity(0.22) : theme.surfaceBorder, lineWidth: isInputFocused ? 1.5 : 1)
         )
-        .shadow(color: theme.cardShadow, radius: 16, x: 0, y: 6)
+        .shadow(color: theme.cardShadow, radius: isInputFocused ? 20 : 16, x: 0, y: isInputFocused ? 8 : 6)
+        .animation(.easeOut(duration: 0.15), value: isInputFocused)
     }
 }
 
