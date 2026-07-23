@@ -18,6 +18,9 @@ struct InsightItem: Identifiable {
     let systemImage: String
     let title: String
     let detail: String
+    /// Which nav section this relates to — same honest-routing pattern as
+    /// QuickAction, so clicking an insight isn't a dead end.
+    let targetNavTitle: String
 }
 
 struct QuickAction: Identifiable {
@@ -54,9 +57,9 @@ enum PlaceholderData {
     ]
 
     static let insights: [InsightItem] = [
-        InsightItem(systemImage: "target", title: "Placeholder Insight", detail: "Example of an opportunity Frank might surface here."),
-        InsightItem(systemImage: "chart.line.uptrend.xyaxis", title: "Placeholder Signal", detail: "Example of a trading-related note Frank might surface here."),
-        InsightItem(systemImage: "clock", title: "Placeholder Optimization", detail: "Example of a scheduling note Frank might surface here."),
+        InsightItem(systemImage: "target", title: "Placeholder Insight", detail: "Example of an opportunity Frank might surface here.", targetNavTitle: "Alpha Mode Media"),
+        InsightItem(systemImage: "chart.line.uptrend.xyaxis", title: "Placeholder Signal", detail: "Example of a trading-related note Frank might surface here.", targetNavTitle: "Trading Division"),
+        InsightItem(systemImage: "clock", title: "Placeholder Optimization", detail: "Example of a scheduling note Frank might surface here.", targetNavTitle: "Calendar"),
     ]
 
     static let quickActions: [QuickAction] = [

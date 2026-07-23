@@ -8,8 +8,8 @@ struct RightRail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 MissionStatusCard()
-                AgendaCard()
-                InsightsCard()
+                AgendaCard(selectedID: $selectedID)
+                InsightsCard(selectedID: $selectedID)
                 QuickActionsCard(selectedID: $selectedID)
             }
             .padding(22)
@@ -39,6 +39,38 @@ private struct CardContainer<Content: View>: View {
                 .strokeBorder(theme.surfaceBorder)
         )
         .shadow(color: theme.cardShadow, radius: 12, x: 0, y: 4)
+    }
+}
+
+/// Shared navigation helper — honest routing to a real (if not-yet-built)
+/// section, same pattern used by Quick Actions and Insights.
+private func navigate(to title: String, selectedID: Binding<UUID?>) {
+    if let target = PlaceholderData.navItems.first(where: { $0.title == title }) {
+        withAnimation(.easeOut(duration: 0.22)) {
+            selectedID.wrappedValue = target.id
+        }
+    }
+}
+
+/// A text-styled "link" with real hover feedback — for "View full calendar"
+/// / "View all," which previously looked clickable but did nothing.
+private struct LinkTextButton: View {
+    let title: String
+    let action: () -> Void
+    @Environment(\.appTheme) private var theme
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(PCorpFont.body(11, weight: .semibold))
+                .foregroundStyle(isHovering ? theme.textPrimary : theme.textSecondary)
+                .underline(isHovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
+        }
     }
 }
 
@@ -103,6 +135,7 @@ private struct MissionStatusCard: View {
 }
 
 private struct AgendaCard: View {
+    @Binding var selectedID: UUID?
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -123,15 +156,16 @@ private struct AgendaCard: View {
             }
             HStack {
                 Spacer()
-                Text("View full calendar")
-                    .font(PCorpFont.body(11, weight: .semibold))
-                    .foregroundStyle(theme.textSecondary)
+                LinkTextButton(title: "View full calendar") {
+                    navigate(to: "Calendar", selectedID: $selectedID)
+                }
             }
         }
     }
 }
 
 private struct InsightsCard: View {
+    @Binding var selectedID: UUID?
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -139,29 +173,60 @@ private struct InsightsCard: View {
             HStack {
                 SectionLabel(text: "FRANK'S INSIGHTS")
                 Spacer()
-                Text("View all")
-                    .font(PCorpFont.body(11, weight: .semibold))
-                    .foregroundStyle(theme.textSecondary)
+                LinkTextButton(title: "View all") {
+                    navigate(to: "Frank", selectedID: $selectedID)
+                }
             }
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(PlaceholderData.insights) { insight in
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: insight.systemImage)
-                            .font(.system(size: 13))
-                            .foregroundStyle(theme.textPrimary)
-                            .frame(width: 22, height: 22)
-                            .background(Circle().fill(theme.textPrimary.opacity(0.06)))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(insight.title)
-                                .font(PCorpFont.body(12.5, weight: .semibold))
-                                .foregroundStyle(theme.textPrimary)
-                            Text(insight.detail)
-                                .font(PCorpFont.body(11.5))
-                                .foregroundStyle(theme.textSecondary)
-                        }
-                    }
+                    InsightRow(insight: insight, selectedID: $selectedID)
                 }
             }
+        }
+    }
+}
+
+private struct InsightRow: View {
+    let insight: InsightItem
+    @Binding var selectedID: UUID?
+    @Environment(\.appTheme) private var theme
+    @State private var isHovering = false
+
+    var body: some View {
+        Button {
+            navigate(to: insight.targetNavTitle, selectedID: $selectedID)
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: insight.systemImage)
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.textPrimary)
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(theme.textPrimary.opacity(0.06)))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(insight.title)
+                        .font(PCorpFont.body(12.5, weight: .semibold))
+                        .foregroundStyle(theme.textPrimary)
+                    Text(insight.detail)
+                        .font(PCorpFont.body(11.5))
+                        .foregroundStyle(theme.textSecondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(theme.textSecondary)
+                    .opacity(isHovering ? 1 : 0)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isHovering ? theme.textPrimary.opacity(0.04) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
         }
     }
 }
