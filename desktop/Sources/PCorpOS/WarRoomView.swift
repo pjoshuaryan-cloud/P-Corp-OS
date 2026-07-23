@@ -115,120 +115,101 @@ struct WarRoomView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 24)
-                .strokeBorder(isInputFocused ? theme.textPrimary.opacity(0.22) : theme.surfaceBorder, lineWidth: isInputFocused ? 1.5 : 1)
+                .strokeBorder(isInputFocused ? theme.textPrimary : theme.surfaceBorder, lineWidth: isInputFocused ? 2 : 1)
         )
         .shadow(color: theme.cardShadow, radius: isInputFocused ? 20 : 16, x: 0, y: isInputFocused ? 8 : 6)
         .animation(.easeOut(duration: 0.15), value: isInputFocused)
     }
 }
 
-/// A restrained stand-in for Frank's presence — organic, floating,
-/// continuously and slowly changing shape, no mascot features (no face, no
-/// eyes). FOUNDER_BRIEF.md and UI_GUIDELINES.md are explicit that Frank's
-/// presence should come from behavior, not a character on screen; this is
-/// deliberately just texture and motion, nothing more. The continuous
-/// morph (rather than a static shape that only floats) is what pushes it
-/// from "liquid" toward "surreal" — it never settles into a fixed form.
+/// A restrained stand-in for Frank's presence — now a cluster of individual
+/// particles rather than one solid shape, per direct feedback ("a blob of
+/// particles floating" instead of a continuous liquid form). No mascot
+/// features (no face, no eyes) — presence still comes from motion and
+/// texture only, per FOUNDER_BRIEF.md/UI_GUIDELINES.md's anti-mascot
+/// direction. Unlike the earlier hand-particle attempt, this doesn't sample
+/// a bitmap — particle positions are generated directly from a deterministic
+/// seeded random sequence, which is simple and reliable enough to trust
+/// without a visual preview (the risk there was in reading pixels back out
+/// of a rendered image; there's no such step here).
 private struct FrankOrb: View {
     @State private var floatUp = false
-    @State private var morphPhase: CGFloat = 0
+    @Environment(\.appTheme) private var theme
+
+    private struct Particle {
+        let angle: Double
+        let radiusFactor: Double // 0...1, distance from center as a fraction of the cluster's radius
+        let size: CGFloat
+        let phaseOffset: Double
+    }
+
+    /// Deterministic (fixed seed), not true randomness — same layout every
+    /// launch, matching the rest of the shell's "reproducible, not jittery
+    /// between runs" pattern.
+    private static let particles: [Particle] = {
+        var rng = SeededGenerator(seed: 7)
+        return (0..<120).map { _ in
+            let angle = Double.random(in: 0..<(2 * .pi), using: &rng)
+            // Squaring biases points toward the center for a denser core that
+            // thins out toward the edge, rather than a uniform-density disc.
+            let radiusFactor = pow(Double.random(in: 0...1, using: &rng), 1.7)
+            let size = CGFloat.random(in: 2.0...5.0, using: &rng)
+            let phaseOffset = Double.random(in: 0..<(2 * .pi), using: &rng)
+            return Particle(angle: angle, radiusFactor: radiusFactor, size: size, phaseOffset: phaseOffset)
+        }
+    }()
 
     var body: some View {
         ZStack {
-            // Soft contact shadow — grounds the shape so the float reads as
-            // floating rather than just sliding up and down in empty space.
+            // Soft contact shadow — grounds the cluster so the float reads
+            // as floating rather than just sliding up and down in place.
             Ellipse()
-                .fill(Color.black.opacity(floatUp ? 0.10 : 0.22))
+                .fill(theme.textPrimary.opacity(floatUp ? 0.08 : 0.16))
                 .frame(width: floatUp ? 100 : 72, height: floatUp ? 14 : 10)
                 .blur(radius: 8)
                 .offset(y: 74)
 
-            BlobShape(phase: morphPhase)
-                .fill(
-                    RadialGradient(
-                        colors: [Color(white: 0.32), Color(white: 0.05), Color.black],
-                        center: UnitPoint(x: 0.32, y: 0.28),
-                        startRadius: 3,
-                        endRadius: 110
-                    )
-                )
-                .overlay(
-                    // Tight, bright specular highlight — glossy/liquid surfaces
-                    // catch light in a small defined spot, not a broad soft glow.
-                    BlobShape(phase: morphPhase)
-                        .fill(Color.white.opacity(0.6))
-                        .blur(radius: 5)
-                        .frame(width: 32, height: 20)
-                        .offset(x: -22, y: -30)
-                        .mask(BlobShape(phase: morphPhase))
-                )
-                .overlay(
-                    // Faint rim light along the lower edge, as if reflecting
-                    // ambient light from the surface below — reinforces volume.
-                    BlobShape(phase: morphPhase)
-                        .fill(Color.white.opacity(0.08))
-                        .blur(radius: 8)
-                        .offset(x: 14, y: 26)
-                        .mask(BlobShape(phase: morphPhase))
-                )
-                .offset(y: floatUp ? -10 : 10)
+            TimelineView(.animation) { timeline in
+                Canvas { context, size in
+                    let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                    let maxRadius = min(size.width, size.height) / 2
+                    let t = timeline.date.timeIntervalSinceReferenceDate
+
+                    for particle in Self.particles {
+                        let r = maxRadius * particle.radiusFactor
+                        let x = center.x + r * cos(particle.angle)
+                        let y = center.y + r * sin(particle.angle)
+
+                        // Per-particle shimmer, out of phase with its
+                        // neighbors, so the cluster reads as alive rather
+                        // than a static scatter of dots.
+                        let shimmer = (sin(t * 0.9 + particle.phaseOffset) + 1) / 2 // 0...1
+                        let baseOpacity = 0.18 + (1 - particle.radiusFactor) * 0.62
+                        let opacity = baseOpacity * (0.55 + shimmer * 0.45)
+                        let dotSize = particle.size * (0.85 + shimmer * 0.15)
+
+                        let rect = CGRect(x: x - dotSize / 2, y: y - dotSize / 2, width: dotSize, height: dotSize)
+                        context.fill(Path(ellipseIn: rect), with: .color(theme.textPrimary.opacity(opacity)))
+                    }
+                }
+            }
+            .offset(y: floatUp ? -10 : 10)
         }
         .animation(.easeInOut(duration: 3.4).repeatForever(autoreverses: true), value: floatUp)
-        .onAppear {
-            floatUp = true
-            withAnimation(.linear(duration: 9).repeatForever(autoreverses: false)) {
-                morphPhase = 2 * .pi
-            }
-        }
+        .onAppear { floatUp = true }
     }
 }
 
-/// An irregular closed shape — not a perfect circle, not fixed. Points are
-/// spaced around a circle with per-point base variance, then perturbed by a
-/// slow sine wave driven by `phase`; smoothing through midpoints keeps the
-/// outline organic rather than polygonal. Because `phase` is animatable,
-/// SwiftUI interpolates the actual path continuously as it changes, so the
-/// silhouette itself keeps drifting — not just its position — for a more
-/// surreal, alive quality rather than a static shape that only floats.
-private struct BlobShape: Shape {
-    var phase: CGFloat
-
-    var animatableData: CGFloat {
-        get { phase }
-        set { phase = newValue }
-    }
-
-    private let baseVariance: [CGFloat] = [
-        1.00, 1.04, 1.02, 1.07, 0.97, 1.03, 0.94, 1.05,
-        0.98, 1.06, 0.95, 1.02, 0.99, 1.05, 0.96, 1.01,
-    ]
-    private let wobbleAmplitude: CGFloat = 0.05
-
-    func path(in rect: CGRect) -> Path {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let baseRadius = min(rect.width, rect.height) / 2
-        let count = baseVariance.count
-
-        let points: [CGPoint] = (0..<count).map { i in
-            let angle = (CGFloat(i) / CGFloat(count)) * 2 * .pi
-            let wobble = sin(phase + CGFloat(i) * 0.9) * wobbleAmplitude
-            let r = baseRadius * (baseVariance[i] + wobble)
-            return CGPoint(x: center.x + r * cos(angle), y: center.y + r * sin(angle))
-        }
-
-        var path = Path()
-        path.move(to: midpoint(points[count - 1], points[0]))
-        for i in 0..<count {
-            let p1 = points[i]
-            let p2 = points[(i + 1) % count]
-            path.addQuadCurve(to: midpoint(p1, p2), control: p1)
-        }
-        path.closeSubpath()
-        return path
-    }
-
-    private func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
-        CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+/// A minimal deterministic random generator (linear congruential) — used
+/// wherever this shell needs "random-looking but reproducible every launch"
+/// placement, since Swift's default generator is intentionally
+/// non-reproducible between runs.
+private struct SeededGenerator: RandomNumberGenerator {
+    private var state: UInt64
+    init(seed: UInt64) { self.state = seed }
+    mutating func next() -> UInt64 {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return state
     }
 }
 
