@@ -145,18 +145,18 @@ private struct FrankOrb: View {
 
     /// Deterministic (fixed seed), not true randomness — same layout every
     /// launch, matching the rest of the shell's "reproducible, not jittery
-    /// between runs" pattern. Bumped from 120 to 260 particles and slightly
-    /// smaller dot sizes per direct feedback ("more particles") — more, and
-    /// individually smaller, so it reads as a denser cloud rather than
-    /// just bigger dots.
+    /// between runs" pattern. Bumped again, 260 -> 450, with larger dot sizes
+    /// and higher base opacity per direct feedback ("more particles... it
+    /// must be bolder") — this pass deliberately goes for a denser, more
+    /// solid-reading cluster rather than a faint scatter.
     private static let particles: [Particle] = {
         var rng = SeededGenerator(seed: 7)
-        return (0..<260).map { _ in
+        return (0..<450).map { _ in
             let angle = Double.random(in: 0..<(2 * .pi), using: &rng)
             // Squaring biases points toward the center for a denser core that
             // thins out toward the edge, rather than a uniform-density disc.
             let radiusFactor = pow(Double.random(in: 0...1, using: &rng), 1.7)
-            let size = CGFloat.random(in: 1.6...4.2, using: &rng)
+            let size = CGFloat.random(in: 2.2...5.8, using: &rng)
             let phaseOffset = Double.random(in: 0..<(2 * .pi), using: &rng)
             return Particle(angle: angle, radiusFactor: radiusFactor, size: size, phaseOffset: phaseOffset)
         }
@@ -193,8 +193,11 @@ private struct FrankOrb: View {
                         // so the blob visibly moves in sync with speech
                         // rather than an unrelated idle animation.
                         let shimmer = (sin(t * 0.9 + particle.phaseOffset) + 1) / 2 // 0...1
-                        let baseOpacity = 0.18 + (1 - particle.radiusFactor) * 0.62
-                        let opacity = baseOpacity * (0.55 + shimmer * 0.45)
+                        // Higher floor and higher center value than before —
+                        // this is the "bolder" lever: less see-through overall,
+                        // a genuinely solid-reading core, not just more dots.
+                        let baseOpacity = 0.32 + (1 - particle.radiusFactor) * 0.68
+                        let opacity = min(baseOpacity * (0.7 + shimmer * 0.3), 1.0)
                         let dotSize = particle.size * (0.85 + shimmer * 0.15)
 
                         let rect = CGRect(x: x - dotSize / 2, y: y - dotSize / 2, width: dotSize, height: dotSize)
