@@ -3,13 +3,13 @@ import SwiftUI
 struct RightRail: View {
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 22) {
                 MissionStatusCard()
                 AgendaCard()
                 InsightsCard()
                 QuickActionsCard()
             }
-            .padding(16)
+            .padding(22)
         }
         .frame(minWidth: 300, idealWidth: 320)
         .background(Color(white: 0.98))

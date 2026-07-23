@@ -11,7 +11,8 @@ let package = Package(
             name: "PCorpOS",
             path: "Sources/PCorpOS",
             resources: [
-                .copy("Resources/P_logo.pdf")
+                .copy("Resources/P_logo.pdf"),
+                .copy("Resources/alpha_mode_logo.png")
             ]
         )
     ]
