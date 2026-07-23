@@ -1,4 +1,3 @@
-import PDFKit
 import SwiftUI
 
 struct WarRoomView: View {
@@ -211,45 +210,18 @@ private struct BlobShape: Shape {
     }
 }
 
-/// The real P Corp OS mark — Joshua's actual source file (`Resources/P_logo.pdf`,
-/// bundled via SPM resources in Package.swift), not a hand-built approximation.
-/// Ends the guesswork from the two prior attempts (a rounded stem+bowl path,
-/// then an angular folded-ribbon path) — this renders the exact vector he
-/// provided.
+/// Placeholder P mark — a plain styled glyph, deliberately not the real
+/// logo. Three rendering attempts at the actual mark (a hand-built rounded
+/// stem+bowl path, a hand-built angular folded-ribbon path, and rendering
+/// Joshua's real P_logo.pdf via PDFKit) all fell short on direct feedback.
+/// Rather than keep tuning something not working, Joshua asked to park it —
+/// the real source file still lives at `Resources/P_logo.pdf` and is still
+/// bundled in `Package.swift` for whenever the logo work picks back up.
 private struct PLogoMark: View {
-    private static let displaySize: CGFloat = 40
-
-    /// `NSImage(contentsOf:)` was rasterizing the PDF at some low default
-    /// resolution and getting scaled up blurry — tiny and low quality, per
-    /// direct feedback. PDFKit's `PDFPage.thumbnail(of:for:)` renders the
-    /// actual vector at whatever pixel size is requested, so this renders at
-    /// the display's real backing scale (2x/3x on Retina) instead of
-    /// upscaling a low-res bitmap.
-    private static let image: NSImage? = {
-        guard
-            let url = Bundle.module.url(forResource: "P_logo", withExtension: "pdf"),
-            let document = PDFDocument(url: url),
-            let page = document.page(at: 0)
-        else {
-            return nil
-        }
-        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-        let pixelSize = CGSize(width: displaySize * scale, height: displaySize * scale)
-        return page.thumbnail(of: pixelSize, for: .mediaBox)
-    }()
-
     var body: some View {
-        Group {
-            if let nsImage = Self.image {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .scaledToFit()
-            } else {
-                // Fallback only if the resource fails to load at runtime —
-                // should not happen if the build succeeded.
-                Text("P").font(.system(size: 24, weight: .bold, design: .rounded))
-            }
-        }
-        .frame(width: Self.displaySize, height: Self.displaySize)
+        Text("P")
+            .font(.system(size: 22, weight: .bold, design: .rounded))
+            .foregroundStyle(Color.black)
+            .frame(width: 20, height: 24, alignment: .center)
     }
 }
