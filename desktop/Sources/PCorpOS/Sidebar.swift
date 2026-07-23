@@ -18,7 +18,13 @@ struct Sidebar: View {
                     .foregroundStyle(theme.textSecondary)
             }
             .padding(.horizontal, 22)
-            .padding(.top, 28)
+            // Extra top clearance (not just visual breathing room): with
+            // .hiddenTitleBar, macOS still reserves the top-left ~78x28pt for
+            // the traffic-light window controls. 28pt of top padding put this
+            // header's first line right where those buttons sit. Pushing
+            // content down clear of that zone entirely avoids the collision
+            // without needing to fuss over horizontal position too.
+            .padding(.top, 40)
             .padding(.bottom, 28)
 
             ScrollView {

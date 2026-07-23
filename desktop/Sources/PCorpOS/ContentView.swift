@@ -7,6 +7,10 @@ import SwiftUI
 /// still no backend, no data, no wired-up actions beyond switching views.
 struct ContentView: View {
     @State private var selectedID: UUID? = PlaceholderData.navItems.first?.id
+    // Launch fade-in: FOUNDER_BRIEF.md's own description of opening the app
+    // is explicit — "no loading spinner... the screen fades in." Starts
+    // transparent, fades to full opacity right on appear.
+    @State private var hasAppeared = false
 
     private var selectedItem: NavItem {
         PlaceholderData.navItems.first { $0.id == selectedID } ?? PlaceholderData.navItems[0]
@@ -34,6 +38,12 @@ struct ContentView: View {
             RightRail(selectedID: $selectedID)
         }
         .frame(minWidth: 1100, minHeight: 700)
+        .opacity(hasAppeared ? 1 : 0)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.5)) {
+                hasAppeared = true
+            }
+        }
     }
 }
 
