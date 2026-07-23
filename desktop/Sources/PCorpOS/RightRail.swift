@@ -15,7 +15,8 @@ struct RightRail: View {
             .padding(22)
         }
         .frame(minWidth: 300, idealWidth: 320)
-        .background(theme.surface)
+        .background(.ultraThinMaterial)
+        .background(theme.surface.opacity(0.3))
     }
 }
 
@@ -32,7 +33,11 @@ private struct CardContainer<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 18)
-                .fill(theme.background)
+                .fill(.regularMaterial) // slightly more opaque than the rail behind it, so card text stays legible
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(theme.background.opacity(0.35))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18)

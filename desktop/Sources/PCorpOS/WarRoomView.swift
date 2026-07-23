@@ -111,7 +111,11 @@ struct WarRoomView: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 24)
-                .fill(theme.surface)
+                .fill(.ultraThinMaterial)
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(theme.surface.opacity(0.3))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 24)

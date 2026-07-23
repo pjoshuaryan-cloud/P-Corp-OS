@@ -40,7 +40,7 @@ struct ContentView: View {
         .frame(minWidth: 1100, minHeight: 700)
         .opacity(hasAppeared ? 1 : 0)
         .onAppear {
-            withAnimation(.easeOut(duration: 0.5)) {
+            withAnimation(.easeOut(duration: 1.1)) {
                 hasAppeared = true
             }
         }

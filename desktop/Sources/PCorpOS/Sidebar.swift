@@ -60,7 +60,8 @@ struct Sidebar: View {
             .padding(.vertical, 24)
         }
         .frame(minWidth: 220, idealWidth: 240)
-        .background(theme.surface)
+        .background(.ultraThinMaterial)
+        .background(theme.surface.opacity(0.3)) // faint theme tint under the glass so it doesn't go fully neutral
     }
 }
 
