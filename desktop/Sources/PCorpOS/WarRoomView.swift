@@ -1,3 +1,4 @@
+import PDFKit
 import SwiftUI
 
 struct WarRoomView: View {
@@ -216,11 +217,25 @@ private struct BlobShape: Shape {
 /// then an angular folded-ribbon path) — this renders the exact vector he
 /// provided.
 private struct PLogoMark: View {
+    private static let displaySize: CGFloat = 40
+
+    /// `NSImage(contentsOf:)` was rasterizing the PDF at some low default
+    /// resolution and getting scaled up blurry — tiny and low quality, per
+    /// direct feedback. PDFKit's `PDFPage.thumbnail(of:for:)` renders the
+    /// actual vector at whatever pixel size is requested, so this renders at
+    /// the display's real backing scale (2x/3x on Retina) instead of
+    /// upscaling a low-res bitmap.
     private static let image: NSImage? = {
-        guard let url = Bundle.module.url(forResource: "P_logo", withExtension: "pdf") else {
+        guard
+            let url = Bundle.module.url(forResource: "P_logo", withExtension: "pdf"),
+            let document = PDFDocument(url: url),
+            let page = document.page(at: 0)
+        else {
             return nil
         }
-        return NSImage(contentsOf: url)
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let pixelSize = CGSize(width: displaySize * scale, height: displaySize * scale)
+        return page.thumbnail(of: pixelSize, for: .mediaBox)
     }()
 
     var body: some View {
@@ -235,6 +250,6 @@ private struct PLogoMark: View {
                 Text("P").font(.system(size: 24, weight: .bold, design: .rounded))
             }
         }
-        .frame(width: 20, height: 24)
+        .frame(width: Self.displaySize, height: Self.displaySize)
     }
 }
