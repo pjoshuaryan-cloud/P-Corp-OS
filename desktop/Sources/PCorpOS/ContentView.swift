@@ -39,20 +39,22 @@ struct ContentView: View {
 /// what actually exists rather than faking depth that isn't there.
 private struct SectionPlaceholderView: View {
     let item: NavItem
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: item.systemImage)
                 .font(.system(size: 34, weight: .regular))
-                .foregroundStyle(Color.black.opacity(0.25))
+                .foregroundStyle(theme.textPrimary.opacity(0.25))
             Text(item.title)
                 .font(PCorpFont.display(22))
+                .foregroundStyle(theme.textPrimary)
             Text("Not built yet.")
                 .font(PCorpFont.body(13))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.textSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.white)
+        .background(theme.background)
     }
 }
 

@@ -2,20 +2,37 @@ import SwiftUI
 
 /// The first section beyond War Room with real, interactive content instead
 /// of a placeholder — toggles actually flip and hold state. Nothing here is
-/// wired to a backend or persisted anywhere; this is Phase 2 (buttons work,
-/// navigation works, still no intelligence), not Phase 3+.
+/// wired to a backend or persisted anywhere (except dark mode, which is
+/// deliberately real — it drives AppTheme app-wide via @AppStorage, not a
+/// no-op switch). Still Phase 2 (buttons work, navigation works, still no
+/// intelligence), not Phase 3+.
 struct SettingsView: View {
     @State private var proactiveInsights = true
     @State private var soundEffects = false
     @State private var launchAtLogin = true
     @State private var showSystemStatus = true
 
+    // Same key as PCorpOSApp's @AppStorage — this is the actual toggle,
+    // not a placeholder; flipping it really switches the app's theme.
+    @AppStorage(AppStorageKeys.darkModeEnabled) private var darkModeEnabled = false
+
+    @Environment(\.appTheme) private var theme
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 Text("Settings")
                     .font(PCorpFont.display(28))
+                    .foregroundStyle(theme.textPrimary)
                     .padding(.top, 8)
+
+                SettingsSection(title: "APPEARANCE") {
+                    SettingsToggleRow(
+                        title: "Dark Mode",
+                        detail: "Switch P Corp OS to a dark theme.",
+                        isOn: $darkModeEnabled
+                    )
+                }
 
                 SettingsSection(title: "FRANK") {
                     SettingsToggleRow(
@@ -51,7 +68,7 @@ struct SettingsView: View {
             .frame(maxWidth: 560, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Color.white)
+        .background(theme.background)
     }
 
     /// A hairline separator between rows in a section — deliberately not a
@@ -59,7 +76,7 @@ struct SettingsView: View {
     /// divider lines were flagged and removed elsewhere in the shell).
     private var settingsSeparator: some View {
         Rectangle()
-            .fill(Color.black.opacity(0.06))
+            .fill(theme.textPrimary.opacity(0.06))
             .frame(height: 1)
             .padding(.leading, 16)
     }
@@ -68,6 +85,8 @@ struct SettingsView: View {
 private struct SettingsSection<Content: View>: View {
     let title: String
     let content: Content
+    @Environment(\.appTheme) private var theme
+
     init(title: String, @ViewBuilder content: () -> Content) {
         self.title = title
         self.content = content()
@@ -78,18 +97,18 @@ private struct SettingsSection<Content: View>: View {
             Text(title)
                 .font(PCorpFont.label(9.5))
                 .trackedLabel(1.6)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.textSecondary)
 
             VStack(spacing: 0) {
                 content
             }
             .background(
                 RoundedRectangle(cornerRadius: 16)
-                    .fill(Color(white: 0.98))
+                    .fill(theme.surface)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
-                    .strokeBorder(Color.black.opacity(0.06))
+                    .strokeBorder(theme.surfaceBorder)
             )
         }
     }
@@ -99,21 +118,23 @@ private struct SettingsToggleRow: View {
     let title: String
     let detail: String
     @Binding var isOn: Bool
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(PCorpFont.body(13, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
                 Text(detail)
                     .font(PCorpFont.body(11.5))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.textSecondary)
             }
             Spacer(minLength: 16)
             Toggle("", isOn: $isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
-                .tint(.black)
+                .tint(theme.textPrimary)
         }
         .padding(16)
     }

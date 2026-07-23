@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WarRoomView: View {
     @State private var inputText: String = ""
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
         VStack(spacing: 0) {
@@ -12,9 +13,10 @@ struct WarRoomView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Good morning, Joshx.")
                     .font(PCorpFont.display(38, weight: .bold))
+                    .foregroundStyle(theme.textPrimary)
                 Text("I'm Frank. How can I help you today?")
                     .font(PCorpFont.body(17))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.textSecondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 48)
@@ -32,7 +34,7 @@ struct WarRoomView: View {
                 .padding(.bottom, 32)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.white)
+        .background(theme.background)
     }
 
     private var topBar: some View {
@@ -40,9 +42,10 @@ struct WarRoomView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Good morning, Joshx.")
                     .font(PCorpFont.body(13, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
                 Text(Date.now.formatted(date: .complete, time: .omitted))
                     .font(PCorpFont.body(11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.textSecondary)
             }
 
             Spacer()
@@ -62,7 +65,7 @@ struct WarRoomView: View {
                 .buttonStyle(.pillFilled)
             }
             .font(.system(size: 15))
-            .foregroundStyle(.primary)
+            .foregroundStyle(theme.textPrimary)
         }
         .padding(.horizontal, 32)
         .padding(.vertical, 20)
@@ -71,19 +74,20 @@ struct WarRoomView: View {
     private var inputBar: some View {
         HStack(spacing: 12) {
             Image(systemName: "waveform")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.textSecondary)
             TextField("Talk to Frank...", text: $inputText)
                 .textFieldStyle(.plain)
                 .font(PCorpFont.body(14))
+                .foregroundStyle(theme.textPrimary)
 
             Button {
                 // no-op: shell only, not wired up yet
             } label: {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(theme.accentText)
                     .frame(width: 32, height: 32)
-                    .background(Circle().fill(Color.black))
+                    .background(Circle().fill(theme.accentFill))
             }
             .buttonStyle(.plain)
         }
@@ -91,11 +95,11 @@ struct WarRoomView: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 24)
-                .fill(Color(white: 0.97))
+                .fill(theme.surface)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 24)
-                .strokeBorder(Color.black.opacity(0.08))
+                .strokeBorder(theme.surfaceBorder)
         )
     }
 }

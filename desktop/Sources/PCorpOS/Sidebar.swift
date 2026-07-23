@@ -2,6 +2,7 @@ import SwiftUI
 
 struct Sidebar: View {
     @Binding var selectedID: UUID?
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -9,10 +10,11 @@ struct Sidebar: View {
                 Text("P CORP OS")
                     .font(PCorpFont.display(15))
                     .trackedLabel(1.8)
+                    .foregroundStyle(theme.textPrimary)
                 Text("EXECUTIVE INTELLIGENCE")
                     .font(PCorpFont.label(9.5))
                     .trackedLabel(1.8)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.textSecondary)
             }
             .padding(.horizontal, 22)
             .padding(.top, 28)
@@ -35,30 +37,33 @@ struct Sidebar: View {
                 Text("SYSTEM STATUS")
                     .font(PCorpFont.label(9.5))
                     .trackedLabel(1.8)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.textSecondary)
                 HStack(spacing: 7) {
-                    Circle().fill(Color.black).frame(width: 7, height: 7)
+                    Circle().fill(theme.textPrimary).frame(width: 7, height: 7)
                     Text("All Systems Operational")
                         .font(PCorpFont.body(12.5))
+                        .foregroundStyle(theme.textPrimary)
                 }
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 24)
         }
         .frame(minWidth: 220, idealWidth: 240)
-        .background(Color(white: 0.98))
+        .background(theme.surface)
     }
 }
 
 private struct NavRow: View {
     let item: NavItem
     let isSelected: Bool
+    @Environment(\.appTheme) private var theme
 
     /// Alpha Mode Media's real brand mark, bundled from its actual brand
     /// assets (`Resources/alpha_mode_logo.png`) rather than a generic system
     /// icon. `.template` rendering mode treats it as an alpha mask, so it
-    /// tints the same way the SF Symbol icons do (black when selected,
-    /// muted otherwise) instead of showing a fixed color.
+    /// tints the same way the SF Symbol icons do (theme-colored, not a fixed
+    /// color) — including flipping black/white correctly between light and
+    /// dark mode along with everything else.
     private static let alphaModeLogo: Image? = {
         guard let url = Bundle.module.url(forResource: "alpha_mode_logo", withExtension: "png"),
               let nsImage = NSImage(contentsOf: url)
@@ -75,20 +80,20 @@ private struct NavRow: View {
                     .scaledToFit()
                     .frame(width: 15, height: 15)
                     .frame(width: 20)
-                    .foregroundStyle(isSelected ? Color.black : Color.black.opacity(0.55))
+                    .foregroundStyle(isSelected ? theme.textPrimary : theme.textPrimary.opacity(0.55))
             } else {
                 Image(systemName: item.systemImage)
                     .font(.system(size: 15))
                     .frame(width: 20)
-                    .foregroundStyle(isSelected ? Color.black : Color.black.opacity(0.55))
+                    .foregroundStyle(isSelected ? theme.textPrimary : theme.textPrimary.opacity(0.55))
             }
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title)
                     .font(PCorpFont.body(13, weight: .semibold))
-                    .foregroundStyle(Color.black)
+                    .foregroundStyle(theme.textPrimary)
                 Text(item.subtitle)
                     .font(PCorpFont.body(11))
-                    .foregroundStyle(Color.black.opacity(0.45))
+                    .foregroundStyle(theme.textTertiary)
             }
             Spacer(minLength: 0)
         }
@@ -96,7 +101,7 @@ private struct NavRow: View {
         .padding(.vertical, 11)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(isSelected ? Color.black.opacity(0.06) : Color.clear)
+                .fill(isSelected ? theme.textPrimary.opacity(0.06) : Color.clear)
         )
         .contentShape(Rectangle())
     }

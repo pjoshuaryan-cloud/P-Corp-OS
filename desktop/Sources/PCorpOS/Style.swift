@@ -33,6 +33,7 @@ extension View {
 /// `.borderedProminent` style, which only rounds corners slightly on macOS.
 struct PillButtonStyle: ButtonStyle {
     var filled: Bool = true
+    @Environment(\.appTheme) private var theme
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -40,9 +41,9 @@ struct PillButtonStyle: ButtonStyle {
             .padding(.horizontal, 16)
             .padding(.vertical, 9)
             .background(
-                Capsule().fill(filled ? Color.black : Color.black.opacity(0.055))
+                Capsule().fill(filled ? theme.accentFill : theme.textPrimary.opacity(0.06))
             )
-            .foregroundStyle(filled ? Color.white : Color.black)
+            .foregroundStyle(filled ? theme.accentText : theme.textPrimary)
             .opacity(configuration.isPressed ? 0.85 : 1)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
     }
