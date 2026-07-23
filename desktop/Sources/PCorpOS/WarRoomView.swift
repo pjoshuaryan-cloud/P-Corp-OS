@@ -19,12 +19,13 @@ struct WarRoomView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 48)
 
-            Spacer(minLength: 24)
+            Spacer(minLength: 20)
 
             FrankOrb()
-                .frame(width: 220, height: 220)
+                .frame(width: 150, height: 150)
+                .frame(maxWidth: .infinity)
 
-            Spacer(minLength: 32)
+            Spacer(minLength: 20)
 
             inputBar
                 .padding(.horizontal, 48)
@@ -46,9 +47,7 @@ struct WarRoomView: View {
 
             Spacer()
 
-            Image(systemName: "p.square")
-                .font(.system(size: 16))
-                .foregroundStyle(.secondary)
+            PLogoMark()
 
             Spacer()
 
@@ -101,80 +100,97 @@ struct WarRoomView: View {
     }
 }
 
-/// A restrained stand-in for Frank's presence — organic, floating, no mascot
-/// features (no face, no eyes). FOUNDER_BRIEF.md and UI_GUIDELINES.md are
-/// explicit that Frank's presence should come from behavior, not a character
-/// on screen; this shape is deliberately just texture and motion, nothing more.
+/// A restrained stand-in for Frank's presence — organic, floating,
+/// continuously and slowly changing shape, no mascot features (no face, no
+/// eyes). FOUNDER_BRIEF.md and UI_GUIDELINES.md are explicit that Frank's
+/// presence should come from behavior, not a character on screen; this is
+/// deliberately just texture and motion, nothing more. The continuous
+/// morph (rather than a static shape that only floats) is what pushes it
+/// from "liquid" toward "surreal" — it never settles into a fixed form.
 private struct FrankOrb: View {
     @State private var floatUp = false
+    @State private var morphPhase: CGFloat = 0
 
     var body: some View {
         ZStack {
             // Soft contact shadow — grounds the shape so the float reads as
             // floating rather than just sliding up and down in empty space.
-            // Wider and lighter while up, tighter and darker while down, like
-            // a real cast shadow responding to height above the surface.
             Ellipse()
                 .fill(Color.black.opacity(floatUp ? 0.10 : 0.22))
-                .frame(width: floatUp ? 150 : 105, height: floatUp ? 20 : 14)
-                .blur(radius: 10)
-                .offset(y: 108)
+                .frame(width: floatUp ? 100 : 72, height: floatUp ? 14 : 10)
+                .blur(radius: 8)
+                .offset(y: 74)
 
-            BlobShape()
+            BlobShape(phase: morphPhase)
                 .fill(
                     RadialGradient(
-                        colors: [Color(white: 0.30), Color(white: 0.05), Color.black],
+                        colors: [Color(white: 0.32), Color(white: 0.05), Color.black],
                         center: UnitPoint(x: 0.32, y: 0.28),
-                        startRadius: 4,
-                        endRadius: 160
+                        startRadius: 3,
+                        endRadius: 110
                     )
                 )
                 .overlay(
                     // Tight, bright specular highlight — glossy/liquid surfaces
                     // catch light in a small defined spot, not a broad soft glow.
-                    BlobShape()
-                        .fill(Color.white.opacity(0.55))
-                        .blur(radius: 6)
-                        .frame(width: 46, height: 30)
-                        .offset(x: -34, y: -46)
-                        .mask(BlobShape())
+                    BlobShape(phase: morphPhase)
+                        .fill(Color.white.opacity(0.6))
+                        .blur(radius: 5)
+                        .frame(width: 32, height: 20)
+                        .offset(x: -22, y: -30)
+                        .mask(BlobShape(phase: morphPhase))
                 )
                 .overlay(
                     // Faint rim light along the lower edge, as if reflecting
                     // ambient light from the surface below — reinforces volume.
-                    BlobShape()
+                    BlobShape(phase: morphPhase)
                         .fill(Color.white.opacity(0.08))
-                        .blur(radius: 10)
-                        .offset(x: 20, y: 40)
-                        .mask(BlobShape())
+                        .blur(radius: 8)
+                        .offset(x: 14, y: 26)
+                        .mask(BlobShape(phase: morphPhase))
                 )
-                .offset(y: floatUp ? -14 : 14)
+                .offset(y: floatUp ? -10 : 10)
         }
         .animation(.easeInOut(duration: 3.4).repeatForever(autoreverses: true), value: floatUp)
-        .onAppear { floatUp = true }
+        .onAppear {
+            floatUp = true
+            withAnimation(.linear(duration: 9).repeatForever(autoreverses: false)) {
+                morphPhase = 2 * .pi
+            }
+        }
     }
 }
 
-/// A fixed, irregular closed shape — not a perfect circle. Built by taking
-/// points around a circle with per-point radius variance, then smoothing
-/// through their midpoints so the outline reads as organic and liquid rather
-/// than polygonal or faceted. More points and gentler variance than a first
-/// pass reads as "melty" instead of "gem-like." Deterministic (no randomness)
-/// so it looks the same every launch.
+/// An irregular closed shape — not a perfect circle, not fixed. Points are
+/// spaced around a circle with per-point base variance, then perturbed by a
+/// slow sine wave driven by `phase`; smoothing through midpoints keeps the
+/// outline organic rather than polygonal. Because `phase` is animatable,
+/// SwiftUI interpolates the actual path continuously as it changes, so the
+/// silhouette itself keeps drifting — not just its position — for a more
+/// surreal, alive quality rather than a static shape that only floats.
 private struct BlobShape: Shape {
-    private let radiusVariance: [CGFloat] = [
+    var phase: CGFloat
+
+    var animatableData: CGFloat {
+        get { phase }
+        set { phase = newValue }
+    }
+
+    private let baseVariance: [CGFloat] = [
         1.00, 1.04, 1.02, 1.07, 0.97, 1.03, 0.94, 1.05,
         0.98, 1.06, 0.95, 1.02, 0.99, 1.05, 0.96, 1.01,
     ]
+    private let wobbleAmplitude: CGFloat = 0.05
 
     func path(in rect: CGRect) -> Path {
         let center = CGPoint(x: rect.midX, y: rect.midY)
         let baseRadius = min(rect.width, rect.height) / 2
-        let count = radiusVariance.count
+        let count = baseVariance.count
 
         let points: [CGPoint] = (0..<count).map { i in
             let angle = (CGFloat(i) / CGFloat(count)) * 2 * .pi
-            let r = baseRadius * radiusVariance[i]
+            let wobble = sin(phase + CGFloat(i) * 0.9) * wobbleAmplitude
+            let r = baseRadius * (baseVariance[i] + wobble)
             return CGPoint(x: center.x + r * cos(angle), y: center.y + r * sin(angle))
         }
 
@@ -191,5 +207,31 @@ private struct BlobShape: Shape {
 
     private func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
         CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+    }
+}
+
+/// A custom geometric "P" mark for the top bar — not a system icon.
+/// Built from two shapes (a rounded stem, a bowl rounded only on its
+/// trailing edge) rather than rendered system text, so it reads as a fixed
+/// logomark regardless of font. Approximated from the reference mockup's
+/// general proportions, not traced from it — flag if the proportions are off.
+private struct PLogoMark: View {
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(Color.black)
+                .frame(width: 4, height: 20)
+
+            UnevenRoundedRectangle(
+                topLeadingRadius: 0,
+                bottomLeadingRadius: 0,
+                bottomTrailingRadius: 6,
+                topTrailingRadius: 6
+            )
+            .fill(Color.black)
+            .frame(width: 11, height: 12)
+            .offset(x: 2, y: 0)
+        }
+        .frame(width: 15, height: 20)
     }
 }
