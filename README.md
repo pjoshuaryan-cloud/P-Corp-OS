@@ -23,7 +23,7 @@ Then: summarize your understanding, flag any architectural concerns, and propose
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture (3 layers) | Skeleton |
 | [ROADMAP.md](ROADMAP.md) | Phased plan | Active — Phase 1 underway |
 | [TECH_STACK.md](TECH_STACK.md) | Technology decisions | Skeleton — all core decisions made; only iOS companion specifics open |
-| [UI_GUIDELINES.md](UI_GUIDELINES.md) | Design philosophy ("War Room") | Skeleton |
+| [UI_GUIDELINES.md](UI_GUIDELINES.md) | Design philosophy ("War Room") | Active |
 | [PERSONALITY_SPEC.md](PERSONALITY_SPEC.md) | Frank's personality/voice | Active |
 | [MEMORY_SYSTEM.md](MEMORY_SYSTEM.md) | Cross-device memory architecture | Stub |
 | [WAR_ROOM.md](WAR_ROOM.md) | Home-screen / mission-control UX | Stub |

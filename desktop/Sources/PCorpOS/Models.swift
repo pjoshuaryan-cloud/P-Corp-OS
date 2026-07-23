@@ -57,7 +57,7 @@ enum PlaceholderData {
     ]
 
     static let quickActions: [QuickAction] = [
-        QuickAction(title: "New Task", systemImage: "plus"),
+        QuickAction(title: "New Mission", systemImage: "plus"),
         QuickAction(title: "Start Deep Work", systemImage: "timer"),
         QuickAction(title: "Ask Frank", systemImage: "waveform"),
         QuickAction(title: "Run Report", systemImage: "chart.bar"),

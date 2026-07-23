@@ -10,7 +10,7 @@ struct WarRoomView: View {
             Spacer(minLength: 0)
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("Good morning, Joshua.")
+                Text("Good morning, Joshx.")
                     .font(.system(size: 34, weight: .semibold))
                 Text("I'm Frank. How can I help you today?")
                     .font(.system(size: 17))
@@ -37,7 +37,7 @@ struct WarRoomView: View {
     private var topBar: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Good morning, Joshua.")
+                Text("Good morning, Joshx.")
                     .font(.system(size: 13, weight: .medium))
                 Text(Date.now.formatted(date: .complete, time: .omitted))
                     .font(.system(size: 11))
@@ -58,7 +58,7 @@ struct WarRoomView: View {
                 Button {
                     // no-op: shell only, not wired up yet
                 } label: {
-                    Label("New Task", systemImage: "plus")
+                    Label("Mission", systemImage: "plus")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .buttonStyle(.borderedProminent)
