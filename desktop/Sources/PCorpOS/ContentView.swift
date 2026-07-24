@@ -46,6 +46,22 @@ struct ContentView: View {
                 hasAppeared = true
             }
             installKeyboardShortcutsIfNeeded()
+
+            // This is a raw, unbundled executable (built via `swift build`,
+            // not a proper Xcode-built .app) — diagnosed and confirmed that
+            // such processes don't automatically get normal foreground/key-
+            // window status the way a real .app does (activationPolicy came
+            // back .prohibited, isActive=false, keyWindow=false on launch),
+            // even though mouse/click events already worked fine throughout
+            // this shell (they route differently and don't require "key"
+            // status). Without this, the keyboard shortcut monitor below
+            // never received a single key event. Forcing it explicitly is
+            // the actual fix, confirmed working — not a workaround.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                NSApp.windows.first?.makeKeyAndOrderFront(nil)
+            }
         }
         .onDisappear {
             if let monitor = keyMonitor {
