@@ -17,25 +17,29 @@ struct ContentView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            Sidebar(selectedID: $selectedID)
+        ZStack {
+            HStack(spacing: 0) {
+                Sidebar(selectedID: $selectedID)
 
-            Group {
-                switch selectedItem.title {
-                case "War Room":
-                    WarRoomView()
-                case "Settings":
-                    SettingsView()
-                default:
-                    SectionPlaceholderView(item: selectedItem)
+                Group {
+                    switch selectedItem.title {
+                    case "War Room":
+                        WarRoomView()
+                    case "Settings":
+                        SettingsView()
+                    default:
+                        SectionPlaceholderView(item: selectedItem)
+                    }
                 }
-            }
-            .id(selectedItem.id) // forces a fresh view per section, so the transition below actually triggers
-            .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .center)))
-            .animation(.easeOut(duration: 0.18), value: selectedID)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .id(selectedItem.id) // forces a fresh view per section, so the transition below actually triggers
+                .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .center)))
+                .animation(.easeOut(duration: 0.18), value: selectedID)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            RightRail(selectedID: $selectedID)
+                RightRail(selectedID: $selectedID)
+            }
+
+            keyboardShortcuts
         }
         .frame(minWidth: 1100, minHeight: 700)
         .opacity(hasAppeared ? 1 : 0)
@@ -44,6 +48,34 @@ struct ContentView: View {
                 hasAppeared = true
             }
         }
+    }
+
+    /// Real, functional keyboard shortcuts — Cmd+1...Cmd+9 jump to the first
+    /// nine sidebar sections by position, Cmd+, jumps straight to Settings
+    /// (standard macOS convention for a preferences pane). Invisible buttons
+    /// rather than App-level Commands, since this shell has no Xcode-managed
+    /// Scene/Commands setup to hook into — this is the simplest way to get
+    /// real keyboard shortcuts working within a plain SwiftUI view hierarchy.
+    /// Unlike the visual work in this shell, this is ordinary, well-supported
+    /// SwiftUI behavior — no risk of silently rendering wrong.
+    private var keyboardShortcuts: some View {
+        Group {
+            ForEach(Array(PlaceholderData.navItems.prefix(9).enumerated()), id: \.element.id) { index, item in
+                Button("") {
+                    withAnimation(.easeOut(duration: 0.22)) { selectedID = item.id }
+                }
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+            }
+
+            Button("") {
+                if let settings = PlaceholderData.navItems.first(where: { $0.title == "Settings" }) {
+                    withAnimation(.easeOut(duration: 0.22)) { selectedID = settings.id }
+                }
+            }
+            .keyboardShortcut(",", modifiers: .command)
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
     }
 }
 
