@@ -36,6 +36,8 @@ The full per-device-keypair auth and `SMAppService` packaging haven't been start
 
 Asked directly, after a status review against `FOUNDER_BRIEF.md`'s "Current Priority" section (which names the trading robot as the actual priority, P Corp OS as the long-term background project): several consecutive sessions of substantial P Corp OS build time had accumulated, worth a deliberate check rather than assuming momentum should continue by default. **Joshua confirmed: trading robot stays the priority.** P Corp OS work pauses here, not abandoned — Phase 2 is mid-flight (working shell, backend, and first memory layer), just not the next thing to pick up by default.
 
+**Resumed 2026-07-24, explicitly at Joshua's request** (not by default/momentum — matches the guidance above). Asked which Layer 1 gap to build next (auth, cloud sync, or `SECURITY.md`'s permission model); Joshua chose `SECURITY.md`, since it's the explicit gate already blocking general tool-use and eventually the Trading Division integration. Now has a real, decided permission model (threat model scoped to what actually exists today, a three-tier tool classification borrowed directly from the same framework governing Claude's own actions this whole project) — see `SECURITY.md`. Deliberately document-only this pass: the local-auth-token gap it identified (no auth at all on the backend today) is real but was kept as a separate, explicitly flagged next step rather than bundled in.
+
 ## Next step
 
-Nothing on P Corp OS by default — trading robot is the active priority (confirmed 2026-07-24). Resume P Corp OS work when Joshua explicitly says so, not on general momentum.
+Add the local-auth-token check to the backend (`SECURITY.md`'s own flagged next step) — the one concrete gap identified but not yet fixed.

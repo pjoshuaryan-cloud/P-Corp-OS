@@ -8,6 +8,12 @@ decision with Joshua (2026-07-24): Frank should be able to save memories
 proactively, mid-conversation, without being asked — matching the founder
 brief's "name patterns unprompted" mandate — rather than requiring Joshua to
 trigger every save himself.
+
+Classified under SECURITY.md's permission model as "regular" (auto-allowed,
+no confirmation needed): local-only, reversible, no external effect. Any
+future tool with a real external effect (a trading action, sending an
+email, anything leaving this device) must be classified there before it
+ships, not defaulted into "regular" just because that's what existed so far.
 """
 
 from app.db import load_memory_records, save_memory_record
