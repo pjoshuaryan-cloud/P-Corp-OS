@@ -2,7 +2,7 @@
 
 A personal AI operating system, built layer by layer over a multi-year horizon. Not a product for others — an operating environment for Joshua Peters, with an executive-intelligence layer named **Frank** at its center.
 
-**Phase:** 2 — platform layer (desktop UI shell started 2026-07-23). Phase 0 (foundations) and the Phase 1 interview baseline are complete; Phase 1 continues informally per FOUNDER_BRIEF.md. See `ROADMAP.md`.
+**Phase:** 2 — platform layer (desktop UI shell started 2026-07-23; Python backend started 2026-07-24, first end-to-end round trip working). Phase 0 (foundations) and the Phase 1 interview baseline are complete; Phase 1 continues informally per FOUNDER_BRIEF.md. See `ROADMAP.md`.
 
 ## Start here
 
@@ -36,13 +36,19 @@ Then: summarize your understanding, flag any architectural concerns, and propose
 
 ## Code
 
-`desktop/` — the SwiftUI desktop shell, a Swift Package Manager executable (no Xcode project yet — see `ENGINEERING_MANUAL.md` → Repo layout). Static visual layout only right now: sidebar, War Room center, right rail. No backend, no wired-up logic, no real data. Build and run with:
+`desktop/` — the SwiftUI desktop shell, a Swift Package Manager executable (no Xcode project yet — see `ENGINEERING_MANUAL.md` → Repo layout). Real navigation, dark mode, Frank's particle presence, keyboard shortcuts, an app icon, and a live connection to the backend's WebSocket. Build and run with:
 
 ```
 cd desktop && swift run
 ```
 
-No `backend/` yet — the Python backend hasn't been started.
+`backend/` — the Python backend, a `uv`-managed FastAPI service (`GET /health`, `WS /ws`). Currently echoes messages back in streamed chunks — proving the IPC plumbing works, not real Frank intelligence yet (that's Phase 3). Run with:
+
+```
+cd backend && uv run python -m app.main
+```
+
+Run both together for the full round trip: start the backend first, then the desktop app — typing in "Talk to Frank" now genuinely reaches the Python service and streams a response back.
 
 ## Current priority
 
