@@ -4,6 +4,7 @@ struct WarRoomView: View {
     @State private var inputText: String = ""
     @Environment(\.appTheme) private var theme
     @FocusState private var isInputFocused: Bool
+    @StateObject private var backend = BackendClient()
 
     /// Real time-of-day check, not a fixed string — genuine, low-risk
     /// functionality rather than another visual guess.
@@ -25,7 +26,13 @@ struct WarRoomView: View {
                 Text("\(timeOfDayGreeting), Joshx.")
                     .font(PCorpFont.display(38, weight: .bold))
                     .foregroundStyle(theme.textPrimary)
-                Text("I'm Frank. How can I help you today?")
+                // First real backend proof-of-life: once a response starts
+                // streaming back from the Python backend, show it here
+                // instead of the static subtitle. Still just an echo (see
+                // backend/app/main.py) — this proves the IPC round trip
+                // works, not real Frank intelligence yet. A proper chat/
+                // conversation UI is separate, later work.
+                Text(backend.response.isEmpty ? "I'm Frank. How can I help you today?" : backend.response)
                     .font(PCorpFont.body(17))
                     .foregroundStyle(theme.textSecondary)
             }
@@ -49,6 +56,14 @@ struct WarRoomView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
+        .onAppear { backend.connect() }
+    }
+
+    private func sendMessage() {
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        backend.send(text)
+        inputText = ""
     }
 
     private var topBar: some View {
@@ -105,10 +120,9 @@ struct WarRoomView: View {
                 .font(PCorpFont.body(14))
                 .foregroundStyle(theme.textPrimary)
                 .focused($isInputFocused)
+                .onSubmit(sendMessage)
 
-            Button {
-                // no-op: shell only, not wired up yet
-            } label: {
+            Button(action: sendMessage) {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(theme.accentText)
