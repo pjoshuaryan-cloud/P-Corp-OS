@@ -31,8 +31,11 @@ The full per-device-keypair auth and `SMAppService` packaging haven't been start
 ## Explicitly not decided
 
 - No calendar dates. The brief is explicit about not rushing; a roadmap with dates on a 10-year platform would be exactly the kind of speculative fiction the founder brief warns against.
-- What triggers Phase 0 → Phase 1 (a trading-robot milestone? a calendar check-in? Joshua's own call).
+
+## Priority check-in (2026-07-24)
+
+Asked directly, after a status review against `FOUNDER_BRIEF.md`'s "Current Priority" section (which names the trading robot as the actual priority, P Corp OS as the long-term background project): several consecutive sessions of substantial P Corp OS build time had accumulated, worth a deliberate check rather than assuming momentum should continue by default. **Joshua confirmed: trading robot stays the priority.** P Corp OS work pauses here, not abandoned — Phase 2 is mid-flight (working shell, backend, and first memory layer), just not the next thing to pick up by default.
 
 ## Next step
 
-Nothing — this phase list only needs revisiting when Joshua signals he's ready to move past Phase 0.
+Nothing on P Corp OS by default — trading robot is the active priority (confirmed 2026-07-24). Resume P Corp OS work when Joshua explicitly says so, not on general momentum.
