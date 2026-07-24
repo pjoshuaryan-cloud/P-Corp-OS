@@ -61,6 +61,17 @@ struct ContentView: View {
                 NSApp.setActivationPolicy(.regular)
                 NSApp.activate(ignoringOtherApps: true)
                 NSApp.windows.first?.makeKeyAndOrderFront(nil)
+
+                // The Dock icon set in PCorpOSApp.init() likely had no
+                // effect: at that point the app was still .prohibited with
+                // no real Dock presence, so there was no Dock tile yet to
+                // carry the custom icon. Re-applying it here, after forcing
+                // .regular + activate above, targets the point where a real
+                // Dock tile actually exists.
+                if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+                   let icon = NSImage(contentsOf: url) {
+                    NSApp.applicationIconImage = icon
+                }
             }
         }
         .onDisappear {
