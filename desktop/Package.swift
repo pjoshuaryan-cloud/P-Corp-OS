@@ -14,7 +14,8 @@ let package = Package(
                 .copy("Resources/P_logo.pdf"),
                 .copy("Resources/alpha_mode_logo.png"),
                 .copy("Resources/p_logo_black.png"),
-                .copy("Resources/app_icon.png")
+                .copy("Resources/app_icon.png"),
+                .copy("Resources/AppIcon.icns")
             ]
         )
     ]

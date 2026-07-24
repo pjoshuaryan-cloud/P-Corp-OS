@@ -11,11 +11,20 @@ struct PCorpOSApp: App {
         // This is a plain SPM executable, not a proper .app bundle built by
         // Xcode — there's no Info.plist/asset-catalog icon pipeline to hook
         // into. Setting the Dock icon at runtime is the correct way to get a
-        // real icon without that infrastructure: NSImage(contentsOf:) reads
-        // the bundled PNG (white P mark on black rounded-square, derived
-        // from the same p_logo_black.png used elsewhere), the same reliable
-        // pixel-loading approach used for the other logo assets.
-        if let url = Bundle.module.url(forResource: "app_icon", withExtension: "png"),
+        // real icon without that infrastructure.
+        //
+        // Uses AppIcon.icns (built via `iconutil` from a full 10-image
+        // .iconset — 16/32/64/128/256/512/1024px, matching Apple's standard
+        // size set) rather than the single flat app_icon.png: NSImage loads
+        // every representation embedded in a .icns automatically and picks
+        // the pixel-exact match for each context (Dock, Cmd-Tab, Finder),
+        // instead of relying on live scaling of one image, which can look
+        // soft at small sizes. Same source artwork either way (the white P
+        // mark on a black rounded-square, derived from p_logo_black.png);
+        // this is a quality upgrade to how it's delivered, not a redesign.
+        // AppIcon.icns is also ready to drop straight into a real Xcode
+        // asset catalog later, if this ever becomes a proper .app bundle.
+        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
            let icon = NSImage(contentsOf: url) {
             NSApplication.shared.applicationIconImage = icon
         }
