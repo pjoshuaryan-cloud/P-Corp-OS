@@ -5,6 +5,16 @@ struct WarRoomView: View {
     @Environment(\.appTheme) private var theme
     @FocusState private var isInputFocused: Bool
 
+    /// Real time-of-day check, not a fixed string — genuine, low-risk
+    /// functionality rather than another visual guess.
+    private var timeOfDayGreeting: String {
+        switch Calendar.current.component(.hour, from: .now) {
+        case 0..<12: "Good morning"
+        case 12..<17: "Good afternoon"
+        default: "Good evening"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             topBar
@@ -12,7 +22,7 @@ struct WarRoomView: View {
             Spacer(minLength: 0)
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("Good morning, Joshx.")
+                Text("\(timeOfDayGreeting), Joshx.")
                     .font(PCorpFont.display(38, weight: .bold))
                     .foregroundStyle(theme.textPrimary)
                 Text("I'm Frank. How can I help you today?")
@@ -44,7 +54,7 @@ struct WarRoomView: View {
     private var topBar: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Good morning, Joshx.")
+                Text("\(timeOfDayGreeting), Joshx.")
                     .font(PCorpFont.body(13, weight: .semibold))
                     .foregroundStyle(theme.textPrimary)
                 Text(Date.now.formatted(date: .complete, time: .omitted))
