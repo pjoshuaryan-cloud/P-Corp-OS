@@ -47,24 +47,59 @@ struct ContentView: View {
     }
 }
 
-/// What every non-War-Room nav item shows right now: an honest "not built
-/// yet" placeholder, not invented content. Keeps the shell truthful about
-/// what actually exists rather than faking depth that isn't there.
+/// What every non-War-Room, non-Settings nav item shows right now — still
+/// an honest "not built yet," not invented content, but designed to the
+/// same bar as the rest of the shell instead of a bare icon and gray text.
+/// A section that isn't built yet is a real, permanent state for a while
+/// (there are 9 of them), so it earns real design attention, not an
+/// afterthought.
 private struct SectionPlaceholderView: View {
     let item: NavItem
     @Environment(\.appTheme) private var theme
+    @State private var hasAppeared = false
 
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: item.systemImage)
-                .font(.system(size: 34, weight: .regular))
-                .foregroundStyle(theme.textPrimary.opacity(0.25))
-            Text(item.title)
-                .font(PCorpFont.display(22))
-                .foregroundStyle(theme.textPrimary)
-            Text("Not built yet.")
-                .font(PCorpFont.body(13))
-                .foregroundStyle(theme.textSecondary)
+        VStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(.regularMaterial)
+                    .frame(width: 72, height: 72)
+                Circle()
+                    .strokeBorder(theme.surfaceBorder, lineWidth: 1)
+                    .frame(width: 72, height: 72)
+                Image(systemName: item.systemImage)
+                    .font(.system(size: 28, weight: .regular))
+                    .foregroundStyle(theme.textPrimary.opacity(0.7))
+            }
+
+            VStack(spacing: 4) {
+                Text(item.title)
+                    .font(PCorpFont.display(24))
+                    .foregroundStyle(theme.textPrimary)
+                Text(item.subtitle)
+                    .font(PCorpFont.body(13))
+                    .foregroundStyle(theme.textSecondary)
+            }
+
+            HStack(spacing: 6) {
+                Circle().fill(theme.textSecondary).frame(width: 6, height: 6)
+                Text("STANDBY")
+                    .font(PCorpFont.label(9.5))
+                    .trackedLabel(1.4)
+                    .foregroundStyle(theme.textSecondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(theme.textPrimary.opacity(0.05)))
+
+            Text("Not built yet — this is an honest placeholder, not a preview.")
+                .font(PCorpFont.body(11.5))
+                .foregroundStyle(theme.textSecondary.opacity(0.7))
+        }
+        .opacity(hasAppeared ? 1 : 0)
+        .scaleEffect(hasAppeared ? 1 : 0.97)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.3)) { hasAppeared = true }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
