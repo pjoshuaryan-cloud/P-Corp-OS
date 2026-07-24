@@ -1,3 +1,8 @@
 # Swift Package Manager build artifacts
 desktop/.build/
 desktop/.swiftpm/
+
+# Python backend
+backend/.venv/
+backend/**/__pycache__/
+backend/**/*.pyc
