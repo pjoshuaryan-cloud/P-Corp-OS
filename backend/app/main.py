@@ -32,7 +32,7 @@ from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from app.db import init_db, load_history, save_message
+from app.db import init_db, load_history, load_memory_records, save_message
 from app.memory import SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
 from app.personality import SYSTEM_PROMPT
 
@@ -54,6 +54,14 @@ app = FastAPI(title="P Corp OS Backend", lifespan=lifespan)
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/memory")
+async def memory() -> list[dict]:
+    # Read-only view of what Frank has saved via the save_memory tool — the
+    # desktop shell's "Frank" section reads this to make memory visible,
+    # rather than it only being inspectable by querying SQLite directly.
+    return await load_memory_records()
 
 
 @app.websocket("/ws")

@@ -20,6 +20,8 @@ Begun with the desktop UI shell — a static SwiftUI layout (sidebar, War Room c
 
 **Typed memory records, same day.** `MEMORY_SYSTEM.md` — previously a stub — now has a working first layer: durable facts/context (`backend/app/memory.py`, `backend/app/db.py`), separate from raw conversation history, reusing the existing Claude Code memory scheme's four types. Frank's first tool call: one hardcoded `save_memory` tool, deliberately distinct from (and much smaller-risk than) the deferred Agent SDK. Verified: Frank saved a real memory mid-conversation, and a fresh connection recalled it unprompted.
 
+**Memory made visible, same day.** One of the shell's 9 placeholder sections ("Frank") is now real — a read-only view of everything in `memory_records`, backed by a new `GET /memory` endpoint. Closes the loop: memory isn't just something Frank privately writes to disk anymore, Joshua can actually see what's been remembered.
+
 The full per-device-keypair auth and `SMAppService` packaging haven't been started — flagged as explicit next steps, not forgotten. Real *agentic* Frank (general tool-use, the Agent SDK) is still Phase 3, gated on `SECURITY.md`'s permission model.
 
 **Phase 3 — Frank (Layer 2) + first agent (Layer 3).** Stand up Frank against one real, low-risk agent rather than all twelve at once. Candidate: a read-only Trading Division assistant, since that domain is already deeply understood (see `TRADING_DIVISION.md`).

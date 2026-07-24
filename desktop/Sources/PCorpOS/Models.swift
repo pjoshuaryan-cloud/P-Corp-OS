@@ -23,6 +23,23 @@ struct InsightItem: Identifiable {
     let targetNavTitle: String
 }
 
+/// Mirrors backend/app/db.py's `memory_records` table — durable facts Frank
+/// has saved via the `save_memory` tool, distinct from raw conversation
+/// history. Fetched read-only from GET /memory.
+struct MemoryRecord: Identifiable, Decodable {
+    let id: Int
+    let type: String
+    let title: String
+    let content: String
+    let sensitive: Bool
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, type, title, content, sensitive
+        case createdAt = "created_at"
+    }
+}
+
 struct QuickAction: Identifiable {
     let id = UUID()
     let title: String

@@ -79,15 +79,18 @@ async def load_memory_records() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT type, title, content, sensitive FROM memory_records ORDER BY id ASC"
+            "SELECT id, type, title, content, sensitive, created_at "
+            "FROM memory_records ORDER BY id ASC"
         )
         rows = await cursor.fetchall()
         return [
             {
+                "id": row["id"],
                 "type": row["type"],
                 "title": row["title"],
                 "content": row["content"],
                 "sensitive": bool(row["sensitive"]),
+                "created_at": row["created_at"],
             }
             for row in rows
         ]

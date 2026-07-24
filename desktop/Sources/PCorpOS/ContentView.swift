@@ -26,6 +26,8 @@ struct ContentView: View {
                 switch selectedItem.title {
                 case "War Room":
                     WarRoomView()
+                case "Frank":
+                    FrankView()
                 case "Settings":
                     SettingsView()
                 default:
