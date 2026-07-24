@@ -8,3 +8,6 @@ backend/**/__pycache__/
 backend/**/*.pyc
 backend/.env
 backend/data/
+
+# macOS
+.DS_Store
