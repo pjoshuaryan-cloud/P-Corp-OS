@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Root layout: sidebar, center content, right rail — a plain HStack rather
@@ -11,35 +12,32 @@ struct ContentView: View {
     // is explicit — "no loading spinner... the screen fades in." Starts
     // transparent, fades to full opacity right on appear.
     @State private var hasAppeared = false
+    @State private var keyMonitor: Any?
 
     private var selectedItem: NavItem {
         PlaceholderData.navItems.first { $0.id == selectedID } ?? PlaceholderData.navItems[0]
     }
 
     var body: some View {
-        ZStack {
-            HStack(spacing: 0) {
-                Sidebar(selectedID: $selectedID)
+        HStack(spacing: 0) {
+            Sidebar(selectedID: $selectedID)
 
-                Group {
-                    switch selectedItem.title {
-                    case "War Room":
-                        WarRoomView()
-                    case "Settings":
-                        SettingsView()
-                    default:
-                        SectionPlaceholderView(item: selectedItem)
-                    }
+            Group {
+                switch selectedItem.title {
+                case "War Room":
+                    WarRoomView()
+                case "Settings":
+                    SettingsView()
+                default:
+                    SectionPlaceholderView(item: selectedItem)
                 }
-                .id(selectedItem.id) // forces a fresh view per section, so the transition below actually triggers
-                .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .center)))
-                .animation(.easeOut(duration: 0.18), value: selectedID)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                RightRail(selectedID: $selectedID)
             }
+            .id(selectedItem.id) // forces a fresh view per section, so the transition below actually triggers
+            .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .center)))
+            .animation(.easeOut(duration: 0.18), value: selectedID)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            keyboardShortcuts
+            RightRail(selectedID: $selectedID)
         }
         .frame(minWidth: 1100, minHeight: 700)
         .opacity(hasAppeared ? 1 : 0)
@@ -47,35 +45,50 @@ struct ContentView: View {
             withAnimation(.easeOut(duration: 1.1)) {
                 hasAppeared = true
             }
+            installKeyboardShortcutsIfNeeded()
+        }
+        .onDisappear {
+            if let monitor = keyMonitor {
+                NSEvent.removeMonitor(monitor)
+                keyMonitor = nil
+            }
         }
     }
 
     /// Real, functional keyboard shortcuts — Cmd+1...Cmd+9 jump to the first
     /// nine sidebar sections by position, Cmd+, jumps straight to Settings
-    /// (standard macOS convention for a preferences pane). Invisible buttons
-    /// rather than App-level Commands, since this shell has no Xcode-managed
-    /// Scene/Commands setup to hook into — this is the simplest way to get
-    /// real keyboard shortcuts working within a plain SwiftUI view hierarchy.
-    /// Unlike the visual work in this shell, this is ordinary, well-supported
-    /// SwiftUI behavior — no risk of silently rendering wrong.
-    private var keyboardShortcuts: some View {
-        Group {
-            ForEach(Array(PlaceholderData.navItems.prefix(9).enumerated()), id: \.element.id) { index, item in
-                Button("") {
-                    withAnimation(.easeOut(duration: 0.22)) { selectedID = item.id }
-                }
-                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+    /// (standard macOS convention for a preferences pane).
+    ///
+    /// First attempt used invisible SwiftUI Buttons with .keyboardShortcut,
+    /// which didn't actually work in practice (SwiftUI's shortcut-to-Button
+    /// plumbing on a plain WindowGroup, with no App-level Commands, turned
+    /// out not to be reliable here). Replaced with a direct AppKit local
+    /// event monitor instead — lower-level, but unambiguous about whether
+    /// it's actually receiving key events, and this is the same mechanism
+    /// real macOS apps use under the hood.
+    private func installKeyboardShortcutsIfNeeded() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.contains(.command),
+                  let characters = event.charactersIgnoringModifiers
+            else { return event }
+
+            if characters == ",",
+               let settings = PlaceholderData.navItems.first(where: { $0.title == "Settings" }) {
+                withAnimation(.easeOut(duration: 0.22)) { selectedID = settings.id }
+                return nil // consume the event
             }
 
-            Button("") {
-                if let settings = PlaceholderData.navItems.first(where: { $0.title == "Settings" }) {
-                    withAnimation(.easeOut(duration: 0.22)) { selectedID = settings.id }
+            if let number = Int(characters), (1...9).contains(number),
+               PlaceholderData.navItems.indices.contains(number - 1) {
+                withAnimation(.easeOut(duration: 0.22)) {
+                    selectedID = PlaceholderData.navItems[number - 1].id
                 }
+                return nil
             }
-            .keyboardShortcut(",", modifiers: .command)
+
+            return event
         }
-        .frame(width: 0, height: 0)
-        .opacity(0)
     }
 }
 
