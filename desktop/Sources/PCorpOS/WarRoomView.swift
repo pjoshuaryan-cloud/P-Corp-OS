@@ -443,7 +443,7 @@ private struct PLogoMark: View {
     /// doesn't go invisible against a dark background the way a hardcoded
     /// black fill would (same reasoning as the particle blob's theming).
     private static let image: Image? = {
-        guard let url = Bundle.module.url(forResource: "p_logo_black", withExtension: "png"),
+        guard let url = AppResources.url(forResource: "p_logo_black", withExtension: "png"),
               let nsImage = NSImage(contentsOf: url)
         else { return nil }
         return Image(nsImage: nsImage)

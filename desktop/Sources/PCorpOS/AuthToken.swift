@@ -5,14 +5,10 @@ import Foundation
 /// shared secret, not something Joshua configures. Read fresh on every
 /// connect rather than cached, matching MemoryClient's one-shot-fetch style —
 /// simplest way to always reflect whatever the backend currently has.
-///
-/// Path is relative to cwd, matching how this whole project runs today
-/// (swift run from desktop/, uv run from backend/ — nothing packaged into
-/// a real .app yet). Revisit once SMAppService packaging happens.
 enum AuthToken {
     static var current: String? {
-        let path = FileManager.default.currentDirectoryPath + "/../backend/data/auth_token"
-        return try? String(contentsOfFile: path, encoding: .utf8)
+        let url = ProjectPaths.repoRoot.appendingPathComponent("backend/data/auth_token")
+        return try? String(contentsOf: url, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

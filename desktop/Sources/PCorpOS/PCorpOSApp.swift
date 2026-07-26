@@ -24,7 +24,7 @@ struct PCorpOSApp: App {
         // this is a quality upgrade to how it's delivered, not a redesign.
         // AppIcon.icns is also ready to drop straight into a real Xcode
         // asset catalog later, if this ever becomes a proper .app bundle.
-        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+        if let url = AppResources.url(forResource: "AppIcon", withExtension: "icns"),
            let icon = NSImage(contentsOf: url) {
             NSApplication.shared.applicationIconImage = icon
         }

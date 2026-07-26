@@ -79,7 +79,7 @@ private struct NavRow: View {
     /// color) — including flipping black/white correctly between light and
     /// dark mode along with everything else.
     private static let alphaModeLogo: Image? = {
-        guard let url = Bundle.module.url(forResource: "alpha_mode_logo", withExtension: "png"),
+        guard let url = AppResources.url(forResource: "alpha_mode_logo", withExtension: "png"),
               let nsImage = NSImage(contentsOf: url)
         else { return nil }
         return Image(nsImage: nsImage)

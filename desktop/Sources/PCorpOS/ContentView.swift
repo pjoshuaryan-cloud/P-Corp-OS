@@ -74,7 +74,7 @@ struct ContentView: View {
                 // carry the custom icon. Re-applying it here, after forcing
                 // .regular + activate above, targets the point where a real
                 // Dock tile actually exists.
-                if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+                if let url = AppResources.url(forResource: "AppIcon", withExtension: "icns"),
                    let icon = NSImage(contentsOf: url) {
                     NSApp.applicationIconImage = icon
                 }

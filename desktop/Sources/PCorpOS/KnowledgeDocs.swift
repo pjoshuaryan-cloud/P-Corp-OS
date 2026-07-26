@@ -30,10 +30,8 @@ enum KnowledgeDocs {
         KnowledgeDoc(filename: "CHANGELOG.md", title: "Changelog", subtitle: "Full build history"),
     ]
 
-    /// Path is relative to cwd, matching how this whole project runs today
-    /// (swift run from desktop/) — same convention as AuthToken.swift.
     static func content(for doc: KnowledgeDoc) -> String {
-        let path = FileManager.default.currentDirectoryPath + "/../" + doc.filename
-        return (try? String(contentsOfFile: path, encoding: .utf8)) ?? "Couldn't read \(doc.filename)."
+        let url = ProjectPaths.repoRoot.appendingPathComponent(doc.filename)
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? "Couldn't read \(doc.filename)."
     }
 }
