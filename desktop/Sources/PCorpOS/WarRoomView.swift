@@ -7,10 +7,16 @@ struct WarRoomView: View {
     @FocusState private var isInputFocused: Bool
     @StateObject private var backend = BackendClient()
 
-    /// Real time-of-day check, not a fixed string — genuine, low-risk
-    /// functionality rather than another visual guess.
-    private var timeOfDayGreeting: String {
-        switch Calendar.current.component(.hour, from: .now) {
+    /// Real time-of-day check, not a fixed string. Takes the date explicitly
+    /// (from the TimelineView in `body`, below) rather than reading `.now`
+    /// directly — a plain computed property reading `.now` only re-evaluates
+    /// when something else causes SwiftUI to re-render this view (sending a
+    /// message, reconnecting, etc.), so a genuinely idle window would keep
+    /// showing "Good morning" all afternoon. The TimelineView ticks on its
+    /// own, independent of any other app state, so the greeting actually
+    /// updates as real time passes.
+    private func timeOfDayGreeting(at date: Date) -> String {
+        switch Calendar.current.component(.hour, from: date) {
         case 0..<12: "Good morning"
         case 12..<17: "Good afternoon"
         default: "Good evening"
@@ -18,14 +24,20 @@ struct WarRoomView: View {
     }
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            content(currentDate: context.date)
+        }
+    }
+
+    private func content(currentDate: Date) -> some View {
         VStack(spacing: 0) {
-            topBar
+            topBar(currentDate: currentDate)
 
             if backend.messages.isEmpty {
                 Spacer(minLength: 0)
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("\(timeOfDayGreeting), Joshx.")
+                    Text("\(timeOfDayGreeting(at: currentDate)), Joshx.")
                         .font(PCorpFont.display(38, weight: .bold))
                         .foregroundStyle(theme.textPrimary)
                     Text("I'm Frank. How can I help you today?")
@@ -68,13 +80,13 @@ struct WarRoomView: View {
         inputText = ""
     }
 
-    private var topBar: some View {
+    private func topBar(currentDate: Date) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(timeOfDayGreeting), Joshx.")
+                Text("\(timeOfDayGreeting(at: currentDate)), Joshx.")
                     .font(PCorpFont.body(13, weight: .semibold))
                     .foregroundStyle(theme.textPrimary)
-                Text(Date.now.formatted(date: .complete, time: .omitted))
+                Text(currentDate.formatted(date: .complete, time: .omitted))
                     .font(PCorpFont.body(11))
                     .foregroundStyle(theme.textSecondary)
             }
