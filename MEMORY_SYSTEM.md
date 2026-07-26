@@ -1,6 +1,6 @@
 # Memory System
 
-**Status:** First real layer built and verified, 2026-07-24 — conversation history plus typed memory records both working end to end. Semantic search, forgetting/versioning, and cross-device sync remain open.
+**Status:** First real layer built and verified, 2026-07-24 — conversation history plus typed memory records both working end to end. Forgetting/versioning added 2026-07-25/26. Semantic search and cross-device sync remain open.
 
 ## Purpose
 
@@ -18,6 +18,12 @@ Memory, tasks, projects, and conversations should all synchronize automatically 
 - **Retrieval: load every record into the system prompt on each turn**, no ranking or filtering yet. Correct-enough at the record counts a personal system produces early on (dozens, not thousands); revisit only once that stops being true, not speculatively now.
 - **Privacy: a plain `sensitive` boolean column, not encryption.** There's no sync yet, so nothing about this table creates new exposure beyond what `messages` already has (both are local-only SQLite, same as before). The flag exists so the eventual encrypt-before-sync work (already flagged in `TECH_STACK.md` for the Turso/libSQL decision) has something to filter on later, without having to retrofit a schema change once sync is real.
 - **Forgetting/versioning: explicitly deferred.** No auto-expiry; records only change via manual update/delete (not yet built). A real lifecycle is more machinery than a first pass needs — revisit once stale records actually become a problem in practice, not before.
+
+## Decided (2026-07-25/26)
+
+- **Forgetting: soft-delete (`deleted_at`), not a real DELETE.** Reversible in principle — matches the "regular" permission tier both memory tools sit in (`SECURITY.md`) — and gives a rudimentary audit trail for free: a forgotten row's original content still exists, just excluded from what Frank sees and what the UI shows. Two paths in, one mechanism underneath: Frank's own `forget_memory` tool (matches by title, since row IDs are never surfaced to him), and a manual trash-icon affordance in `FrankView` for things Joshua notices later outside conversation.
+- **Versioning: forget-then-resave, not a separate update mechanism.** No version-history schema (superseded-by pointers, etc.) — that would be speculative complexity with no evidence yet that reviewing historical versions of a fact matters. If something changes, Frank forgets the old record and saves a new one.
+- **Not built:** an "undo"/view-forgotten-records UI. Natural small follow-up if it's ever wanted, not needed for the real use case that prompted this (removing a test/incorrect fact).
 
 ## Open questions
 
