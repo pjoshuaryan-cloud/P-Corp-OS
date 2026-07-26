@@ -7,12 +7,6 @@ struct NavItem: Identifiable {
     let systemImage: String
 }
 
-struct AgendaItem: Identifiable {
-    let id = UUID()
-    let time: String
-    let title: String
-}
-
 struct InsightItem: Identifiable {
     let id = UUID()
     let systemImage: String
@@ -79,15 +73,6 @@ enum PlaceholderData {
         NavItem(title: "Automations", subtitle: "Workflows", systemImage: "bolt"),
         NavItem(title: "Calendar", subtitle: "Schedule & Events", systemImage: "calendar"),
         NavItem(title: "Settings", subtitle: "Preferences", systemImage: "gearshape"),
-    ]
-
-    static let agenda: [AgendaItem] = [
-        AgendaItem(time: "08:30", title: "Morning Brief with Frank"),
-        AgendaItem(time: "09:00", title: "Alpha Mode Leadership Call"),
-        AgendaItem(time: "10:30", title: "Client Presentation"),
-        AgendaItem(time: "13:00", title: "Deep Work Block"),
-        AgendaItem(time: "15:30", title: "Trading Strategy Review"),
-        AgendaItem(time: "17:30", title: "Workout"),
     ]
 
     static let insights: [InsightItem] = [

@@ -142,20 +142,27 @@ private struct MissionStatusCard: View {
 private struct AgendaCard: View {
     @Binding var selectedID: UUID?
     @Environment(\.appTheme) private var theme
+    @State private var todayEvents: [CalendarEvent] = []
 
     var body: some View {
         CardContainer {
             SectionLabel(text: "TODAY'S AGENDA")
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(PlaceholderData.agenda) { item in
-                    HStack(spacing: 10) {
-                        Text(item.time)
-                            .font(PCorpFont.body(12, weight: .semibold))
-                            .foregroundStyle(theme.textSecondary)
-                            .frame(width: 44, alignment: .leading)
-                        Text(item.title)
-                            .font(PCorpFont.body(12.5))
-                            .foregroundStyle(theme.textPrimary)
+            if todayEvents.isEmpty {
+                Text("Nothing on the calendar today.")
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle(theme.textSecondary)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(todayEvents) { event in
+                        HStack(spacing: 10) {
+                            Text(timeString(event.startDate))
+                                .font(PCorpFont.body(12, weight: .semibold))
+                                .foregroundStyle(theme.textSecondary)
+                                .frame(width: 60, alignment: .leading)
+                            Text(event.title)
+                                .font(PCorpFont.body(12.5))
+                                .foregroundStyle(theme.textPrimary)
+                        }
                     }
                 }
             }
@@ -166,6 +173,19 @@ private struct AgendaCard: View {
                 }
             }
         }
+        .task {
+            // Real events from the macOS Calendar app (SystemCalendar.swift),
+            // filtered to just today — replaces the earlier hardcoded
+            // PlaceholderData.agenda now that Calendar is a real section.
+            let events = await SystemCalendar.upcomingEvents(days: 1)
+            todayEvents = events.filter { Calendar.current.isDateInToday($0.startDate) }
+        }
+    }
+
+    private func timeString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm a"
+        return formatter.string(from: date)
     }
 }
 

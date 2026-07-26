@@ -28,6 +28,8 @@ struct ContentView: View {
                     WarRoomView()
                 case "Frank":
                     FrankView()
+                case "Calendar":
+                    CalendarView()
                 case "Settings":
                     SettingsView()
                 default:
