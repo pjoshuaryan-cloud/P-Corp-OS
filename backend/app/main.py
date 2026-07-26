@@ -23,11 +23,21 @@ real usage (Joshua wanted to start fresh chats once he actually used the
 thread). Durable memory (app/memory.py), not the transcript, is what now
 carries "there is only ever one Frank" forward — see app/db.py's docstring.
 Every route now checks a local auth token (app/auth.py) — SECURITY.md's
-first concrete fix, closing the "any local process can connect" gap. Still
-NOT here: semantic/vector search over memory, the full per-device-keypair
-auth, SMAppService packaging.
+first concrete fix, closing the "any local process can connect" gap.
+
+Notifications (Layer 1's responsibility per FOUNDER_BRIEF.md, TECH_STACK.md's
+already-decided "WebSocket carries unprompted push notifications from Frank
+to the UI") ride the same WebSocket as chat text, via a "\n[notify]" sentinel
+— same pattern as the existing "\n[done]" end-of-turn marker, not a new
+message envelope. Triggered by the one thing Frank already does
+deterministically (save_memory firing), not a new "should Frank decide to
+notify" policy — that's a bigger, fuzzier design question for later.
+
+Still NOT here: semantic/vector search over memory, the full per-device-
+keypair auth, SMAppService packaging.
 """
 
+import json
 import os
 from contextlib import asynccontextmanager
 
@@ -198,15 +208,22 @@ async def run_claude_turn(
             return assistant_text
 
         history.append({"role": "assistant", "content": final_message.content})
-        tool_results = [
-            {
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": await execute_tool_call(block.name, block.input),
-            }
-            for block in final_message.content
-            if block.type == "tool_use"
-        ]
+        tool_results = []
+        for block in final_message.content:
+            if block.type != "tool_use":
+                continue
+            result = await execute_tool_call(block.name, block.input)
+            tool_results.append(
+                {"type": "tool_result", "tool_use_id": block.id, "content": result}
+            )
+            if block.name == "save_memory":
+                notification = json.dumps(
+                    {
+                        "title": "Frank remembered something",
+                        "body": block.input.get("title", "New memory saved"),
+                    }
+                )
+                await websocket.send_text(f"\n[notify]{notification}")
         history.append({"role": "user", "content": tool_results})
 
 

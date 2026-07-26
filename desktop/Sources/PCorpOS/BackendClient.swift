@@ -147,6 +147,9 @@ final class BackendClient: ObservableObject {
         messages[lastIndex].content += text
     }
 
+    private struct NotificationPayload: Decodable { let title: String; let body: String }
+    private static let notifyPrefix = "\n[notify]"
+
     private func listen() {
         task?.receive { [weak self] result in
             guard let self else { return }
@@ -154,11 +157,19 @@ final class BackendClient: ObservableObject {
                 switch result {
                 case .success(let message):
                     if case .string(let text) = message {
-                        // The backend's own end-of-turn sentinel
-                        // (backend/app/main.py) — not part of the reply,
-                        // just marks streaming as finished.
+                        // Two sentinels from the backend (backend/app/main.py),
+                        // neither part of the visible reply: "\n[done]" marks
+                        // end of turn, "\n[notify]{json}" is Frank pushing a
+                        // real notification (currently: whenever save_memory
+                        // fires) rather than chat text.
                         if text == "\n[done]" {
                             self.isStreaming = false
+                        } else if text.hasPrefix(Self.notifyPrefix) {
+                            let payloadText = String(text.dropFirst(Self.notifyPrefix.count))
+                            if let data = payloadText.data(using: .utf8),
+                               let payload = try? JSONDecoder().decode(NotificationPayload.self, from: data) {
+                                SystemNotification.post(title: payload.title, body: payload.body)
+                            }
                         } else {
                             self.appendToLastAssistantMessage(text)
                         }
