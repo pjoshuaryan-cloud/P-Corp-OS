@@ -1,30 +1,109 @@
 import Foundation
 
-/// First real connection from the shell to the Python backend — proves the
-/// IPC contract end to end (SwiftUI -> WebSocket -> FastAPI -> streamed
-/// response -> SwiftUI), using native `URLSessionWebSocketTask` (no
-/// third-party WebSocket library needed). The backend currently echoes
-/// messages back in streamed word-by-word chunks (see backend/app/main.py) —
-/// real streaming mechanics, canned content, per the explicit scoping
-/// decision to prove the plumbing before adding real Frank intelligence.
+/// A single turn in the conversation — user or assistant. Mirrors
+/// backend/app/db.py's `messages` table. Conversations can now start fresh
+/// (startNewConversation below) — durable memory, not the transcript, is
+/// what carries "there is only ever one Frank" forward. See app/db.py.
+struct ChatMessage: Identifiable {
+    let id = UUID()
+    let role: String
+    var content: String
+}
+
+/// The connection from the shell to the Python backend, and the owner of
+/// the live conversation state — real Claude reasoning streamed back
+/// token-by-token (see backend/app/main.py), using native
+/// `URLSessionWebSocketTask` (no third-party WebSocket library needed).
+/// Loads prior history once on connect (GET /history) so relaunching the
+/// app continues the same conversation instead of starting blank, matching
+/// the backend's own "one continuous conversation" persistence.
 @MainActor
 final class BackendClient: ObservableObject {
-    @Published private(set) var response: String = ""
+    @Published private(set) var messages: [ChatMessage] = []
     @Published private(set) var isConnected: Bool = false
+    @Published private(set) var isStreaming: Bool = false
 
     private var task: URLSessionWebSocketTask?
 
     /// Bound to 127.0.0.1 only, matching the backend's own binding — this
     /// isn't reachable over the network, only from this same machine.
-    private let url = URL(string: "ws://127.0.0.1:8731/ws")!
+    /// Token appended fresh at connect time (see AuthToken.swift) — the
+    /// backend rejects any connection without it (SECURITY.md's local-auth
+    /// fix).
+    private var wsURL: URL {
+        var components = URLComponents(string: "ws://127.0.0.1:8731/ws")!
+        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
+        return components.url!
+    }
+
+    private var historyURL: URL {
+        var components = URLComponents(string: "http://127.0.0.1:8731/history")!
+        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
+        return components.url!
+    }
+
+    private var newConversationURL: URL {
+        var components = URLComponents(string: "http://127.0.0.1:8731/conversations")!
+        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
+        return components.url!
+    }
+
+    private var conversationListURL: URL {
+        var components = URLComponents(string: "http://127.0.0.1:8731/conversations")!
+        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
+        return components.url!
+    }
+
+    private func activateURL(_ conversationID: Int) -> URL {
+        var components = URLComponents(string: "http://127.0.0.1:8731/conversations/\(conversationID)/activate")!
+        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
+        return components.url!
+    }
+
+    /// Starts a fresh conversation on the backend, then reconnects so the
+    /// live WebSocket picks it up (a connection is bound to whichever
+    /// conversation was active at connect time — see backend/app/main.py).
+    /// Memory (SECURITY.md-classified "regular" tool, app/memory.py) is
+    /// untouched by this; only the transcript resets.
+    func startNewConversation() async {
+        messages = []
+        var request = URLRequest(url: newConversationURL)
+        request.httpMethod = "POST"
+        _ = try? await URLSession.shared.data(for: request)
+        disconnect()
+        connect()
+    }
+
+    /// Every past conversation, newest first, for the switcher.
+    func fetchConversationList() async -> [ConversationSummary] {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: conversationListURL)
+            return try JSONDecoder().decode([ConversationSummary].self, from: data)
+        } catch {
+            return []
+        }
+    }
+
+    /// Reopens an older conversation — makes it active, then reconnects
+    /// (same reasoning as startNewConversation: the live WebSocket needs a
+    /// fresh connection to pick up whichever conversation is now active).
+    func switchToConversation(_ conversationID: Int) async {
+        messages = []
+        var request = URLRequest(url: activateURL(conversationID))
+        request.httpMethod = "POST"
+        _ = try? await URLSession.shared.data(for: request)
+        disconnect()
+        connect()
+    }
 
     func connect() {
         guard task == nil else { return }
-        let task = URLSession.shared.webSocketTask(with: url)
+        let task = URLSession.shared.webSocketTask(with: wsURL)
         self.task = task
         task.resume()
         isConnected = true
         listen()
+        Task { await loadHistory() }
     }
 
     func disconnect() {
@@ -35,14 +114,37 @@ final class BackendClient: ObservableObject {
 
     func send(_ text: String) {
         guard let task else { return }
-        response = ""
+        messages.append(ChatMessage(role: "user", content: text))
+        messages.append(ChatMessage(role: "assistant", content: ""))
+        isStreaming = true
         task.send(.string(text)) { [weak self] error in
             if let error {
                 Task { @MainActor in
-                    self?.response = "[connection error: \(error.localizedDescription) — is the backend running? `cd backend && uv run python -m app.main`]"
+                    self?.appendToLastAssistantMessage(
+                        "[connection error: \(error.localizedDescription) — is the backend running? `cd backend && uv run python -m app.main`]"
+                    )
+                    self?.isStreaming = false
                 }
             }
         }
+    }
+
+    private struct HistoryEntry: Decodable { let role: String; let content: String }
+
+    private func loadHistory() async {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: historyURL)
+            let entries = try JSONDecoder().decode([HistoryEntry].self, from: data)
+            messages = entries.map { ChatMessage(role: $0.role, content: $0.content) }
+        } catch {
+            // Not critical enough to surface a hard error on first load —
+            // the thread just starts empty, same as before this existed.
+        }
+    }
+
+    private func appendToLastAssistantMessage(_ text: String) {
+        guard let lastIndex = messages.indices.last, messages[lastIndex].role == "assistant" else { return }
+        messages[lastIndex].content += text
     }
 
     private func listen() {
@@ -52,11 +154,19 @@ final class BackendClient: ObservableObject {
                 switch result {
                 case .success(let message):
                     if case .string(let text) = message {
-                        self.response += text
+                        // The backend's own end-of-turn sentinel
+                        // (backend/app/main.py) — not part of the reply,
+                        // just marks streaming as finished.
+                        if text == "\n[done]" {
+                            self.isStreaming = false
+                        } else {
+                            self.appendToLastAssistantMessage(text)
+                        }
                     }
                     self.listen() // keep listening for the next chunk
                 case .failure:
                     self.isConnected = false
+                    self.isStreaming = false
                     self.task = nil
                 }
             }

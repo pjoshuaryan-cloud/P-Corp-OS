@@ -9,7 +9,13 @@ final class MemoryClient: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
 
-    private let url = URL(string: "http://127.0.0.1:8731/memory")!
+    /// Token appended fresh at fetch time (see AuthToken.swift) — the
+    /// backend rejects any request without it (SECURITY.md's local-auth fix).
+    private var url: URL {
+        var components = URLComponents(string: "http://127.0.0.1:8731/memory")!
+        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
+        return components.url!
+    }
 
     func fetch() async {
         isLoading = true

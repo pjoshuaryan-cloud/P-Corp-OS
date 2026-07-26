@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WarRoomView: View {
     @State private var inputText: String = ""
+    @State private var showConversationList = false
     @Environment(\.appTheme) private var theme
     @FocusState private var isInputFocused: Bool
     @StateObject private var backend = BackendClient()
@@ -20,35 +21,36 @@ struct WarRoomView: View {
         VStack(spacing: 0) {
             topBar
 
-            Spacer(minLength: 0)
+            if backend.messages.isEmpty {
+                Spacer(minLength: 0)
 
-            VStack(alignment: .leading, spacing: 12) {
-                Text("\(timeOfDayGreeting), Joshx.")
-                    .font(PCorpFont.display(38, weight: .bold))
-                    .foregroundStyle(theme.textPrimary)
-                // First real backend proof-of-life: once a response starts
-                // streaming back from the Python backend, show it here
-                // instead of the static subtitle. Still just an echo (see
-                // backend/app/main.py) — this proves the IPC round trip
-                // works, not real Frank intelligence yet. A proper chat/
-                // conversation UI is separate, later work.
-                Text(backend.response.isEmpty ? "I'm Frank. How can I help you today?" : backend.response)
-                    .font(PCorpFont.body(17))
-                    .foregroundStyle(theme.textSecondary)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("\(timeOfDayGreeting), Joshx.")
+                        .font(PCorpFont.display(38, weight: .bold))
+                        .foregroundStyle(theme.textPrimary)
+                    Text("I'm Frank. How can I help you today?")
+                        .font(PCorpFont.body(17))
+                        .foregroundStyle(theme.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 48)
+
+                Spacer(minLength: 20)
+
+                // Only shown in the empty/idle state — once a text
+                // conversation is active the thread takes this space
+                // instead. Voice mode (not built yet) will be the other
+                // case where this reappears, reactive to real audio rather
+                // than the current synthetic shimmer — scoped separately.
+                FrankOrb()
+                    .frame(width: 185, height: 185)
+                    .frame(maxWidth: .infinity)
+
+                Spacer(minLength: 20)
+            } else {
+                ChatThreadView(messages: backend.messages)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 48)
-
-            Spacer(minLength: 20)
-
-            // Hand-particle effect (HandParticles.swift) parked for now —
-            // built, but pulled from the layout per direct feedback. Revisit
-            // as its own session rather than tuning it inside other work.
-            FrankOrb()
-                .frame(width: 185, height: 185)
-                .frame(maxWidth: .infinity)
-
-            Spacer(minLength: 20)
 
             inputBar
                 .padding(.horizontal, 48)
@@ -84,6 +86,29 @@ struct WarRoomView: View {
             Spacer()
 
             HStack(spacing: 4) {
+                Button {
+                    Task { await backend.startNewConversation() }
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+                .buttonStyle(.icon)
+                .help("New chat — memory carries forward, the transcript starts fresh")
+                .disabled(backend.messages.isEmpty)
+
+                Button {
+                    showConversationList = true
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+                .buttonStyle(.icon)
+                .help("Previous conversations")
+                .popover(isPresented: $showConversationList) {
+                    ConversationListPopover(backend: backend) { conversationID in
+                        showConversationList = false
+                        Task { await backend.switchToConversation(conversationID) }
+                    }
+                }
+
                 Button {
                     // no-op: shell only, not wired up yet
                 } label: {
@@ -147,6 +172,141 @@ struct WarRoomView: View {
         )
         .shadow(color: theme.cardShadow, radius: isInputFocused ? 20 : 16, x: 0, y: isInputFocused ? 8 : 6)
         .animation(.easeOut(duration: 0.15), value: isInputFocused)
+    }
+}
+
+/// Lets Joshua get back to an older conversation — surfaced directly after
+/// he asked "where would I find previous chats" once "new chat" existed but
+/// nothing let him return to one. Backed by GET /conversations; picking a
+/// row calls BackendClient.switchToConversation, which makes it active on
+/// the backend and reconnects.
+private struct ConversationListPopover: View {
+    @ObservedObject var backend: BackendClient
+    let onSelect: (Int) -> Void
+
+    @State private var conversations: [ConversationSummary] = []
+    @State private var isLoading = true
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Conversations")
+                .font(PCorpFont.label(10))
+                .trackedLabel(1.2)
+                .foregroundStyle(theme.textSecondary)
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+            if isLoading {
+                ProgressView().padding(14)
+            } else if conversations.isEmpty {
+                Text("No conversations yet")
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(14)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(conversations) { conversation in
+                            Button { onSelect(conversation.id) } label: {
+                                row(conversation)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 320)
+            }
+        }
+        .frame(width: 280)
+        .padding(.bottom, 8)
+        .task {
+            conversations = await backend.fetchConversationList()
+            isLoading = false
+        }
+    }
+
+    private func row(_ conversation: ConversationSummary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(conversation.firstMessage ?? "New conversation")
+                .font(PCorpFont.body(12.5))
+                .foregroundStyle(theme.textPrimary)
+                .lineLimit(1)
+            Text("\(conversation.messageCount) message\(conversation.messageCount == 1 ? "" : "s")")
+                .font(PCorpFont.body(10.5))
+                .foregroundStyle(theme.textSecondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+}
+
+/// The real chat thread — replaces the old single-line "most recent reply
+/// only" display. The backend has persisted full conversation history since
+/// day one (backend/app/db.py); this is the first time the UI actually
+/// shows it. Auto-scrolls to the newest message, including while a reply is
+/// still streaming in.
+private struct ChatThreadView: View {
+    let messages: [ChatMessage]
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(messages) { message in
+                        ChatBubble(message: message).id(message.id)
+                    }
+                }
+                .padding(.horizontal, 48)
+                .padding(.vertical, 16)
+            }
+            .onChange(of: messages.count) { _, _ in scrollToEnd(proxy) }
+            .onChange(of: messages.last?.content) { _, _ in scrollToEnd(proxy) }
+            .onAppear { scrollToEnd(proxy, animated: false) }
+        }
+    }
+
+    private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        guard let lastID = messages.last?.id else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(lastID, anchor: .bottom) }
+        } else {
+            proxy.scrollTo(lastID, anchor: .bottom)
+        }
+    }
+}
+
+private struct ChatBubble: View {
+    let message: ChatMessage
+    @Environment(\.appTheme) private var theme
+
+    private var isUser: Bool { message.role == "user" }
+
+    var body: some View {
+        HStack {
+            if isUser { Spacer(minLength: 60) }
+
+            Text(message.content)
+                .font(PCorpFont.body(14))
+                .foregroundStyle(isUser ? theme.accentText : theme.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(isUser ? theme.accentFill : theme.surface.opacity(0.7))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .strokeBorder(isUser ? Color.clear : theme.surfaceBorder)
+                )
+                .frame(maxWidth: 520, alignment: isUser ? .trailing : .leading)
+
+            if !isUser { Spacer(minLength: 60) }
+        }
+        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
     }
 }
 

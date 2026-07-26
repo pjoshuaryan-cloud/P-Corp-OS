@@ -17,12 +17,15 @@ category than the deferred Agent SDK: one hardcoded action, no file or shell
 access, confirmed with Joshua specifically (2026-07-24) as distinct from the
 general tool-use deferral above.
 
-Conversation history persists in SQLite (app/db.py) — a single, ever-
-continuing conversation, not multiple threads (confirmed decision: "there is
-only ever one Frank"). Typed memory records (app/db.py, app/memory.py) now
-persist too, separate from raw conversation history. Still NOT here:
-semantic/vector search over memory, the full per-device-keypair auth,
-SMAppService packaging.
+Conversation history persists in SQLite (app/db.py) as real conversations —
+reopened from the earlier "one continuous conversation" decision based on
+real usage (Joshua wanted to start fresh chats once he actually used the
+thread). Durable memory (app/memory.py), not the transcript, is what now
+carries "there is only ever one Frank" forward — see app/db.py's docstring.
+Every route now checks a local auth token (app/auth.py) — SECURITY.md's
+first concrete fix, closing the "any local process can connect" gap. Still
+NOT here: semantic/vector search over memory, the full per-device-keypair
+auth, SMAppService packaging.
 """
 
 import os
@@ -30,9 +33,19 @@ from contextlib import asynccontextmanager
 
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
-from app.db import init_db, load_history, load_memory_records, save_message
+from app.auth import get_or_create_token
+from app.db import (
+    create_new_conversation,
+    get_active_conversation_id,
+    init_db,
+    list_conversations,
+    load_history,
+    load_memory_records,
+    save_message,
+    set_active_conversation,
+)
 from app.memory import SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
 from app.personality import SYSTEM_PROMPT
 
@@ -40,6 +53,12 @@ load_dotenv()
 
 MODEL = "claude-sonnet-5"
 MAX_TOKENS = 1024
+AUTH_TOKEN = get_or_create_token()
+
+
+def verify_token(token: str) -> None:
+    if token != AUTH_TOKEN:
+        raise HTTPException(status_code=403, detail="invalid or missing token")
 
 
 @asynccontextmanager
@@ -52,21 +71,60 @@ app = FastAPI(title="P Corp OS Backend", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health(_: None = Depends(verify_token)) -> dict[str, str]:
     return {"status": "ok"}
 
 
 @app.get("/memory")
-async def memory() -> list[dict]:
+async def memory(_: None = Depends(verify_token)) -> list[dict]:
     # Read-only view of what Frank has saved via the save_memory tool — the
     # desktop shell's "Frank" section reads this to make memory visible,
     # rather than it only being inspectable by querying SQLite directly.
     return await load_memory_records()
 
 
+@app.get("/history")
+async def history(_: None = Depends(verify_token)) -> list[dict]:
+    # The active conversation's transcript — always the most recently
+    # created one (app/db.py's get_active_conversation_id). This is what
+    # backs the real chat thread built into WarRoomView.
+    conversation_id = await get_active_conversation_id()
+    return await load_history(conversation_id)
+
+
+@app.post("/conversations")
+async def new_conversation(_: None = Depends(verify_token)) -> dict[str, int]:
+    # "New chat" — memory (app/memory.py) still carries continuity forward;
+    # this just starts a fresh transcript, and becomes the active one.
+    conversation_id = await create_new_conversation()
+    return {"conversation_id": conversation_id}
+
+
+@app.get("/conversations")
+async def conversations(_: None = Depends(verify_token)) -> list[dict]:
+    # Backs the conversation switcher — reopening an older chat needs a way
+    # to find it. Each entry includes a preview (first message) and count
+    # so the list is actually recognizable, not just bare IDs.
+    return await list_conversations()
+
+
+@app.post("/conversations/{conversation_id}/activate")
+async def activate_conversation(conversation_id: int, _: None = Depends(verify_token)) -> dict[str, int]:
+    # Reopening an older conversation — makes it active without needing to
+    # be the newest row (that's the whole reason app_state exists instead
+    # of just "active = newest").
+    await set_active_conversation(conversation_id)
+    return {"conversation_id": conversation_id}
+
+
 @app.websocket("/ws")
 async def websocket_chat(websocket: WebSocket) -> None:
     await websocket.accept()
+
+    if websocket.query_params.get("token") != AUTH_TOKEN:
+        await websocket.send_text("[backend error: invalid or missing auth token]")
+        await websocket.close()
+        return
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -78,16 +136,16 @@ async def websocket_chat(websocket: WebSocket) -> None:
         return
 
     client = AsyncAnthropic(api_key=api_key)
-    # The one continuing conversation, loaded from disk — a fresh connection
-    # (e.g. relaunching the desktop app) picks up where it left off, rather
-    # than starting over, matching "there is only ever one Frank."
-    history: list[dict[str, str]] = await load_history()
+    # Whichever conversation is active as of connect time — a client that
+    # started a new chat right before reconnecting picks up the fresh one.
+    conversation_id = await get_active_conversation_id()
+    history: list[dict[str, str]] = await load_history(conversation_id)
 
     try:
         while True:
             user_message = await websocket.receive_text()
             history.append({"role": "user", "content": user_message})
-            await save_message("user", user_message)
+            await save_message(conversation_id, "user", user_message)
 
             system_prompt = SYSTEM_PROMPT + await build_memory_block()
 
@@ -103,7 +161,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 continue
 
             history.append({"role": "assistant", "content": assistant_reply})
-            await save_message("assistant", assistant_reply)
+            await save_message(conversation_id, "assistant", assistant_reply)
             await websocket.send_text("\n[done]")
     except WebSocketDisconnect:
         pass

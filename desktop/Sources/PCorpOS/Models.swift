@@ -23,6 +23,23 @@ struct InsightItem: Identifiable {
     let targetNavTitle: String
 }
 
+/// A row in the conversation switcher — backs GET /conversations. `id`
+/// matches the real backend conversation_id (not a client-generated UUID)
+/// since it has to round-trip to POST /conversations/{id}/activate.
+struct ConversationSummary: Identifiable, Decodable {
+    let id: Int
+    let createdAt: String
+    let firstMessage: String?
+    let messageCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case createdAt = "created_at"
+        case firstMessage = "first_message"
+        case messageCount = "message_count"
+    }
+}
+
 /// Mirrors backend/app/db.py's `memory_records` table — durable facts Frank
 /// has saved via the `save_memory` tool, distinct from raw conversation
 /// history. Fetched read-only from GET /memory.
