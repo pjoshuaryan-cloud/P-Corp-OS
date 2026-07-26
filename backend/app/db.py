@@ -131,6 +131,11 @@ async def create_new_conversation() -> int:
 
 
 async def list_conversations() -> list[dict]:
+    # Excludes conversations with zero messages — an abandoned "new chat"
+    # click (started but never used) would otherwise sit above real
+    # conversations in the newest-first ordering, burying the ones that
+    # actually matter. Confirmed real: this is exactly what made an actual
+    # past conversation hard to find after a couple of empty test chats.
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -142,6 +147,7 @@ async def list_conversations() -> list[dict]:
                  AND m.role = 'user' ORDER BY m.id ASC LIMIT 1) AS first_message,
                 (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count
             FROM conversations c
+            WHERE EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
             ORDER BY c.id DESC
             """
         )

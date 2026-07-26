@@ -129,6 +129,7 @@ struct WarRoomView: View {
                     Label("Mission", systemImage: "plus")
                 }
                 .buttonStyle(.pillFilled)
+                .fixedSize()
                 .padding(.leading, 8)
             }
         }
