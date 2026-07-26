@@ -30,6 +30,8 @@ struct ContentView: View {
                     FrankView()
                 case "Calendar":
                     CalendarView()
+                case "Knowledge":
+                    KnowledgeView()
                 case "Settings":
                     SettingsView()
                 default:
