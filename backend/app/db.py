@@ -27,9 +27,19 @@ no sync yet, so nothing new leaves the device; it exists so the eventual
 encrypt-before-sync work (flagged in TECH_STACK.md) has something to filter
 on later.
 
-Deliberately NOT here yet: semantic/vector search over memory_records,
-forgetting/versioning (no auto-expiry — manual update/delete only), and any
-context-window management for a single conversation that gets very long.
+`deleted_at` is a soft-delete, not a real DELETE — "forgetting" (app/memory.py's
+`forget_memory` tool, or a manual delete in the UI) marks a record as no
+longer active rather than destroying it. Reversible in principle (matches
+SECURITY.md's "regular" tier reasoning for both save_memory and
+forget_memory), and gives a rudimentary audit trail for free — the row and
+its original content still exist, just excluded from what Frank sees and
+what the UI shows. "Versioning" is deliberately just forget-then-resave, not
+a separate update mechanism or version-history schema — no evidence yet that
+reviewing historical versions matters enough to justify that complexity.
+
+Deliberately NOT here yet: semantic/vector search over memory_records, an
+"undo"/view-forgotten-records UI, and any context-window management for a
+single conversation that gets very long.
 """
 
 from pathlib import Path
@@ -101,10 +111,17 @@ async def init_db() -> None:
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
                 sensitive INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                deleted_at TEXT
             )
             """
         )
+        # Migration path: memory_records existed before deleted_at did.
+        cursor = await db.execute("PRAGMA table_info(memory_records)")
+        columns = {row[1] async for row in cursor}
+        if "deleted_at" not in columns:
+            await db.execute("ALTER TABLE memory_records ADD COLUMN deleted_at TEXT")
+
         await db.commit()
 
 
@@ -184,11 +201,15 @@ async def save_message(conversation_id: int, role: str, content: str) -> None:
 
 
 async def load_memory_records() -> list[dict]:
+    # Excludes forgotten (soft-deleted) records — both for the system-prompt
+    # memory block (app/memory.py's build_memory_block) and the UI list.
+    # Forgetting something should mean it stops influencing Frank, not just
+    # disappears from a list.
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT id, type, title, content, sensitive, created_at "
-            "FROM memory_records ORDER BY id ASC"
+            "FROM memory_records WHERE deleted_at IS NULL ORDER BY id ASC"
         )
         rows = await cursor.fetchall()
         return [
@@ -213,3 +234,41 @@ async def save_memory_record(
             (type, title, content, int(sensitive)),
         )
         await db.commit()
+
+
+async def forget_memory_by_id(memory_id: int) -> bool:
+    # Manual path (FrankView's delete affordance) — the UI already has the
+    # real ID, no title-matching ambiguity to resolve.
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE memory_records SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+            (memory_id,),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def forget_memory_by_title(title: str) -> str | None:
+    # Frank's forget_memory tool path — he only has the title he originally
+    # gave it, not the row ID (never surfaced to him). Exact match preferred;
+    # falls back to a substring match, most recent first, since he may not
+    # recall the exact original wording. Returns the real title that got
+    # forgotten (so he can confirm what happened), or None if nothing matched.
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, title FROM memory_records WHERE deleted_at IS NULL AND title = ? ORDER BY id DESC LIMIT 1",
+            (title,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            cursor = await db.execute(
+                "SELECT id, title FROM memory_records WHERE deleted_at IS NULL AND title LIKE ? ORDER BY id DESC LIMIT 1",
+                (f"%{title}%",),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        await db.execute("UPDATE memory_records SET deleted_at = datetime('now') WHERE id = ?", (row["id"],))
+        await db.commit()
+        return row["title"]

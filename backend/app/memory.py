@@ -1,22 +1,24 @@
 """
-Frank's first tool. Deliberately one narrow, hardcoded action — save a typed
-memory record to SQLite — via the plain `anthropic` SDK's tool-use (function
-calling). This is NOT the Claude Agent SDK deferred elsewhere in the project:
-no file access, no shell, no CLI dependency, just one fixed function Frank
-can call, same risk category as any other backend code path. Confirmed
-decision with Joshua (2026-07-24): Frank should be able to save memories
-proactively, mid-conversation, without being asked — matching the founder
-brief's "name patterns unprompted" mandate — rather than requiring Joshua to
-trigger every save himself.
+Frank's tools — narrow, hardcoded actions via the plain `anthropic` SDK's
+tool-use (function calling). This is NOT the Claude Agent SDK deferred
+elsewhere in the project: no file access, no shell, no CLI dependency, just
+fixed functions Frank can call, same risk category as any other backend code
+path. Confirmed decision with Joshua (2026-07-24): Frank should be able to
+save memories proactively, mid-conversation, without being asked — matching
+the founder brief's "name patterns unprompted" mandate — rather than
+requiring Joshua to trigger every save himself.
 
-Classified under SECURITY.md's permission model as "regular" (auto-allowed,
-no confirmation needed): local-only, reversible, no external effect. Any
-future tool with a real external effect (a trading action, sending an
-email, anything leaving this device) must be classified there before it
+Both tools classified under SECURITY.md's permission model as "regular"
+(auto-allowed, no confirmation needed): local-only, reversible, no external
+effect. forget_memory is a soft-delete (app/db.py's deleted_at), not a real
+DELETE, which is exactly what keeps it reversible enough for this tier — a
+genuinely irreversible delete tool would need "needs confirmation" instead.
+Any future tool with a real external effect (a trading action, sending an
+email, anything leaving this device) must be classified here before it
 ships, not defaulted into "regular" just because that's what existed so far.
 """
 
-from app.db import load_memory_records, save_memory_record
+from app.db import forget_memory_by_title, load_memory_records, save_memory_record
 
 SAVE_MEMORY_TOOL = {
     "name": "save_memory",
@@ -56,6 +58,27 @@ SAVE_MEMORY_TOOL = {
     },
 }
 
+FORGET_MEMORY_TOOL = {
+    "name": "forget_memory",
+    "description": (
+        "Forget a previously saved memory that's no longer accurate or relevant — "
+        "e.g. Joshua corrects something, a project completes, a fact turns out wrong "
+        "or was only ever a test. Matches by the memory's title, as close to the "
+        "original as you recall. Soft-deleted, not destroyed, but shouldn't be used "
+        "casually — only when something genuinely should stop being remembered."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "The title of the memory to forget.",
+            },
+        },
+        "required": ["title"],
+    },
+}
+
 
 async def build_memory_block() -> str:
     records = await load_memory_records()
@@ -76,4 +99,9 @@ async def execute_tool_call(name: str, tool_input: dict) -> str:
             sensitive=tool_input.get("sensitive", False),
         )
         return "Saved."
+    if name == "forget_memory":
+        forgotten_title = await forget_memory_by_title(tool_input["title"])
+        if forgotten_title:
+            return f"Forgot: {forgotten_title}"
+        return "No matching memory found to forget."
     return f"Unknown tool: {name}"

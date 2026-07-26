@@ -11,11 +11,13 @@ sandboxing/permission model doesn't exist yet, so giving Frank general
 tool-use before that's designed would be running ahead of an unresolved
 decision, not just a technical step.
 
-Frank does have exactly one tool (app/memory.py's `save_memory`) via the
-plain SDK's tool-use/function-calling — a different, much smaller risk
-category than the deferred Agent SDK: one hardcoded action, no file or shell
+Frank has two tools (app/memory.py's `save_memory` and `forget_memory`) via
+the plain SDK's tool-use/function-calling — a different, much smaller risk
+category than the deferred Agent SDK: hardcoded actions, no file or shell
 access, confirmed with Joshua specifically (2026-07-24) as distinct from the
-general tool-use deferral above.
+general tool-use deferral above. `forget_memory` is a soft-delete
+(app/db.py's `deleted_at`), not a real DELETE — that reversibility is what
+keeps it in the same "regular" permission tier as save_memory.
 
 Conversation history persists in SQLite (app/db.py) as real conversations —
 reopened from the earlier "one continuous conversation" decision based on
@@ -48,6 +50,7 @@ from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconn
 from app.auth import get_or_create_token
 from app.db import (
     create_new_conversation,
+    forget_memory_by_id,
     get_active_conversation_id,
     init_db,
     list_conversations,
@@ -56,7 +59,7 @@ from app.db import (
     save_message,
     set_active_conversation,
 )
-from app.memory import SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
+from app.memory import FORGET_MEMORY_TOOL, SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
 from app.personality import SYSTEM_PROMPT
 
 load_dotenv()
@@ -87,10 +90,20 @@ async def health(_: None = Depends(verify_token)) -> dict[str, str]:
 
 @app.get("/memory")
 async def memory(_: None = Depends(verify_token)) -> list[dict]:
-    # Read-only view of what Frank has saved via the save_memory tool — the
-    # desktop shell's "Frank" section reads this to make memory visible,
-    # rather than it only being inspectable by querying SQLite directly.
+    # View of what Frank has saved via the save_memory tool, excluding
+    # anything forgotten (app/db.py's deleted_at) — the desktop shell's
+    # "Frank" section reads this to make memory visible, rather than it
+    # only being inspectable by querying SQLite directly.
     return await load_memory_records()
+
+
+@app.delete("/memory/{memory_id}")
+async def forget_memory(memory_id: int, _: None = Depends(verify_token)) -> dict[str, bool]:
+    # Manual forgetting from the UI — same soft-delete Frank's own
+    # forget_memory tool uses, just addressed by ID instead of title since
+    # the UI already has it.
+    forgotten = await forget_memory_by_id(memory_id)
+    return {"forgotten": forgotten}
 
 
 @app.get("/history")
@@ -197,7 +210,7 @@ async def run_claude_turn(
             max_tokens=MAX_TOKENS,
             system=system_prompt,
             messages=history,
-            tools=[SAVE_MEMORY_TOOL],
+            tools=[SAVE_MEMORY_TOOL, FORGET_MEMORY_TOOL],
         ) as stream:
             async for text in stream.text_stream:
                 assistant_text += text
@@ -222,6 +235,11 @@ async def run_claude_turn(
                         "title": "Frank remembered something",
                         "body": block.input.get("title", "New memory saved"),
                     }
+                )
+                await websocket.send_text(f"\n[notify]{notification}")
+            elif block.name == "forget_memory" and result.startswith("Forgot:"):
+                notification = json.dumps(
+                    {"title": "Frank forgot something", "body": result.removeprefix("Forgot: ")}
                 )
                 await websocket.send_text(f"\n[notify]{notification}")
         history.append({"role": "user", "content": tool_results})

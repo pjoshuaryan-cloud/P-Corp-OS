@@ -3,8 +3,11 @@ import SwiftUI
 /// The "Frank" nav section — makes the memory_records table (backend/app/db.py)
 /// actually visible. Before this, a saved memory only existed as something
 /// Frank silently wrote to SQLite; there was no way for Joshua to see it
-/// without a raw DB query. Read-only for now — creation happens exclusively
-/// through Frank's own save_memory tool, not a manual form here.
+/// without a raw DB query. Creation still happens exclusively through
+/// Frank's own save_memory tool, not a manual form — but forgetting
+/// (MEMORY_SYSTEM.md's flagged gap) can now happen either from here or from
+/// Frank's own forget_memory tool during conversation, both hitting the
+/// same soft-delete underneath.
 struct FrankView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = MemoryClient()
@@ -61,7 +64,9 @@ struct FrankView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(client.records.reversed()) { record in
-                        MemoryRecordRow(record: record)
+                        MemoryRecordRow(record: record) {
+                            Task { await client.forget(record) }
+                        }
                     }
                 }
                 .padding(24)
@@ -89,7 +94,9 @@ struct FrankView: View {
 
 private struct MemoryRecordRow: View {
     let record: MemoryRecord
+    let onForget: () -> Void
     @Environment(\.appTheme) private var theme
+    @State private var isHovering = false
 
     private var typeColor: Color {
         switch record.type {
@@ -129,6 +136,19 @@ private struct MemoryRecordRow: View {
                     .font(PCorpFont.body(12.5))
                     .foregroundStyle(theme.textSecondary)
             }
+
+            // Manual forgetting — same soft-delete Frank's own forget_memory
+            // tool uses. Hover-revealed, matching this shell's existing
+            // pattern (e.g. RightRail's insight rows) rather than a
+            // permanently-visible delete button cluttering every row.
+            Button(action: onForget) {
+                Image(systemName: "trash")
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .opacity(isHovering ? 1 : 0)
+            .help("Forget this memory")
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -144,5 +164,8 @@ private struct MemoryRecordRow: View {
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(theme.surfaceBorder)
         )
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
+        }
     }
 }
