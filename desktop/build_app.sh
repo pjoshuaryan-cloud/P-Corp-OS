@@ -165,6 +165,10 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <true/>
     <key>NSCalendarsFullAccessUsageDescription</key>
     <string>Frank shows your upcoming events in the Calendar section and War Room's Today's Agenda.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Push-to-talk lets you speak to Frank instead of typing.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Frank transcribes what you say via push-to-talk so it can be sent as a real message.</string>
 </dict>
 </plist>
 PLIST

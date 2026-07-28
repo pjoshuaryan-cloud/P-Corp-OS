@@ -6,6 +6,7 @@ struct WarRoomView: View {
     @Environment(\.appTheme) private var theme
     @FocusState private var isInputFocused: Bool
     @StateObject private var backend = BackendClient()
+    @StateObject private var voiceInput = VoiceInput()
 
     /// Real time-of-day check, not a fixed string. Takes the date explicitly
     /// (from the TimelineView in `body`, below) rather than reading `.now`
@@ -33,7 +34,41 @@ struct WarRoomView: View {
         VStack(spacing: 0) {
             topBar(currentDate: currentDate)
 
-            if backend.messages.isEmpty {
+            if voiceInput.isListening {
+                // While actively recording, the blob takes over the center
+                // area regardless of whether a text thread exists — this is
+                // the case FrankOrb's audio-reactive path (below) was built
+                // for, replacing the synthetic shimmer with real mic level.
+                Spacer(minLength: 0)
+
+                FrankOrb(audioLevel: voiceInput.audioLevel)
+                    .frame(width: 185, height: 185)
+                    .frame(maxWidth: .infinity)
+
+                Text(voiceInput.transcript.isEmpty ? "Listening…" : voiceInput.transcript)
+                    .font(PCorpFont.body(15))
+                    .foregroundStyle(theme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 480)
+                    .padding(.top, 8)
+            } else if let voiceError = voiceInput.errorMessage {
+                // Surfaced explicitly — this was previously tracked
+                // (VoiceInput.errorMessage) but never actually shown
+                // anywhere, so a real failure (permission denied, no
+                // recognizer available) looked identical to silence.
+                Spacer(minLength: 0)
+                VStack(spacing: 8) {
+                    Image(systemName: "waveform.slash")
+                        .font(.system(size: 24))
+                        .foregroundStyle(theme.textSecondary)
+                    Text(voiceError)
+                        .font(PCorpFont.body(13))
+                        .foregroundStyle(theme.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 400)
+                }
+                Spacer(minLength: 20)
+            } else if backend.messages.isEmpty {
                 Spacer(minLength: 0)
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -51,9 +86,8 @@ struct WarRoomView: View {
 
                 // Only shown in the empty/idle state — once a text
                 // conversation is active the thread takes this space
-                // instead. Voice mode (not built yet) will be the other
-                // case where this reappears, reactive to real audio rather
-                // than the current synthetic shimmer — scoped separately.
+                // instead. The other case where the blob shows is actively
+                // listening (above), reactive to real audio.
                 FrankOrb()
                     .frame(width: 185, height: 185)
                     .frame(maxWidth: .infinity)
@@ -129,11 +163,16 @@ struct WarRoomView: View {
                 .buttonStyle(.icon)
 
                 Button {
-                    // no-op: shell only, not wired up yet
+                    voiceInput.toggle { transcript in
+                        guard let transcript else { return }
+                        backend.send(transcript)
+                    }
                 } label: {
                     Image(systemName: "waveform.circle.fill")
+                        .foregroundStyle(voiceInput.isListening ? .red : theme.textPrimary)
                 }
                 .buttonStyle(.icon)
+                .help("Push-to-talk — click to start, click again to send")
 
                 Button {
                     // no-op: shell only, not wired up yet
@@ -334,6 +373,13 @@ private struct ChatBubble: View {
 /// without a visual preview (the risk there was in reading pixels back out
 /// of a rendered image; there's no such step here).
 private struct FrankOrb: View {
+    /// Real microphone RMS level (0...1) while actively listening via
+    /// push-to-talk (VoiceInput.swift) — the TODO flagged in this file's
+    /// own comments since the very first version, now real. nil (the
+    /// default) means "no live audio," falling back to the original
+    /// synthetic time-based shimmer for the idle/greeting state.
+    var audioLevel: Double? = nil
+
     @State private var floatUp = false
     @Environment(\.appTheme) private var theme
 
@@ -386,14 +432,22 @@ private struct FrankOrb: View {
 
                         // Per-particle shimmer, out of phase with its
                         // neighbors, so the cluster reads as alive rather
-                        // than a static scatter of dots. This is a synthetic
-                        // time-based wave (0.9 rad/s) — TODO, tracked in
-                        // UI_GUIDELINES.md: once Frank actually has a voice
-                        // (Phase 4+ of the UI build-out), this should be
-                        // driven by real audio amplitude/frequency instead,
-                        // so the blob visibly moves in sync with speech
-                        // rather than an unrelated idle animation.
-                        let shimmer = (sin(t * 0.9 + particle.phaseOffset) + 1) / 2 // 0...1
+                        // than a static scatter of dots. Synthetic time-based
+                        // wave (0.9 rad/s) for the idle state; when
+                        // `audioLevel` is real (actively listening via
+                        // push-to-talk), it dominates instead — the blob
+                        // visibly pulses with actual mic input, not an
+                        // unrelated idle animation. A smaller synthetic
+                        // component stays blended in even then, so the
+                        // cluster still reads as organic per-particle motion
+                        // rather than a flat, uniform pulse.
+                        let syntheticShimmer = (sin(t * 0.9 + particle.phaseOffset) + 1) / 2 // 0...1
+                        let shimmer: Double
+                        if let audioLevel {
+                            shimmer = min(1.0, syntheticShimmer * 0.3 + audioLevel * 0.9)
+                        } else {
+                            shimmer = syntheticShimmer
+                        }
                         // Higher floor and higher center value than before —
                         // this is the "bolder" lever: less see-through overall,
                         // a genuinely solid-reading core, not just more dots.
