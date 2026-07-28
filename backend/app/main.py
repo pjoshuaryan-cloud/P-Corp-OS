@@ -42,6 +42,7 @@ keypair auth, SMAppService packaging.
 import json
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
@@ -62,7 +63,14 @@ from app.db import (
 from app.memory import FORGET_MEMORY_TOOL, SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
 from app.personality import SYSTEM_PROMPT
 
-load_dotenv()
+# Explicit path, not load_dotenv()'s default cwd-search — found directly
+# (2026-07-28) while testing the SMAppService packaging shim, which can be
+# launched from any working directory: load_dotenv() with no argument
+# searches from the process's cwd, not from this file's own location, so it
+# silently found no .env and left ANTHROPIC_API_KEY unset. Same class of bug
+# as the Swift-side cwd assumptions fixed in ProjectPaths.swift — deriving
+# from __file__ instead of cwd is the actual fix, not a workaround.
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 MODEL = "claude-sonnet-5"
 MAX_TOKENS = 1024
