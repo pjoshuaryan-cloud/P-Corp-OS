@@ -132,11 +132,12 @@ async def new_conversation(_: None = Depends(verify_token)) -> dict[str, int]:
 
 
 @app.get("/conversations")
-async def conversations(_: None = Depends(verify_token)) -> list[dict]:
-    # Backs the conversation switcher — reopening an older chat needs a way
-    # to find it. Each entry includes a preview (first message) and count
-    # so the list is actually recognizable, not just bare IDs.
-    return await list_conversations()
+async def conversations(q: str | None = None, _: None = Depends(verify_token)) -> list[dict]:
+    # Backs the conversation history browser — reopening an older chat
+    # needs a way to find it, indefinitely, as history accumulates over
+    # time. `q`, when given, searches real message content across each
+    # conversation, not just its preview.
+    return await list_conversations(query=q)
 
 
 @app.post("/conversations/{conversation_id}/activate")

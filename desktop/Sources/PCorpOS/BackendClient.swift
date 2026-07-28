@@ -48,9 +48,13 @@ final class BackendClient: ObservableObject {
         return components.url!
     }
 
-    private var conversationListURL: URL {
+    private func conversationListURL(query: String?) -> URL {
         var components = URLComponents(string: "http://127.0.0.1:8731/conversations")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
+        var items = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
+        if let query, !query.isEmpty {
+            items.append(URLQueryItem(name: "q", value: query))
+        }
+        components.queryItems = items
         return components.url!
     }
 
@@ -74,10 +78,14 @@ final class BackendClient: ObservableObject {
         connect()
     }
 
-    /// Every past conversation, newest first, for the switcher.
-    func fetchConversationList() async -> [ConversationSummary] {
+    /// Every past conversation, most-recently-active first, for the
+    /// history browser. `query`, when non-nil/non-empty, searches real
+    /// message content (backend/app/db.py's list_conversations), not just
+    /// each conversation's preview — indefinite history only stays useful
+    /// if you can actually find something in it later.
+    func fetchConversationList(query: String? = nil) async -> [ConversationSummary] {
         do {
-            let (data, _) = try await URLSession.shared.data(from: conversationListURL)
+            let (data, _) = try await URLSession.shared.data(from: conversationListURL(query: query))
             return try JSONDecoder().decode([ConversationSummary].self, from: data)
         } catch {
             return []

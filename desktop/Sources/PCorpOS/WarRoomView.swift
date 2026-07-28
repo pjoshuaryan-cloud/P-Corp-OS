@@ -227,17 +227,25 @@ struct WarRoomView: View {
     }
 }
 
-/// Lets Joshua get back to an older conversation — surfaced directly after
-/// he asked "where would I find previous chats" once "new chat" existed but
-/// nothing let him return to one. Backed by GET /conversations; picking a
-/// row calls BackendClient.switchToConversation, which makes it active on
-/// the backend and reconnects.
+/// Frank's full conversation history — searchable, grouped by when each
+/// conversation was last actually active. Built directly from a real
+/// request ("I want frank to remember all chats indefinitely, I want to be
+/// able to go to old chats at any point") — retention was already
+/// indefinite (no expiry logic anywhere), but the original small popover
+/// wouldn't have scaled to searching real history built up over months or
+/// years, so this replaces it rather than sitting alongside it. Backed by
+/// GET /conversations (optionally ?q=... for real message-content search,
+/// not just preview text); picking a row calls
+/// BackendClient.switchToConversation, which makes it active on the backend
+/// and reconnects.
 private struct ConversationListPopover: View {
     @ObservedObject var backend: BackendClient
     let onSelect: (Int) -> Void
 
     @State private var conversations: [ConversationSummary] = []
     @State private var isLoading = true
+    @State private var searchText = ""
+    @State private var searchTask: Task<Void, Never>?
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -246,37 +254,115 @@ private struct ConversationListPopover: View {
                 .font(PCorpFont.label(10))
                 .trackedLabel(1.2)
                 .foregroundStyle(theme.textSecondary)
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 10)
+
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.textSecondary)
+                TextField("Search all conversations…", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(PCorpFont.body(12.5))
+                    .onChange(of: searchText) { _, newValue in
+                        scheduleSearch(newValue)
+                    }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8).fill(theme.textPrimary.opacity(0.05)))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+
+            Divider().overlay(theme.divider)
 
             if isLoading {
-                ProgressView().padding(14)
+                ProgressView()
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
             } else if conversations.isEmpty {
-                Text("No conversations yet")
+                Text(searchText.isEmpty ? "No conversations yet" : "No matches for \"\(searchText)\"")
                     .font(PCorpFont.body(12))
                     .foregroundStyle(theme.textSecondary)
-                    .padding(14)
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(conversations) { conversation in
-                            Button { onSelect(conversation.id) } label: {
-                                row(conversation)
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(groupedByDay, id: \.0) { day, dayConversations in
+                            Text(day)
+                                .font(PCorpFont.label(9))
+                                .trackedLabel(1.1)
+                                .foregroundStyle(theme.textSecondary)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 10)
+                                .padding(.bottom, 2)
+                            ForEach(dayConversations) { conversation in
+                                Button { onSelect(conversation.id) } label: {
+                                    row(conversation)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
+                    .padding(.vertical, 4)
                 }
-                .frame(maxHeight: 320)
+                .frame(maxHeight: 420)
             }
         }
-        .frame(width: 280)
+        .frame(width: 360)
         .padding(.bottom, 8)
-        .task {
-            conversations = await backend.fetchConversationList()
-            isLoading = false
+        .task { await load(query: nil) }
+    }
+
+    /// Groups by when each conversation was last actually active (real
+    /// calendar day in the user's local timezone, not UTC — the DB stores
+    /// UTC timestamps, but "today"/"yesterday" should mean the user's own
+    /// today). Groups stay ordered newest-first, matching the overall list.
+    private var groupedByDay: [(String, [ConversationSummary])] {
+        let grouped = Dictionary(grouping: conversations) { conversation -> String in
+            guard let date = Self.sqliteDateFormatter.date(from: conversation.lastMessageAt) else { return "Earlier" }
+            if Calendar.current.isDateInToday(date) { return "Today" }
+            if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+            return Self.dayLabelFormatter.string(from: date)
         }
+        return grouped.sorted { lhs, rhs in
+            let lhsDate = lhs.value.first.flatMap { Self.sqliteDateFormatter.date(from: $0.lastMessageAt) } ?? .distantPast
+            let rhsDate = rhs.value.first.flatMap { Self.sqliteDateFormatter.date(from: $0.lastMessageAt) } ?? .distantPast
+            return lhsDate > rhsDate
+        }
+    }
+
+    private static let sqliteDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter
+    }()
+
+    private static let dayLabelFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE, MMM d"
+        return formatter
+    }()
+
+    /// Debounced — searches on every keystroke would mean a real request
+    /// per character typed.
+    private func scheduleSearch(_ text: String) {
+        searchTask?.cancel()
+        searchTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await load(query: text)
+        }
+    }
+
+    private func load(query: String?) async {
+        isLoading = true
+        conversations = await backend.fetchConversationList(query: query)
+        isLoading = false
     }
 
     private func row(_ conversation: ConversationSummary) -> some View {
@@ -289,7 +375,7 @@ private struct ConversationListPopover: View {
                 .font(PCorpFont.body(10.5))
                 .foregroundStyle(theme.textSecondary)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())

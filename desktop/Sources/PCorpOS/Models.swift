@@ -25,12 +25,18 @@ struct ConversationSummary: Identifiable, Decodable {
     let createdAt: String
     let firstMessage: String?
     let messageCount: Int
+    /// When this conversation was last actually used, not just created —
+    /// what the history browser sorts/groups by, so a conversation reopened
+    /// and continued today surfaces above one merely created earlier but
+    /// untouched since.
+    let lastMessageAt: String
 
     enum CodingKeys: String, CodingKey {
         case id
         case createdAt = "created_at"
         case firstMessage = "first_message"
         case messageCount = "message_count"
+        case lastMessageAt = "last_message_at"
     }
 }
 

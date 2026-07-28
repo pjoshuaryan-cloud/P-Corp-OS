@@ -147,27 +147,45 @@ async def create_new_conversation() -> int:
         return new_id
 
 
-async def list_conversations() -> list[dict]:
+async def list_conversations(query: str | None = None) -> list[dict]:
     # Excludes conversations with zero messages — an abandoned "new chat"
     # click (started but never used) would otherwise sit above real
     # conversations in the newest-first ordering, burying the ones that
     # actually matter. Confirmed real: this is exactly what made an actual
     # past conversation hard to find after a couple of empty test chats.
+    #
+    # Sorted by last_message_at (most recent activity), not created_at
+    # (when the conversation was first started) — a conversation reopened
+    # and continued today should surface above one merely created more
+    # recently but never touched since. `query`, when given, searches real
+    # message CONTENT across the whole conversation (not just the preview),
+    # so "find where I discussed X" actually works, not just matching
+    # against whatever happened to be the first message.
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            """
+        sql = """
             SELECT
                 c.id,
                 c.created_at,
                 (SELECT content FROM messages m WHERE m.conversation_id = c.id
                  AND m.role = 'user' ORDER BY m.id ASC LIMIT 1) AS first_message,
-                (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count
+                (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+                (SELECT MAX(created_at) FROM messages m WHERE m.conversation_id = c.id) AS last_message_at
             FROM conversations c
             WHERE EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
-            ORDER BY c.id DESC
+        """
+        params: list[str] = []
+        if query:
+            sql += """
+                AND EXISTS (
+                    SELECT 1 FROM messages m2
+                    WHERE m2.conversation_id = c.id AND m2.content LIKE ?
+                )
             """
-        )
+            params.append(f"%{query}%")
+        sql += " ORDER BY last_message_at DESC"
+
+        cursor = await db.execute(sql, params)
         rows = await cursor.fetchall()
         return [
             {
@@ -175,6 +193,7 @@ async def list_conversations() -> list[dict]:
                 "created_at": row["created_at"],
                 "first_message": row["first_message"],
                 "message_count": row["message_count"],
+                "last_message_at": row["last_message_at"],
             }
             for row in rows
         ]
