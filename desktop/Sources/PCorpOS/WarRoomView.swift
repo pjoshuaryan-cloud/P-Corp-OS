@@ -7,6 +7,13 @@ struct WarRoomView: View {
     @FocusState private var isInputFocused: Bool
     @StateObject private var backend = BackendClient()
     @StateObject private var voiceInput = VoiceInput()
+    @StateObject private var voiceOutput = VoiceOutput()
+    /// Set true right when a push-to-talk transcript is sent, consumed
+    /// once that turn's reply finishes streaming -- the mechanism for
+    /// "only speak replies to voice input" (confirmed decision,
+    /// 2026-07-28): a typed message never sets this, so its reply stays
+    /// silent same as before VoiceOutput existed.
+    @State private var pendingVoiceReply = false
 
     /// Real time-of-day check, not a fixed string. Takes the date explicitly
     /// (from the TimelineView in `body`, below) rather than reading `.now`
@@ -51,6 +58,26 @@ struct WarRoomView: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 480)
                     .padding(.top, 8)
+            } else if voiceOutput.isSpeaking {
+                // Mirrors the isListening case above -- the orb takes over
+                // regardless of the text thread underneath while Frank is
+                // actually talking, reactive to real playback amplitude
+                // (VoiceOutput.swift) rather than the synthetic shimmer.
+                // Falls through to the normal thread view (below) the
+                // instant playback ends, so the full reply text is never
+                // lost, just shown once he's done saying it.
+                Spacer(minLength: 0)
+
+                FrankOrb(audioLevel: voiceOutput.audioLevel)
+                    .frame(width: 185, height: 185)
+                    .frame(maxWidth: .infinity)
+
+                Text("Speaking…")
+                    .font(PCorpFont.body(15))
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(.top, 8)
+
+                Spacer(minLength: 20)
             } else if let voiceError = voiceInput.errorMessage {
                 // Surfaced explicitly — this was previously tracked
                 // (VoiceInput.errorMessage) but never actually shown
@@ -105,6 +132,18 @@ struct WarRoomView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
         .onAppear { backend.connect() }
+        .onChange(of: backend.isStreaming) { _, isStreaming in
+            // isStreaming going true -> false is the real signal a turn
+            // just completed (backend's own "\n[done]" sentinel) -- only
+            // then is the assistant's reply actually complete text, safe
+            // to hand to VoiceOutput. Speaking it mid-stream would mean
+            // synthesizing broken sentence fragments as they arrive.
+            guard !isStreaming, pendingVoiceReply else { return }
+            pendingVoiceReply = false
+            if let reply = backend.messages.last(where: { $0.role == "assistant" })?.content {
+                voiceOutput.speak(reply)
+            }
+        }
     }
 
     private func sendMessage() {
@@ -133,6 +172,7 @@ struct WarRoomView: View {
 
             HStack(spacing: 4) {
                 Button {
+                    voiceOutput.stop()
                     Task { await backend.startNewConversation() }
                 } label: {
                     Image(systemName: "square.and.pencil")
@@ -151,6 +191,7 @@ struct WarRoomView: View {
                 .popover(isPresented: $showConversationList) {
                     ConversationListPopover(backend: backend) { conversationID in
                         showConversationList = false
+                        voiceOutput.stop()
                         Task { await backend.switchToConversation(conversationID) }
                     }
                 }
@@ -163,8 +204,17 @@ struct WarRoomView: View {
                 .buttonStyle(.icon)
 
                 Button {
+                    if !voiceInput.isListening {
+                        // About to start a new push-to-talk recording --
+                        // confirmed decision: that interrupts any reply
+                        // Frank is still speaking, same as cutting off a
+                        // person mid-sentence, rather than talking over
+                        // him or waiting him out.
+                        voiceOutput.stop()
+                    }
                     voiceInput.toggle { transcript in
                         guard let transcript else { return }
+                        pendingVoiceReply = true
                         backend.send(transcript)
                     }
                 } label: {
@@ -172,7 +222,7 @@ struct WarRoomView: View {
                         .foregroundStyle(voiceInput.isListening ? .red : theme.textPrimary)
                 }
                 .buttonStyle(.icon)
-                .help("Push-to-talk — click to start, click again to send")
+                .help("Push-to-talk — click to start, stops and sends automatically once you stop talking")
 
                 Button {
                     // no-op: shell only, not wired up yet

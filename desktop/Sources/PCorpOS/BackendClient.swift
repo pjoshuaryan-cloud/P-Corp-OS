@@ -25,6 +25,21 @@ final class BackendClient: ObservableObject {
 
     private var task: URLSessionWebSocketTask?
 
+    /// True once this process has already started its one fresh
+    /// conversation for this launch (see connect()). A `static var`, not
+    /// an instance property, deliberately — WarRoomView (and this class
+    /// with it) gets torn down and recreated every time you navigate to a
+    /// different sidebar section and back (ContentView forces this via
+    /// `.id(selectedItem.id)`), so an instance property would re-trigger
+    /// "start fresh" on every nav click, not just app launch. Confirmed
+    /// decision (2026-07-28): a brand-new conversation starts once per
+    /// app launch; clicking to Settings/Calendar/etc. and back to War
+    /// Room within the same running session keeps whatever's active, it
+    /// doesn't get wiped. Old conversations don't need to "just sit
+    /// there" anymore either way — the conversation history browser
+    /// (search + date grouping) already makes any of them reachable.
+    private static var hasStartedFreshThisLaunch = false
+
     /// Bound to 127.0.0.1 only, matching the backend's own binding — this
     /// isn't reachable over the network, only from this same machine.
     /// Token appended fresh at connect time (see AuthToken.swift) — the
@@ -111,7 +126,25 @@ final class BackendClient: ObservableObject {
         task.resume()
         isConnected = true
         listen()
-        Task { await loadHistory() }
+
+        if Self.hasStartedFreshThisLaunch {
+            Task { await loadHistory() }
+        } else {
+            Self.hasStartedFreshThisLaunch = true
+            Task { await startFreshConversationForLaunch() }
+        }
+    }
+
+    /// Creates a new conversation and makes it active — the same backend
+    /// call startNewConversation() makes, but skipped-down for use during
+    /// connect() itself: no need to clear `messages` (already empty on a
+    /// fresh instance) or disconnect/reconnect (there's no live
+    /// connection yet to restart), and no loadHistory() call since the
+    /// new conversation is guaranteed to have none.
+    private func startFreshConversationForLaunch() async {
+        var request = URLRequest(url: newConversationURL)
+        request.httpMethod = "POST"
+        _ = try? await URLSession.shared.data(for: request)
     }
 
     func disconnect() {

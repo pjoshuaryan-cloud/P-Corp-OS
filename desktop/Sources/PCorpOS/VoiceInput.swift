@@ -2,12 +2,17 @@ import AVFoundation
 import Foundation
 import Speech
 
-/// Push-to-talk speech-to-text — click to start listening, click again to
-/// stop and get the transcript. Confirmed decision (2026-07-28): push-to-
-/// talk, not continuous/always-listening — the mic is only ever active
-/// while deliberately triggered, a much smaller privacy footprint and far
-/// less technical risk (no wake-word/voice-activity-detection needed) than
-/// an always-on microphone.
+/// Push-to-talk speech-to-text — click once to start listening; stops on
+/// its own once you stop talking (see trackVoiceActivity below), or can
+/// still be stopped manually by clicking again. Confirmed decision
+/// (2026-07-28): push-to-talk, not continuous/always-listening — the mic
+/// is only ever active while deliberately triggered, a much smaller
+/// privacy footprint than an always-on microphone. Auto-stop-on-silence
+/// was added the same day, after live use: requiring a second click to
+/// end every single turn felt like unnecessary friction once the click-
+/// to-start privacy boundary was already in place — the mic being
+/// deliberately triggered is what matters, not requiring a second
+/// deliberate action to end it too.
 ///
 /// Uses Speech + AVAudioEngine directly, both privacy-gated frameworks in
 /// the same category as EventKit/UNUserNotificationCenter, which failed
@@ -31,6 +36,26 @@ final class VoiceInput: ObservableObject {
     private var task: SFSpeechRecognitionTask?
     private var onFinishedCallback: ((String?) -> Void)?
     private var didDeliver = false
+
+    /// Auto-stop-on-silence bookkeeping. `hasDetectedSpeech` gates the
+    /// silence check so it can never fire before you've actually started
+    /// talking — otherwise it'd stop instantly on the silence between
+    /// clicking the mic and beginning to speak.
+    private var hasDetectedSpeech = false
+    private var lastVoiceActivityAt = Date()
+    private var recordingStartedAt = Date()
+    /// Best-effort thresholds, not measured against real recordings on
+    /// this machine (no way to capture that outside a live session) —
+    /// starting point per VoiceInput's own existing note that raw mic RMS
+    /// is typically small even for normal speech; may need tuning once
+    /// actually used.
+    private let voiceActivityThreshold: Double = 0.015
+    private let silenceDuration: TimeInterval = 1.2
+    /// Safety net now that there's no manual "click to stop" requirement
+    /// — caps how long the mic can stay open if silence is never cleanly
+    /// detected (e.g. sustained background noise), rather than leaving it
+    /// open indefinitely.
+    private let maxRecordingDuration: TimeInterval = 60
 
     /// Returns the final transcript once stopped, or nil if nothing was
     /// captured (e.g. permission denied, no speech).
@@ -68,6 +93,10 @@ final class VoiceInput: ObservableObject {
 
         onFinishedCallback = onFinished
         didDeliver = false
+        hasDetectedSpeech = false
+        let now = Date()
+        lastVoiceActivityAt = now
+        recordingStartedAt = now
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
@@ -89,6 +118,7 @@ final class VoiceInput: ObservableObject {
                 // for normal speech) — scaled up so it actually reads as
                 // "reactive" in the UI rather than a barely-visible flicker.
                 self?.audioLevel = min(rms * 12, 1.0)
+                self?.trackVoiceActivity(rawRMS: rms)
             }
         }
 
@@ -124,6 +154,29 @@ final class VoiceInput: ObservableObject {
         } catch {
             errorMessage = "Couldn't start audio engine: \(error.localizedDescription)"
             onFinished(nil)
+        }
+    }
+
+    /// Runs on every audio buffer (~roughly every 20-30ms) while listening.
+    /// Auto-stops once real speech has been heard AND then gone quiet for
+    /// `silenceDuration` — `hasDetectedSpeech` is what prevents this from
+    /// firing during the silence before you've started talking at all.
+    /// Also enforces `maxRecordingDuration` regardless, as a safety net.
+    private func trackVoiceActivity(rawRMS: Double) {
+        guard isListening else { return }
+        let now = Date()
+
+        if rawRMS > voiceActivityThreshold {
+            hasDetectedSpeech = true
+            lastVoiceActivityAt = now
+        }
+
+        if hasDetectedSpeech, now.timeIntervalSince(lastVoiceActivityAt) > silenceDuration {
+            stop()
+            return
+        }
+        if now.timeIntervalSince(recordingStartedAt) > maxRecordingDuration {
+            stop()
         }
     }
 
