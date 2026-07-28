@@ -21,6 +21,12 @@
 # Frank's SQLite data directory depending on launch method would be worse
 # than the coupling this avoids).
 #
+# Stage 3: writes the Contents/Library/LaunchAgents/<label>.plist
+# SMAppService.agent(plistName:) requires to register the shim as a real
+# persistent background service (BackendService.swift, wired to the
+# Settings "Launch at Login" toggle) — the step that actually delivers an
+# always-running Frank, not just a bundled backend still launched by hand.
+#
 # Re-run this after every code change instead of `swift build` when you want
 # to test the bundled form specifically. `swift run` during normal
 # development is unaffected and still works exactly as before.
@@ -94,6 +100,44 @@ echo "Embedding Python runtime (this copy can be slow, ~115MB)..."
 cp -R "$PYTHON_RUNTIME_CACHE" "$APP_BUNDLE/Contents/Resources/python"
 rm -f "$APP_BUNDLE/Contents/Resources/python/.uv-lock-hash"
 
+# Stage 3: the LaunchAgent registration plist. SMAppService.agent(plistName:)
+# requires this exact location, and the target executable must be co-located
+# in this same bundle's Contents/MacOS/ (a real, checked API requirement).
+# ProgramArguments[0] must be a REAL PATH, not just the bare executable
+# name — confirmed directly via Console/unified-log output after the bare
+# name failed: launchd's posix_spawn does its own plain POSIX exec path
+# resolution (PATH-search for a bare name, no slash), it does NOT get
+# rewritten to be bundle-relative by SMAppService/BTM first. An absolute
+# path is the simplest fix that's guaranteed correct — consistent with the
+# same "still single-machine, not distributed" scope already decided for
+# the shim's PYTHONPATH in stage 2. Logs to /tmp since a launchd-managed
+# process has no terminal to inherit.
+BACKEND_LABEL="media.alphamode.pcorpos.backend"
+ABS_APP_BUNDLE="$(pwd)/$APP_BUNDLE"
+mkdir -p "$APP_BUNDLE/Contents/Library/LaunchAgents"
+cat > "$APP_BUNDLE/Contents/Library/LaunchAgents/${BACKEND_LABEL}.plist" << AGENTPLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${BACKEND_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${ABS_APP_BUNDLE}/Contents/MacOS/PCorpOSBackend</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/pcorpos-backend.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/pcorpos-backend.log</string>
+</dict>
+</plist>
+AGENTPLIST
+
 cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -135,4 +179,4 @@ xattr -cr "$APP_BUNDLE"
 codesign --force --sign - "$APP_BUNDLE"
 
 echo "Done: $APP_BUNDLE"
-echo "Backend shim: Contents/MacOS/PCorpOSBackend (not yet wired to SMAppService — stage 3, still manual)"
+echo "Backend shim: Contents/MacOS/PCorpOSBackend, registerable via Settings → Launch at Login (SMAppService, stage 3)"

@@ -9,8 +9,15 @@ import SwiftUI
 struct SettingsView: View {
     @State private var proactiveInsights = true
     @State private var soundEffects = false
-    @State private var launchAtLogin = true
     @State private var showSystemStatus = true
+
+    // Real now (SMAppService packaging, stage 3) — was a stubbed @State that
+    // did nothing. Reads actual registration status on appear rather than a
+    // separately persisted preference, since SMAppService.status is the real
+    // source of truth (e.g. the user could disable it from System Settings'
+    // own Login Items pane directly, outside this app entirely).
+    @State private var backendAutoStart = false
+    @State private var backendStatusNote: String?
 
     // Same key as PCorpOSApp's @AppStorage — this is the actual toggle,
     // not a placeholder; flipping it really switches the app's theme.
@@ -51,8 +58,8 @@ struct SettingsView: View {
                 SettingsSection(title: "GENERAL") {
                     SettingsToggleRow(
                         title: "Launch at Login",
-                        detail: "Start P Corp OS automatically when you log in.",
-                        isOn: $launchAtLogin
+                        detail: backendStatusNote ?? "Start Frank's backend automatically in the background, even before you open the app.",
+                        isOn: backendAutoStartBinding
                     )
                     settingsSeparator
                     SettingsToggleRow(
@@ -69,6 +76,45 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(theme.background)
+        .onAppear { refreshBackendStatus() }
+    }
+
+    private var backendAutoStartBinding: Binding<Bool> {
+        Binding(
+            get: { backendAutoStart },
+            set: { newValue in
+                do {
+                    if newValue {
+                        try BackendService.register()
+                    } else {
+                        try BackendService.unregister()
+                    }
+                } catch {
+                    backendStatusNote = "Couldn't change this: \(error.localizedDescription)"
+                }
+                refreshBackendStatus()
+            }
+        )
+    }
+
+    private func refreshBackendStatus() {
+        switch BackendService.status {
+        case .enabled:
+            backendAutoStart = true
+            backendStatusNote = nil
+        case .requiresApproval:
+            backendAutoStart = true
+            backendStatusNote = "Needs approval in System Settings → General → Login Items to actually start."
+        case .notFound:
+            backendAutoStart = false
+            backendStatusNote = "Not available in this build — the Login Items registration wasn't found in the app bundle."
+        case .notRegistered:
+            backendAutoStart = false
+            backendStatusNote = nil
+        @unknown default:
+            backendAutoStart = false
+            backendStatusNote = nil
+        }
     }
 
     /// A hairline separator between rows in a section — deliberately not a
