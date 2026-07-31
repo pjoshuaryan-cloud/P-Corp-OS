@@ -4,70 +4,51 @@ import Foundation
 /// Text-to-speech for Frank's replies -- the output half of "talking to
 /// Frank," alongside VoiceInput.swift's push-to-talk input. Confirmed
 /// decision (2026-07-28): only replies to a voice-triggered turn are
-/// spoken aloud (typed conversations stay silent, same as before this
-/// existed), and starting a new push-to-talk recording interrupts
+/// spoken aloud, and starting a new push-to-talk recording interrupts
 /// playback immediately, same as cutting off a person mid-sentence.
 ///
-/// Deliberately on-device (AVSpeechSynthesizer), not a cloud TTS API --
-/// no new backend work, no network dependency, no per-request cost,
-/// matching every other feature's local-first default (Speech,
-/// EventKit/AppleScript, notifications). A cloud voice would sound more
-/// natural/branded but is a real step up in scope (paid API, audio-
-/// streaming plumbing that doesn't exist yet) -- worth revisiting only if
-/// the on-device voice actually feels wrong once heard, not built
-/// speculatively now.
+/// Uses ElevenLabs (via the backend's `/speak` proxy, app/main.py) rather
+/// than on-device `AVSpeechSynthesizer` -- a real, confirmed upgrade, not
+/// the original scope. The original on-device version hit a genuine
+/// ceiling: "Tom (Enhanced)" is the only downloadable en-US male voice on
+/// this Mac, with no Premium tier available for it at all, and it still
+/// read as robotic. Cloud TTS was flagged from the start as the fallback
+/// if the on-device voice ever felt wrong once actually heard -- that
+/// happened, so this is that upgrade, with its accepted real costs (a
+/// paid ElevenLabs account, a network round-trip -- and its latency --
+/// for every spoken reply) rather than something adopted casually.
 ///
-/// Uses `write(_:toBufferCallback:)` rather than the simpler `speak(_:)`
-/// specifically to get real PCM buffers to RMS-analyze -- `speak(_:)`
-/// plays audio automatically but hands you nothing to react to, and
-/// UI_GUIDELINES.md already flagged "shimmer driven by real audio once
-/// Frank has an actual voice" as tracked-but-unbuildable until now. Since
-/// `write` does NOT play audio itself (it's meant for offline rendering),
-/// playback is done manually via a small AVAudioEngine graph -- the same
-/// buffers that drive the meter are what's actually scheduled for
-/// playback, so what you see is exactly what you hear.
+/// The API key stays server-side (backend/.env, same pattern as
+/// ANTHROPIC_API_KEY) -- this class only ever talks to the local backend,
+/// never to ElevenLabs directly.
 @MainActor
-final class VoiceOutput: ObservableObject {
+final class VoiceOutput: NSObject, ObservableObject {
     @Published private(set) var isSpeaking = false
     /// Real amplitude of what's actually playing right now, 0...1 -- feeds
-    /// FrankOrb's shimmer while Frank talks, same pattern as VoiceInput's
-    /// mic-level meter.
+    /// FrankOrb's shimmer while Frank talks. Stays 0 while a speak() call
+    /// is waiting on the network (ElevenLabs generation + download take a
+    /// real moment, unlike instant local synthesis) -- the orb still
+    /// appears immediately, just calm until real audio actually starts.
     @Published private(set) var audioLevel: Double = 0
+    /// Surfaced explicitly (same reasoning as VoiceInput.errorMessage) --
+    /// otherwise ElevenLabs not being configured yet, or a real network
+    /// failure, would look identical to Frank just staying silent.
+    @Published private(set) var errorMessage: String?
 
-    private let synthesizer = AVSpeechSynthesizer()
-    private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
-    private var isEngineSetUp = false
-    /// Bumped on every speak()/stop() -- buffers from a superseded
-    /// utterance (already interrupted, or a newer speak() call) check this
-    /// before touching published state or scheduling audio, so a stale
-    /// in-flight buffer can't resurrect playback after an interruption.
+    private var player: AVAudioPlayer?
+    private var meterTask: Task<Void, Never>?
+    private var fetchTask: Task<Void, Never>?
+    /// Bumped on every speak()/stop() -- an in-flight network fetch from a
+    /// superseded call checks this before touching state or starting
+    /// playback, so a slow response that arrives after an interruption
+    /// can't start speaking anyway.
     private var generation = 0
 
-    /// Confirmed decision (2026-07-28): Frank's voice should be male.
-    /// Checked this Mac directly (not assumed) -- every installed English
-    /// voice is default quality, none Enhanced/Premium, and the earlier
-    /// version of this fallback ignored gender entirely, which is exactly
-    /// why it picked Samantha (female, the system default for en-US).
-    /// Filters for gender == .male first, THEN ranks by quality within
-    /// that -- getting gender right matters more than quality ranking
-    /// here, since ranking by quality first (the previous bug) silently
-    /// drops the gender requirement whenever no male voice happens to be
-    /// top-ranked. Real ceiling worth naming: default-quality voices all
-    /// sound synthetic no matter which one loads -- Enhanced/Premium (a
-    /// real download via System Settings > Accessibility > Spoken Content)
-    /// is what actually fixes "robotic," not voice selection logic; this
-    /// picks the best of what's already on the machine and automatically
-    /// prefers a better one the moment one is downloaded.
-    private static let preferredVoice: AVSpeechSynthesisVoice? = {
-        let englishVoices = AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("en") }
-        let maleVoices = englishVoices.filter { $0.gender == .male }
-        return maleVoices.first { $0.quality == .premium }
-            ?? maleVoices.first { $0.quality == .enhanced }
-            ?? maleVoices.first { $0.language == "en-US" }
-            ?? maleVoices.first
-            ?? AVSpeechSynthesisVoice(language: "en-US")
-    }()
+    private var speakURL: URL {
+        var components = URLComponents(string: "http://127.0.0.1:8731/speak")!
+        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
+        return components.url!
+    }
 
     func speak(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -76,35 +57,33 @@ final class VoiceOutput: ObservableObject {
         stop()
         generation += 1
         let thisGeneration = generation
+        errorMessage = nil
         isSpeaking = true
 
-        let utterance = AVSpeechUtterance(string: trimmed)
-        utterance.voice = Self.preferredVoice
+        fetchTask = Task {
+            do {
+                var request = URLRequest(url: speakURL)
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try JSONEncoder().encode(["text": trimmed])
 
-        synthesizer.write(utterance) { [weak self] buffer in
-            guard let self, let pcmBuffer = buffer as? AVAudioPCMBuffer else { return }
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard generation == thisGeneration else { return } // superseded while in flight
 
-            if pcmBuffer.frameLength == 0 {
-                // An empty buffer is AVSpeechSynthesizer's own signal that
-                // this utterance is fully rendered -- nothing left to play.
-                Task { @MainActor in
-                    guard self.generation == thisGeneration else { return }
-                    self.isSpeaking = false
-                    self.audioLevel = 0
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                    throw VoiceOutputError.badResponse
                 }
-                return
-            }
 
-            guard let channelData = pcmBuffer.floatChannelData?[0] else { return }
-            let frameLength = Int(pcmBuffer.frameLength)
-            var sum: Float = 0
-            for i in 0..<frameLength { sum += channelData[i] * channelData[i] }
-            let rms = Double(sqrt(sum / Float(frameLength)))
-
-            Task { @MainActor in
-                guard self.generation == thisGeneration else { return }
-                self.audioLevel = min(rms * 6, 1.0)
-                self.schedule(pcmBuffer, generation: thisGeneration)
+                let newPlayer = try AVAudioPlayer(data: data)
+                newPlayer.isMeteringEnabled = true
+                newPlayer.delegate = self
+                player = newPlayer
+                newPlayer.play()
+                startMetering(generation: thisGeneration)
+            } catch {
+                guard generation == thisGeneration else { return }
+                isSpeaking = false
+                errorMessage = "Couldn't reach Frank's voice (ElevenLabs) — check backend/.env is configured and the backend is reachable."
             }
         }
     }
@@ -114,25 +93,40 @@ final class VoiceOutput: ObservableObject {
     /// than waiting for him to finish.
     func stop() {
         generation += 1
-        player.stop()
+        fetchTask?.cancel()
+        fetchTask = nil
+        meterTask?.cancel()
+        meterTask = nil
+        player?.stop()
+        player = nil
         isSpeaking = false
         audioLevel = 0
     }
 
-    private func schedule(_ buffer: AVAudioPCMBuffer, generation: Int) {
-        guard self.generation == generation else { return }
-
-        if !isEngineSetUp {
-            engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: buffer.format)
-            isEngineSetUp = true
-        }
-        if !engine.isRunning {
-            try? engine.start()
-        }
-        player.scheduleBuffer(buffer)
-        if !player.isPlaying {
-            player.play()
+    private func startMetering(generation: Int) {
+        meterTask = Task {
+            while !Task.isCancelled, self.generation == generation, let player, player.isPlaying {
+                player.updateMeters()
+                // averagePower is in decibels, roughly -160 (silence) to 0
+                // (loudest) -- remapped to a 0...1 range FrankOrb expects,
+                // same shape as the mic-RMS meter VoiceInput already uses.
+                let db = Double(player.averagePower(forChannel: 0))
+                self.audioLevel = max(0, min(1, (db + 50) / 50))
+                try? await Task.sleep(nanoseconds: 50_000_000) // ~20fps
+            }
         }
     }
+}
+
+extension VoiceOutput: AVAudioPlayerDelegate {
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            self.isSpeaking = false
+            self.audioLevel = 0
+        }
+    }
+}
+
+private enum VoiceOutputError: Error {
+    case badResponse
 }

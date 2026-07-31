@@ -78,6 +78,23 @@ struct WarRoomView: View {
                     .padding(.top, 8)
 
                 Spacer(minLength: 20)
+            } else if let voiceOutputError = voiceOutput.errorMessage {
+                // Same reasoning as the voiceInput.errorMessage branch
+                // below -- ElevenLabs not being configured, or a real
+                // network failure, would otherwise look identical to
+                // Frank just staying silent.
+                Spacer(minLength: 0)
+                VStack(spacing: 8) {
+                    Image(systemName: "waveform.slash")
+                        .font(.system(size: 24))
+                        .foregroundStyle(theme.textSecondary)
+                    Text(voiceOutputError)
+                        .font(PCorpFont.body(13))
+                        .foregroundStyle(theme.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 400)
+                }
+                Spacer(minLength: 20)
             } else if let voiceError = voiceInput.errorMessage {
                 // Surfaced explicitly — this was previously tracked
                 // (VoiceInput.errorMessage) but never actually shown

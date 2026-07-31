@@ -44,12 +44,15 @@ final class VoiceInput: ObservableObject {
     private var hasDetectedSpeech = false
     private var lastVoiceActivityAt = Date()
     private var recordingStartedAt = Date()
-    /// Best-effort thresholds, not measured against real recordings on
-    /// this machine (no way to capture that outside a live session) —
-    /// starting point per VoiceInput's own existing note that raw mic RMS
-    /// is typically small even for normal speech; may need tuning once
-    /// actually used.
-    private let voiceActivityThreshold: Double = 0.015
+    /// Set from a real logged recording (2026-07-30, via os_log/Logger —
+    /// plain print() was silently discarded since this GUI app's stdout
+    /// goes to /dev/null once activated): actual speech on Joshua's setup
+    /// peaked at only ~0.005 RMS, well under the original 0.015 guess, so
+    /// hasDetectedSpeech never became true and auto-stop never fired at
+    /// all -- not a logic bug, just a threshold set before any real data
+    /// existed. 0.002 sits between that observed ~0.0005-0.001 ambient
+    /// floor and the ~0.005 speech peak.
+    private let voiceActivityThreshold: Double = 0.002
     private let silenceDuration: TimeInterval = 1.2
     /// Safety net now that there's no manual "click to stop" requirement
     /// — caps how long the mic can stay open if silence is never cleanly
@@ -103,6 +106,20 @@ final class VoiceInput: ObservableObject {
         self.request = request
 
         let inputNode = audioEngine.inputNode
+        // Pin capture to the built-in mic specifically, regardless of
+        // whatever the system's current default input is -- confirmed
+        // decision (2026-07-30): recognition accuracy was noticeably
+        // worse over AirPods, a real Bluetooth HFP bandwidth limitation
+        // (see BuiltInMicSelector.swift), not something fixable by
+        // tuning this app's own code. Output (VoiceOutput's TTS) is
+        // untouched by this -- it keeps playing through AirPods/whatever
+        // is connected, since only capture quality was the problem.
+        // Must happen before reading outputFormat below, since the
+        // format depends on which device is actually selected.
+        if let builtInMic = BuiltInMicSelector.builtInInputDeviceID(),
+           let audioUnit = inputNode.audioUnit {
+            BuiltInMicSelector.setInputDevice(builtInMic, on: audioUnit)
+        }
         let recordingFormat = inputNode.outputFormat(forBus: 0)
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in

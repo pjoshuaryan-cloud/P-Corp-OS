@@ -39,14 +39,18 @@ Still NOT here: semantic/vector search over memory, the full per-device-
 keypair auth, SMAppService packaging.
 """
 
+import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
+from pydantic import BaseModel
 
 from app.auth import get_or_create_token
 from app.db import (
@@ -62,6 +66,7 @@ from app.db import (
 )
 from app.memory import FORGET_MEMORY_TOOL, SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
 from app.personality import SYSTEM_PROMPT
+from app.piper_tts import synthesize_wav_bytes
 
 # Explicit path, not load_dotenv()'s default cwd-search — found directly
 # (2026-07-28) while testing the SMAppService packaging shim, which can be
@@ -76,6 +81,23 @@ MODEL = "claude-sonnet-5"
 MAX_TOKENS = 1024
 AUTH_TOKEN = get_or_create_token()
 
+# Optional — cloud text-to-speech (see .env.example). Confirmed decision
+# (2026-07-29): tried free-tier ElevenLabs first, which turned out to
+# block API access to Voice Library voices entirely; then a genuinely
+# free local fallback (Piper, app/piper_tts.py); then Joshua decided the
+# specific stylized "dark and tough" character voice was worth actually
+# paying for. Both paths are kept, not because the free one is a
+# placeholder, but because we've already hit two different real
+# ElevenLabs failures in one sitting (missing permission, then payment
+# required) — /speak below tries ElevenLabs first when configured, and
+# falls back to Piper on ANY failure, so Frank never just goes silent.
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID")
+
+
+class SpeakRequest(BaseModel):
+    text: str
+
 
 def verify_token(token: str) -> None:
     if token != AUTH_TOKEN:
@@ -85,7 +107,15 @@ def verify_token(token: str) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # A single reused httpx client, not one per /speak call — real bug
+    # found and fixed 2026-07-30: creating a fresh AsyncClient() per
+    # request meant paying a full DNS+TLS handshake to ElevenLabs every
+    # single time, confirmed directly (curl timing showed the exact same
+    # request taking 4.9s cold vs 1.1s with a warm connection). One
+    # long-lived client with connection keep-alive removes that entirely.
+    app.state.elevenlabs_client = httpx.AsyncClient(timeout=30.0)
     yield
+    await app.state.elevenlabs_client.aclose()
 
 
 app = FastAPI(title="P Corp OS Backend", lifespan=lifespan)
@@ -147,6 +177,45 @@ async def activate_conversation(conversation_id: int, _: None = Depends(verify_t
     # of just "active = newest").
     await set_active_conversation(conversation_id)
     return {"conversation_id": conversation_id}
+
+
+async def _speak_via_elevenlabs(client: httpx.AsyncClient, text: str) -> bytes:
+    """Raises on any failure — caller decides what that means (fall back
+    to Piper, in this case). Not swallowing errors here since the caller
+    needs to distinguish "ElevenLabs not configured" (skip straight to
+    Piper) from "ElevenLabs configured but the call itself failed" (also
+    falls back, but worth knowing which happened if this ever needs
+    debugging). Takes the shared client (app.state.elevenlabs_client) as a
+    parameter rather than opening its own — a fresh connection per call
+    was a real, confirmed latency bug (see lifespan's comment)."""
+    response = await client.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
+        headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+        json={"text": text, "model_id": "eleven_turbo_v2_5"},
+    )
+    response.raise_for_status()
+    return response.content
+
+
+@app.post("/speak")
+async def speak(request: SpeakRequest, http_request: Request, _: None = Depends(verify_token)) -> Response:
+    # ElevenLabs first (genuinely human, stylized voice — the reason it's
+    # worth paying for), Piper as the always-available fallback (free,
+    # local, no account to lapse) — see the ELEVENLABS_API_KEY comment
+    # above for why both paths are kept rather than picking one. Any
+    # ElevenLabs failure (missing permission, quota, payment issue,
+    # network) falls through silently from Frank's perspective — he still
+    # speaks, just via the fallback voice — logged server-side so it's
+    # debuggable without being surfaced as a hard error to the UI.
+    if ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
+        try:
+            audio = await _speak_via_elevenlabs(http_request.app.state.elevenlabs_client, request.text)
+            return Response(content=audio, media_type="audio/mpeg")
+        except Exception as error:
+            print(f"[speak] ElevenLabs failed, falling back to Piper: {error}")
+
+    audio = await asyncio.to_thread(synthesize_wav_bytes, request.text)
+    return Response(content=audio, media_type="audio/wav")
 
 
 @app.websocket("/ws")
