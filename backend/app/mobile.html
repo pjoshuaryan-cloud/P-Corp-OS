@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Frank</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0b0b0d;
+    color: #f2f2f2;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: env(safe-area-inset-top, 16px) 16px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    font-size: 15px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  #status { font-size: 11px; font-weight: 400; color: rgba(255,255,255,0.4); }
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .msg {
+    max-width: 82%;
+    padding: 10px 14px;
+    border-radius: 16px;
+    font-size: 15px;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .user { align-self: flex-end; background: #ffffff; color: #0b0b0d; border-bottom-right-radius: 4px; }
+  .assistant { align-self: flex-start; background: #1c1c1f; color: #f2f2f2; border-bottom-left-radius: 4px; }
+  form {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px calc(env(safe-area-inset-bottom, 10px) + 10px);
+    border-top: 1px solid rgba(255,255,255,0.08);
+  }
+  input[type=text] {
+    flex: 1;
+    background: #1c1c1f;
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #f2f2f2;
+    border-radius: 20px;
+    padding: 11px 16px;
+    font-size: 16px;
+    outline: none;
+  }
+  button {
+    background: #ffffff;
+    color: #0b0b0d;
+    border: none;
+    border-radius: 20px;
+    padding: 0 18px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  button:disabled { opacity: 0.4; }
+  #tokenScreen {
+    position: fixed; inset: 0; background: #0b0b0d;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 24px; text-align: center;
+  }
+  #tokenScreen input {
+    width: 100%; max-width: 320px; background: #1c1c1f; border: 1px solid rgba(255,255,255,0.1);
+    color: #f2f2f2; border-radius: 10px; padding: 12px 14px; font-size: 15px; outline: none;
+  }
+  #tokenScreen p { color: rgba(255,255,255,0.5); font-size: 13px; max-width: 300px; }
+</style>
+</head>
+<body>
+
+<div id="tokenScreen">
+  <div style="font-size:20px; font-weight:600;">Frank</div>
+  <p>Paste the local auth token from backend/data/auth_token on your Mac. Stored only in this browser.</p>
+  <input id="tokenInput" type="text" placeholder="auth token" autocapitalize="off" autocorrect="off" spellcheck="false" />
+  <button id="tokenSubmit">Connect</button>
+</div>
+
+<header>
+  Frank
+  <span id="status">connecting…</span>
+</header>
+<div id="messages"></div>
+<form id="composer">
+  <input id="textInput" type="text" placeholder="Talk to Frank…" autocomplete="off" />
+  <button type="submit">Send</button>
+</form>
+
+<script>
+const messagesEl = document.getElementById('messages');
+const statusEl = document.getElementById('status');
+const form = document.getElementById('composer');
+const textInput = document.getElementById('textInput');
+const tokenScreen = document.getElementById('tokenScreen');
+const tokenInput = document.getElementById('tokenInput');
+const tokenSubmit = document.getElementById('tokenSubmit');
+
+let ws = null;
+let currentAssistantBubble = null;
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+function getToken() {
+  return localStorage.getItem('frank_token');
+}
+
+let reconnectDelay = 1000;
+let reconnectTimer = null;
+
+function connect() {
+  const token = getToken();
+  if (!token) return;
+
+  const host = window.location.hostname;
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${host}:8731/ws?token=${encodeURIComponent(token)}`);
+
+  ws.onopen = () => {
+    statusEl.textContent = 'connected';
+    reconnectDelay = 1000; // reset backoff once a connection actually succeeds
+  };
+  ws.onclose = () => {
+    // iOS Safari suspends background tabs and drops the socket whenever
+    // the phone locks or you switch apps -- this is expected, routine
+    // behavior on mobile, not a real error. Reconnect automatically with
+    // backoff rather than leaving the page stuck showing "disconnected"
+    // until a manual reload.
+    currentAssistantBubble = null; // don't resume appending into a bubble from before the drop
+    statusEl.textContent = 'reconnecting…';
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 15000);
+  };
+  ws.onerror = () => { statusEl.textContent = 'error'; };
+
+  ws.onmessage = (event) => {
+    const text = event.data;
+    if (text === '\n[done]') {
+      currentAssistantBubble = null;
+      return;
+    }
+    if (text.startsWith('\n[notify]')) {
+      return; // no OS-level notifications on mobile web for v1
+    }
+    if (!currentAssistantBubble) {
+      currentAssistantBubble = addMessage('assistant', '');
+    }
+    currentAssistantBubble.textContent += text;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  };
+}
+
+async function loadHistory() {
+  const token = getToken();
+  if (!token) return;
+  try {
+    const res = await fetch(`/history?token=${encodeURIComponent(token)}`);
+    const entries = await res.json();
+    messagesEl.innerHTML = '';
+    for (const entry of entries) {
+      addMessage(entry.role, entry.content);
+    }
+  } catch (e) {
+    // Non-fatal -- thread just starts empty, same as the desktop app's own fallback.
+  }
+}
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = textInput.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  addMessage('user', text);
+  ws.send(text);
+  textInput.value = '';
+});
+
+tokenSubmit.addEventListener('click', () => {
+  const value = tokenInput.value.trim();
+  if (!value) return;
+  localStorage.setItem('frank_token', value);
+  tokenScreen.style.display = 'none';
+  loadHistory().then(connect);
+});
+
+// A token in the URL (?token=...) saves it automatically -- avoids
+// needing to manually copy/paste a long random string on a phone
+// keyboard. The link itself is only ever typed/shared once.
+const urlToken = new URLSearchParams(window.location.search).get('token');
+if (urlToken) {
+  localStorage.setItem('frank_token', urlToken);
+  history.replaceState(null, '', window.location.pathname);
+}
+
+if (getToken()) {
+  tokenScreen.style.display = 'none';
+  loadHistory().then(connect);
+}
+
+// Reconnect right away when you come back to the tab (phone unlocked,
+// switched back from another app) instead of waiting out the backoff
+// timer -- the whole point of reconnecting is that it's ready the moment
+// you actually look at it again.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && getToken() && (!ws || ws.readyState === WebSocket.CLOSED)) {
+    clearTimeout(reconnectTimer);
+    reconnectDelay = 1000;
+    connect();
+  }
+});
+</script>
+</body>
+</html>

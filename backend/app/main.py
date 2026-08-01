@@ -52,6 +52,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from app.alpha_mode_db import init_alpha_mode_db
+from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
 from app.db import (
     create_new_conversation,
@@ -95,6 +97,9 @@ ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID")
 
 
+ALPHA_MODE_TOOL_NAMES = {tool["name"] for tool in ALPHA_MODE_TOOLS}
+
+
 class SpeakRequest(BaseModel):
     text: str
 
@@ -107,6 +112,7 @@ def verify_token(token: str) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await init_alpha_mode_db()
     # A single reused httpx client, not one per /speak call — real bug
     # found and fixed 2026-07-30: creating a fresh AsyncClient() per
     # request meant paying a full DNS+TLS handshake to ElevenLabs every
@@ -124,6 +130,18 @@ app = FastAPI(title="P Corp OS Backend", lifespan=lifespan)
 @app.get("/health")
 async def health(_: None = Depends(verify_token)) -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/mobile")
+async def mobile() -> Response:
+    # Deliberately unauthenticated at the route level -- this is a static
+    # page shell with no sensitive content of its own (see mobile.html);
+    # it prompts for the real auth token client-side, which is what
+    # actually gates the WebSocket/REST calls that matter. Reachable only
+    # via this Mac's Tailscale IP (see run()/TAILSCALE_IP) or localhost,
+    # never the public internet.
+    html = (Path(__file__).parent / "mobile.html").read_text()
+    return Response(content=html, media_type="text/html")
 
 
 @app.get("/memory")
@@ -248,7 +266,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
             history.append({"role": "user", "content": user_message})
             await save_message(conversation_id, "user", user_message)
 
-            system_prompt = SYSTEM_PROMPT + await build_memory_block()
+            system_prompt = SYSTEM_PROMPT + await build_memory_block() + await build_alpha_mode_block()
 
             try:
                 assistant_reply = await run_claude_turn(
@@ -288,7 +306,7 @@ async def run_claude_turn(
             max_tokens=MAX_TOKENS,
             system=system_prompt,
             messages=history,
-            tools=[SAVE_MEMORY_TOOL, FORGET_MEMORY_TOOL],
+            tools=[SAVE_MEMORY_TOOL, FORGET_MEMORY_TOOL, *ALPHA_MODE_TOOLS],
         ) as stream:
             async for text in stream.text_stream:
                 assistant_text += text
@@ -303,7 +321,10 @@ async def run_claude_turn(
         for block in final_message.content:
             if block.type != "tool_use":
                 continue
-            result = await execute_tool_call(block.name, block.input)
+            if block.name in ALPHA_MODE_TOOL_NAMES:
+                result = await execute_alpha_mode_tool_call(block.name, block.input)
+            else:
+                result = await execute_tool_call(block.name, block.input)
             tool_results.append(
                 {"type": "tool_result", "tool_use_id": block.id, "content": result}
             )
@@ -320,14 +341,37 @@ async def run_claude_turn(
                     {"title": "Frank forgot something", "body": result.removeprefix("Forgot: ")}
                 )
                 await websocket.send_text(f"\n[notify]{notification}")
+            elif block.name in ALPHA_MODE_TOOL_NAMES:
+                notification = json.dumps({"title": "Alpha Mode Media updated", "body": result})
+                await websocket.send_text(f"\n[notify]{notification}")
         history.append({"role": "user", "content": tool_results})
 
 
 def run() -> None:
     import uvicorn
 
-    # 127.0.0.1 only, per TECH_STACK.md — never bind to 0.0.0.0 here.
-    uvicorn.run(app, host="127.0.0.1", port=8731)
+    # 127.0.0.1 always, regardless of Tailscale — the desktop app must keep
+    # working with zero dependency on Tailscale being installed, running,
+    # or configured. Confirmed decision (2026-07-31): mobile access adds a
+    # SECOND listener on this Mac's Tailscale-assigned IP (not 0.0.0.0,
+    # which SECURITY.md already ruled out — that would also expose this to
+    # the regular Wi-Fi/Ethernet interface, reachable by anyone else on the
+    # same network). TAILSCALE_IP is optional in .env — if unset, this
+    # behaves exactly as before, single listener, no behavior change.
+    tailscale_ip = os.environ.get("TAILSCALE_IP")
+    if not tailscale_ip:
+        uvicorn.run(app, host="127.0.0.1", port=8731)
+        return
+
+    asyncio.run(_run_dual(tailscale_ip))
+
+
+async def _run_dual(tailscale_ip: str) -> None:
+    import uvicorn
+
+    local_server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8731))
+    tailscale_server = uvicorn.Server(uvicorn.Config(app, host=tailscale_ip, port=8731))
+    await asyncio.gather(local_server.serve(), tailscale_server.serve())
 
 
 if __name__ == "__main__":
