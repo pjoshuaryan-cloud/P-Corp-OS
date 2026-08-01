@@ -56,6 +56,8 @@ from pydantic import BaseModel
 from app.alpha_mode_db import init_alpha_mode_db
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
+from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
+from app.operations_db import init_operations_db
 from app.db import (
     create_new_conversation,
     forget_memory_by_id,
@@ -81,7 +83,14 @@ from app.piper_tts import synthesize_wav_bytes
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 MODEL = "claude-sonnet-5"
-MAX_TOKENS = 1024
+# Real bug found 2026-07-31: 1024 was cutting off longer replies mid-
+# generation (confirmed directly -- a multi-phase SOP relayed from the
+# Operations Agent got truncated, twice, in real use). Raising the
+# ceiling doesn't undo personality.py's brevity instruction for ordinary
+# replies -- that's a soft prompt-level default, not a hard token cap --
+# it just stops hard-truncating the genuinely longer replies (relaying a
+# drafted document, etc.) that need more room.
+MAX_TOKENS = 4096
 AUTH_TOKEN = get_or_create_token()
 
 # Optional — cloud text-to-speech (see .env.example). Confirmed decision
@@ -114,6 +123,7 @@ def verify_token(token: str) -> None:
 async def lifespan(app: FastAPI):
     await init_db()
     await init_alpha_mode_db()
+    await init_operations_db()
     # A single reused httpx client, not one per /speak call — real bug
     # found and fixed 2026-07-30: creating a fresh AsyncClient() per
     # request meant paying a full DNS+TLS handshake to ElevenLabs every
@@ -271,7 +281,9 @@ async def websocket_chat(websocket: WebSocket) -> None:
             history.append({"role": "user", "content": user_message})
             await save_message(conversation_id, "user", user_message)
 
-            system_prompt = SYSTEM_PROMPT + await build_memory_block() + await build_alpha_mode_block()
+            system_prompt = (
+                SYSTEM_PROMPT + await build_memory_block() + await build_alpha_mode_block() + await build_operations_block()
+            )
 
             try:
                 assistant_reply = await run_claude_turn(
@@ -311,7 +323,7 @@ async def run_claude_turn(
             max_tokens=MAX_TOKENS,
             system=system_prompt,
             messages=history,
-            tools=[SAVE_MEMORY_TOOL, FORGET_MEMORY_TOOL, *ALPHA_MODE_TOOLS],
+            tools=[SAVE_MEMORY_TOOL, FORGET_MEMORY_TOOL, *ALPHA_MODE_TOOLS, *OPERATIONS_TOOLS],
         ) as stream:
             async for text in stream.text_stream:
                 assistant_text += text
@@ -328,6 +340,16 @@ async def run_claude_turn(
                 continue
             if block.name in ALPHA_MODE_TOOL_NAMES:
                 result = await execute_alpha_mode_tool_call(block.name, block.input)
+            elif block.name in OPERATIONS_TOOL_NAMES:
+                result = await execute_operations_tool_call(block.name, block.input, client, websocket)
+                if block.name == "consult_operations_agent":
+                    # This was already streamed live to the websocket
+                    # inside execute_operations_tool_call -- append it to
+                    # the persisted transcript too, or reopening this
+                    # conversation later would be missing exactly what
+                    # was shown on screen, keeping only Frank's own
+                    # follow-up remark.
+                    assistant_text += result
             else:
                 result = await execute_tool_call(block.name, block.input)
             tool_results.append(
@@ -348,6 +370,9 @@ async def run_claude_turn(
                 await websocket.send_text(f"\n[notify]{notification}")
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 notification = json.dumps({"title": "Alpha Mode Media updated", "body": result})
+                await websocket.send_text(f"\n[notify]{notification}")
+            elif block.name in ("add_task", "update_task_status"):
+                notification = json.dumps({"title": "Task updated", "body": result})
                 await websocket.send_text(f"\n[notify]{notification}")
         history.append({"role": "user", "content": tool_results})
 

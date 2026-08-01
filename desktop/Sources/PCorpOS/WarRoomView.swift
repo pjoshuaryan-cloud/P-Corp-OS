@@ -494,9 +494,7 @@ private struct ChatBubble: View {
         HStack {
             if isUser { Spacer(minLength: 60) }
 
-            Text(message.content)
-                .font(PCorpFont.body(14))
-                .foregroundStyle(isUser ? theme.accentText : theme.textPrimary)
+            content
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(
@@ -512,6 +510,23 @@ private struct ChatBubble: View {
             if !isUser { Spacer(minLength: 60) }
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+    }
+
+    // Frank's replies can contain real markdown (an Operations Agent SOP
+    // draft, a numbered list) -- rendering it plain showed literal `**`/`-`
+    // characters instead of actual formatting. Reusing SimpleMarkdownView
+    // (already built for the Knowledge section) rather than a second
+    // renderer. User's own typed messages stay plain Text -- there's no
+    // reason to interpret an incidental asterisk he types as bold syntax.
+    @ViewBuilder
+    private var content: some View {
+        if isUser {
+            Text(message.content)
+                .font(PCorpFont.body(14))
+                .foregroundStyle(theme.accentText)
+        } else {
+            SimpleMarkdownView(text: message.content)
+        }
     }
 }
 
