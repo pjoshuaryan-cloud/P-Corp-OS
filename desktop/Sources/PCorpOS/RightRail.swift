@@ -192,6 +192,7 @@ private struct AgendaCard: View {
 private struct InsightsCard: View {
     @Binding var selectedID: UUID?
     @Environment(\.appTheme) private var theme
+    @StateObject private var client = InsightsClient()
 
     var body: some View {
         CardContainer {
@@ -202,10 +203,34 @@ private struct InsightsCard: View {
                     navigate(to: "Frank", selectedID: $selectedID)
                 }
             }
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(PlaceholderData.insights) { insight in
-                    InsightRow(insight: insight, selectedID: $selectedID)
+            if client.insights.isEmpty {
+                // Honest, not fake -- real data checked and there's
+                // genuinely nothing overdue or due soon right now, rather
+                // than always showing three placeholder rows regardless
+                // of whether anything's actually true.
+                Text(client.isLoading ? "Checking…" : "Nothing overdue or due soon.")
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle(theme.textSecondary)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(client.insights) { insight in
+                        InsightRow(insight: insight, selectedID: $selectedID)
+                    }
                 }
+            }
+        }
+        .task {
+            // RightRail is part of the persistent layout, not a per-tab
+            // view recreated on navigation (unlike AgentsView/FrankView) --
+            // a single one-shot fetch here would only ever reflect
+            // whatever existed at launch. Real bug found immediately on
+            // first live test: adding a task afterward never showed up
+            // at all, since nothing ever triggered a refetch. Polling
+            // every 30s is the simple fix -- genuinely proactive
+            // shouldn't require remembering to hit a refresh button.
+            while !Task.isCancelled {
+                await client.fetch()
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
         }
     }

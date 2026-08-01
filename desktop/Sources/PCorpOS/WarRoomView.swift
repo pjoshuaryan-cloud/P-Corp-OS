@@ -221,27 +221,6 @@ struct WarRoomView: View {
                 .buttonStyle(.icon)
 
                 Button {
-                    if !voiceInput.isListening {
-                        // About to start a new push-to-talk recording --
-                        // confirmed decision: that interrupts any reply
-                        // Frank is still speaking, same as cutting off a
-                        // person mid-sentence, rather than talking over
-                        // him or waiting him out.
-                        voiceOutput.stop()
-                    }
-                    voiceInput.toggle { transcript in
-                        guard let transcript else { return }
-                        pendingVoiceReply = true
-                        backend.send(transcript)
-                    }
-                } label: {
-                    Image(systemName: "waveform.circle.fill")
-                        .foregroundStyle(voiceInput.isListening ? .red : theme.textPrimary)
-                }
-                .buttonStyle(.icon)
-                .help("Push-to-talk — click to start, stops and sends automatically once you stop talking")
-
-                Button {
                     // no-op: shell only, not wired up yet
                 } label: {
                     Label("Mission", systemImage: "plus")
@@ -257,8 +236,37 @@ struct WarRoomView: View {
 
     private var inputBar: some View {
         HStack(spacing: 12) {
-            Image(systemName: "waveform")
-                .foregroundStyle(theme.textSecondary)
+            // Voice-first: this used to be a small icon tucked into the top
+            // toolbar, separate from the actual input area -- the literal
+            // reason voice read as an accessory rather than the primary way
+            // to talk to Frank (direct feedback: "still gives me more of a
+            // chatgpt vibe than something similar to jarvis"). Now it's the
+            // first, most prominent thing in the input bar itself, same
+            // visual weight as the send button.
+            Button {
+                if !voiceInput.isListening {
+                    // About to start a new push-to-talk recording --
+                    // confirmed decision: that interrupts any reply Frank
+                    // is still speaking, same as cutting off a person
+                    // mid-sentence, rather than talking over him or
+                    // waiting him out.
+                    voiceOutput.stop()
+                }
+                voiceInput.toggle { transcript in
+                    guard let transcript else { return }
+                    pendingVoiceReply = true
+                    backend.send(transcript)
+                }
+            } label: {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(theme.accentText)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(voiceInput.isListening ? Color.red : theme.accentFill))
+            }
+            .buttonStyle(.plain)
+            .help("Push-to-talk — click to start, stops and sends automatically once you stop talking")
+
             TextField("Talk to Frank...", text: $inputText)
                 .textFieldStyle(.plain)
                 .font(PCorpFont.body(14))

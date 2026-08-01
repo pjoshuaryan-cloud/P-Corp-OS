@@ -7,7 +7,13 @@ struct NavItem: Identifiable {
     let systemImage: String
 }
 
-struct InsightItem: Identifiable {
+/// Backs GET /insights — real, computed insights (overdue/upcoming
+/// tasks and invoices, app/insights.py), not the hardcoded placeholder
+/// text this used to be. `id` is a local UUID, not part of the decoded
+/// JSON (excluded from CodingKeys, Swift's synthesized decoder falls
+/// back to its default-value initializer) — this list is ephemeral,
+/// recomputed on every fetch, nothing to reference by a stable ID.
+struct InsightItem: Identifiable, Decodable {
     let id = UUID()
     let systemImage: String
     let title: String
@@ -15,6 +21,12 @@ struct InsightItem: Identifiable {
     /// Which nav section this relates to — same honest-routing pattern as
     /// QuickAction, so clicking an insight isn't a dead end.
     let targetNavTitle: String
+
+    enum CodingKeys: String, CodingKey {
+        case systemImage = "icon"
+        case title, detail
+        case targetNavTitle = "target_nav_title"
+    }
 }
 
 /// A row in the conversation switcher — backs GET /conversations. `id`
@@ -99,12 +111,6 @@ enum PlaceholderData {
         NavItem(title: "Automations", subtitle: "Workflows", systemImage: "bolt"),
         NavItem(title: "Calendar", subtitle: "Schedule & Events", systemImage: "calendar"),
         NavItem(title: "Settings", subtitle: "Preferences", systemImage: "gearshape"),
-    ]
-
-    static let insights: [InsightItem] = [
-        InsightItem(systemImage: "target", title: "Placeholder Insight", detail: "Example of an opportunity Frank might surface here.", targetNavTitle: "Alpha Mode Media"),
-        InsightItem(systemImage: "chart.line.uptrend.xyaxis", title: "Placeholder Signal", detail: "Example of a trading-related note Frank might surface here.", targetNavTitle: "Trading Division"),
-        InsightItem(systemImage: "clock", title: "Placeholder Optimization", detail: "Example of a scheduling note Frank might surface here.", targetNavTitle: "Calendar"),
     ]
 
     static let quickActions: [QuickAction] = [

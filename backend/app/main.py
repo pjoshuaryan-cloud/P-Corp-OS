@@ -57,6 +57,7 @@ from app.alpha_mode_db import init_alpha_mode_db
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
+from app.insights import compute_insights
 from app.operations_db import init_operations_db, list_open_tasks
 from app.db import (
     create_new_conversation,
@@ -173,6 +174,13 @@ async def operations_tasks(_: None = Depends(verify_token)) -> list[dict]:
     # Makes the "Agents" nav section's task list real, rather than only
     # visible to Frank himself via the system-prompt snapshot.
     return await list_open_tasks()
+
+
+@app.get("/insights")
+async def insights_endpoint(_: None = Depends(verify_token)) -> list[dict]:
+    # Real data behind the right rail's "Frank's Insights" card -- was
+    # literal placeholder text before (see app/insights.py's docstring).
+    return await compute_insights()
 
 
 @app.delete("/memory/{memory_id}")
