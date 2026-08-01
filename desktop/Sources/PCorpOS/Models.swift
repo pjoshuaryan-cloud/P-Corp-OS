@@ -57,6 +57,26 @@ struct MemoryRecord: Identifiable, Decodable {
     }
 }
 
+/// Mirrors backend/app/operations_db.py's `tasks` table (excluding done
+/// ones) — general, cross-business tasks Frank creates via add_task,
+/// made visible read-only from GET /operations/tasks, same pattern as
+/// MemoryRecord/GET /memory.
+struct OperationsTask: Identifiable, Decodable {
+    let id: Int
+    let title: String
+    let status: String
+    let area: String?
+    let dueDate: String?
+    let notes: String?
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, status, area, notes
+        case dueDate = "due_date"
+        case createdAt = "created_at"
+    }
+}
+
 struct QuickAction: Identifiable {
     let id = UUID()
     let title: String

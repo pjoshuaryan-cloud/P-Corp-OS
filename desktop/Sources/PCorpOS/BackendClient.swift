@@ -153,6 +153,27 @@ final class BackendClient: ObservableObject {
         isConnected = false
     }
 
+    /// Interrupts the current reply, similar to Claude's own stop button.
+    /// Closes the live socket (the backend's in-flight `send_text` calls
+    /// start failing the instant it does, which unwinds `run_claude_turn`
+    /// on the server side) and opens a fresh one for the next message --
+    /// deliberately NOT calling loadHistory() as part of that reconnect,
+    /// since the interrupted turn was never persisted server-side and a
+    /// reload would silently erase the partial reply still visible in
+    /// `messages`, which is exactly what should stay on screen.
+    func stopGenerating() {
+        isStreaming = false
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        isConnected = false
+
+        let newTask = URLSession.shared.webSocketTask(with: wsURL)
+        task = newTask
+        newTask.resume()
+        isConnected = true
+        listen()
+    }
+
     func send(_ text: String) {
         guard let task else { return }
         messages.append(ChatMessage(role: "user", content: text))

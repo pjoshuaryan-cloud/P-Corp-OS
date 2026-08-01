@@ -70,6 +70,30 @@ async def update_task_status(identifier: str, new_status: str) -> bool:
         return True
 
 
+async def list_open_tasks() -> list[dict]:
+    """Structured form of the same data summarize_open_tasks() formats as
+    text -- for the real GET /operations/tasks endpoint (the new "Agents"
+    nav section), not the system-prompt block."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, title, status, area, due_date, notes, created_at FROM tasks WHERE status != 'done' ORDER BY id DESC"
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "status": row["status"],
+                "area": row["area"],
+                "due_date": row["due_date"],
+                "notes": row["notes"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+
 async def summarize_open_tasks() -> str:
     """Fine to load in full every turn at this scale -- same reasoning as
     memory_records and Alpha Mode Media's snapshot; revisit if this ever

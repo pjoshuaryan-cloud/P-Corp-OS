@@ -32,6 +32,8 @@ struct ContentView: View {
                     CalendarView()
                 case "Knowledge":
                     KnowledgeView()
+                case "Agents":
+                    AgentsView()
                 case "Settings":
                     SettingsView()
                 default:

@@ -57,7 +57,7 @@ from app.alpha_mode_db import init_alpha_mode_db
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
-from app.operations_db import init_operations_db
+from app.operations_db import init_operations_db, list_open_tasks
 from app.db import (
     create_new_conversation,
     forget_memory_by_id,
@@ -166,6 +166,13 @@ async def memory(_: None = Depends(verify_token)) -> list[dict]:
     # "Frank" section reads this to make memory visible, rather than it
     # only being inspectable by querying SQLite directly.
     return await load_memory_records()
+
+
+@app.get("/operations/tasks")
+async def operations_tasks(_: None = Depends(verify_token)) -> list[dict]:
+    # Makes the "Agents" nav section's task list real, rather than only
+    # visible to Frank himself via the system-prompt snapshot.
+    return await list_open_tasks()
 
 
 @app.delete("/memory/{memory_id}")
@@ -290,9 +297,19 @@ async def websocket_chat(websocket: WebSocket) -> None:
                     client, system_prompt, history, websocket
                 )
             except Exception as error:
-                await websocket.send_text(f"\n[backend error: {error}]")
-                # Don't record a failed turn in memory or on disk — keeps
-                # conversation state consistent for the next message.
+                # A client-initiated stop (BackendClient.stopGenerating())
+                # closes the socket mid-stream, which is exactly what
+                # causes this branch to fire in the first place -- trying
+                # to report the error back over an already-closed socket
+                # would just raise a second, noisier exception, so that
+                # attempt is best-effort only.
+                try:
+                    await websocket.send_text(f"\n[backend error: {error}]")
+                except Exception:
+                    pass
+                # Don't record a failed/interrupted turn in memory or on
+                # disk — keeps conversation state consistent for the next
+                # message (or the reconnect stopGenerating() makes).
                 history.pop()
                 continue
 

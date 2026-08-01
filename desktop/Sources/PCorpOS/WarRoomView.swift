@@ -138,7 +138,7 @@ struct WarRoomView: View {
 
                 Spacer(minLength: 20)
             } else {
-                ChatThreadView(messages: backend.messages)
+                ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
@@ -266,14 +266,29 @@ struct WarRoomView: View {
                 .focused($isInputFocused)
                 .onSubmit(sendMessage)
 
-            Button(action: sendMessage) {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(theme.accentText)
-                    .frame(width: 32, height: 32)
-                    .background(Circle().fill(theme.accentFill))
+            if backend.isStreaming {
+                // Stop, same as Claude's own input bar -- actually
+                // interrupts the connection (BackendClient.stopGenerating),
+                // not just a cosmetic swap.
+                Button(action: backend.stopGenerating) {
+                    Image(systemName: "square.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.accentText)
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(theme.accentFill))
+                }
+                .buttonStyle(.plain)
+                .help("Stop generating")
+            } else {
+                Button(action: sendMessage) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(theme.accentText)
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(theme.accentFill))
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
@@ -291,6 +306,33 @@ struct WarRoomView: View {
         )
         .shadow(color: theme.cardShadow, radius: isInputFocused ? 20 : 16, x: 0, y: isInputFocused ? 8 : 6)
         .animation(.easeOut(duration: 0.15), value: isInputFocused)
+    }
+}
+
+/// Three dots, staggered bounce, repeating for as long as it's on screen
+/// -- standard "typing" affordance, shown in place of the send button
+/// exactly while backend.isStreaming is true.
+private struct TypingIndicatorDots: View {
+    @Environment(\.appTheme) private var theme
+    @State private var animate = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .fill(theme.textSecondary)
+                    .frame(width: 5, height: 5)
+                    .scaleEffect(animate ? 1 : 0.5)
+                    .opacity(animate ? 1 : 0.4)
+                    .animation(
+                        .easeInOut(duration: 0.55)
+                            .repeatForever(autoreverses: true)
+                            .delay(Double(index) * 0.15),
+                        value: animate
+                    )
+            }
+        }
+        .onAppear { animate = true }
     }
 }
 
@@ -456,13 +498,20 @@ private struct ConversationListPopover: View {
 /// still streaming in.
 private struct ChatThreadView: View {
     let messages: [ChatMessage]
+    let isStreaming: Bool
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(messages) { message in
-                        ChatBubble(message: message).id(message.id)
+                        // Only the LAST message can ever be the pending
+                        // one -- an empty assistant bubble mid-array
+                        // would just be a genuinely empty reply, not
+                        // something to show a typing indicator for.
+                        let isPending = isStreaming && message.id == messages.last?.id
+                            && message.role == "assistant" && message.content.isEmpty
+                        ChatBubble(message: message, isPending: isPending).id(message.id)
                     }
                 }
                 .padding(.horizontal, 48)
@@ -486,6 +535,11 @@ private struct ChatThreadView: View {
 
 private struct ChatBubble: View {
     let message: ChatMessage
+    /// True only for the single trailing empty assistant bubble while a
+    /// reply is being awaited -- shows the typing dots in place of
+    /// (nonexistent) content, same spot real text will appear in once
+    /// the first chunk arrives.
+    var isPending: Bool = false
     @Environment(\.appTheme) private var theme
 
     private var isUser: Bool { message.role == "user" }
@@ -520,7 +574,9 @@ private struct ChatBubble: View {
     // reason to interpret an incidental asterisk he types as bold syntax.
     @ViewBuilder
     private var content: some View {
-        if isUser {
+        if isPending {
+            TypingIndicatorDots()
+        } else if isUser {
             Text(message.content)
                 .font(PCorpFont.body(14))
                 .foregroundStyle(theme.accentText)
