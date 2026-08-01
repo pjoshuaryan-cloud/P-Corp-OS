@@ -50,6 +50,7 @@ from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.alpha_mode_db import init_alpha_mode_db
@@ -125,6 +126,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="P Corp OS Backend", lifespan=lifespan)
+# Just the apple-touch-icon for now (mobile.html's "Add to Home Screen"
+# support) -- unauthenticated like /mobile itself, since it's a static
+# icon with no sensitive content.
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 
 @app.get("/health")

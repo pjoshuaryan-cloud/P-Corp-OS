@@ -4,6 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Frank</title>
+<!-- iOS "Add to Home Screen": these three make it launch full-screen with
+     its own icon, no Safari chrome, instead of just being a bookmark. -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Frank" />
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
+<meta name="theme-color" content="#0b0b0d" />
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -207,11 +214,15 @@ tokenSubmit.addEventListener('click', () => {
 
 // A token in the URL (?token=...) saves it automatically -- avoids
 // needing to manually copy/paste a long random string on a phone
-// keyboard. The link itself is only ever typed/shared once.
+// keyboard. Deliberately NOT stripping it back out of the address bar
+// afterward (an earlier version did, via history.replaceState) --
+// "Add to Home Screen" saves whatever URL is currently showing as the
+// icon's own launch link, so silently removing the token right after
+// load meant the saved icon never actually got it. Leaving the token
+// visible in the URL is the trade-off that makes that reliably work.
 const urlToken = new URLSearchParams(window.location.search).get('token');
 if (urlToken) {
   localStorage.setItem('frank_token', urlToken);
-  history.replaceState(null, '', window.location.pathname);
 }
 
 if (getToken()) {
