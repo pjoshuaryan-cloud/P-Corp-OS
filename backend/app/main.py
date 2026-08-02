@@ -53,6 +53,11 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.alpha_mode_agent import (
+    ALPHA_MODE_AGENT_TOOL_NAMES,
+    ALPHA_MODE_AGENT_TOOLS,
+    execute_alpha_mode_agent_tool_call,
+)
 from app.alpha_mode_db import init_alpha_mode_db
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
@@ -348,7 +353,7 @@ async def run_claude_turn(
             max_tokens=MAX_TOKENS,
             system=system_prompt,
             messages=history,
-            tools=[SAVE_MEMORY_TOOL, FORGET_MEMORY_TOOL, *ALPHA_MODE_TOOLS, *OPERATIONS_TOOLS],
+            tools=[SAVE_MEMORY_TOOL, FORGET_MEMORY_TOOL, *ALPHA_MODE_TOOLS, *OPERATIONS_TOOLS, *ALPHA_MODE_AGENT_TOOLS],
         ) as stream:
             async for text in stream.text_stream:
                 assistant_text += text
@@ -375,6 +380,12 @@ async def run_claude_turn(
                     # was shown on screen, keeping only Frank's own
                     # follow-up remark.
                     assistant_text += result
+            elif block.name in ALPHA_MODE_AGENT_TOOL_NAMES:
+                result = await execute_alpha_mode_agent_tool_call(block.name, block.input, client, websocket)
+                # Same reasoning as consult_operations_agent above --
+                # already streamed live, needs to land in the persisted
+                # transcript too.
+                assistant_text += result
             else:
                 result = await execute_tool_call(block.name, block.input)
             tool_results.append(

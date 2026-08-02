@@ -23,9 +23,15 @@ from datetime import date, timedelta
 import aiosqlite
 
 from app.alpha_mode_db import DB_PATH as ALPHA_MODE_DB_PATH
+from app.alpha_mode_db import clients_needing_outreach
 from app.operations_db import DB_PATH as OPERATIONS_DB_PATH
 
 HORIZON_DAYS = 7
+# Added 2026-08-01 for outreach-reminder insights (Alpha Mode Agent's
+# first concrete capability) -- a client not contacted in two weeks is a
+# reasonable, if somewhat arbitrary, default cadence to flag; adjust if
+# it turns out too noisy or too quiet once actually used.
+OUTREACH_STALE_AFTER_DAYS = 14
 
 
 async def _overdue_and_upcoming_tasks(today: str, horizon: str) -> list[dict]:
@@ -84,13 +90,34 @@ async def _overdue_and_upcoming_invoices(today: str, horizon: str) -> list[dict]
     return insights
 
 
+async def _clients_needing_outreach() -> list[dict]:
+    stale_clients = await clients_needing_outreach(OUTREACH_STALE_AFTER_DAYS)
+    insights = []
+    for client in stale_clients:
+        if client["last_contacted_date"]:
+            detail = f"{client['name']} — last contacted {client['last_contacted_date']}"
+        else:
+            detail = f"{client['name']} — no contact ever logged"
+        insights.append(
+            {
+                "title": "Client outreach due",
+                "detail": detail,
+                "target_nav_title": "War Room",
+                "icon": "person.crop.circle.badge.exclamationmark",
+                "priority": 1,
+            }
+        )
+    return insights
+
+
 async def compute_insights(limit: int = 5) -> list[dict]:
     today = date.today().isoformat()
     horizon = (date.today() + timedelta(days=HORIZON_DAYS)).isoformat()
 
     tasks = await _overdue_and_upcoming_tasks(today, horizon)
     invoices = await _overdue_and_upcoming_invoices(today, horizon)
+    outreach = await _clients_needing_outreach()
 
-    combined = tasks + invoices
+    combined = tasks + invoices + outreach
     combined.sort(key=lambda item: (item["priority"], item["detail"]))
     return combined[:limit]
