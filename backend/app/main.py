@@ -61,6 +61,7 @@ from app.alpha_mode_agent import (
 from app.alpha_mode_db import init_alpha_mode_db
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
+from app.design_agent import DESIGN_AGENT_TOOL_NAMES, DESIGN_AGENT_TOOLS, execute_design_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
 from app.insights import compute_insights
 from app.operations_db import init_operations_db, list_open_tasks
@@ -353,7 +354,14 @@ async def run_claude_turn(
             max_tokens=MAX_TOKENS,
             system=system_prompt,
             messages=history,
-            tools=[SAVE_MEMORY_TOOL, FORGET_MEMORY_TOOL, *ALPHA_MODE_TOOLS, *OPERATIONS_TOOLS, *ALPHA_MODE_AGENT_TOOLS],
+            tools=[
+                SAVE_MEMORY_TOOL,
+                FORGET_MEMORY_TOOL,
+                *ALPHA_MODE_TOOLS,
+                *OPERATIONS_TOOLS,
+                *ALPHA_MODE_AGENT_TOOLS,
+                *DESIGN_AGENT_TOOLS,
+            ],
         ) as stream:
             async for text in stream.text_stream:
                 assistant_text += text
@@ -382,6 +390,12 @@ async def run_claude_turn(
                     assistant_text += result
             elif block.name in ALPHA_MODE_AGENT_TOOL_NAMES:
                 result = await execute_alpha_mode_agent_tool_call(block.name, block.input, client, websocket)
+                # Same reasoning as consult_operations_agent above --
+                # already streamed live, needs to land in the persisted
+                # transcript too.
+                assistant_text += result
+            elif block.name in DESIGN_AGENT_TOOL_NAMES:
+                result = await execute_design_agent_tool_call(block.name, block.input, client, websocket)
                 # Same reasoning as consult_operations_agent above --
                 # already streamed live, needs to land in the persisted
                 # transcript too.

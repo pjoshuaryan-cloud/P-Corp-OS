@@ -88,6 +88,27 @@ Responsibilities:
 
 It becomes your design partner.
 
+**Full elaboration (2026-08-03, Joshua's own words, preserved in full):** It's not a "logo generator." It's a Creative Director + Brand Strategist + Senior Product Designer + UI/UX Lead + Motion Designer that has spent years learning how you think and create. If built properly, it could eventually become one of the most valuable agents inside P Corp.
+
+Twelve capabilities, long-term:
+
+1. **Brand Guardian** — knows Alpha Mode's guidelines (colors, typography, tone, photography style, client type, positioning) and P Corp's (minimal, premium, executive, military precision, modern OS). Protects consistency; flags when something drifts.
+2. **Creative Director** — for a campaign ask, doesn't just generate posters. Asks objective, audience, placement, duration, budget, emotion first. Then produces moodboards, campaign ideas, story concepts, visual/art direction, shot concepts, motion references, typography/color/lighting direction, production references.
+3. **UI Designer** — thinks like Apple. "Design the Settings page" → "This page has 14 options, users only use 5 regularly, let's simplify" → redesigns, explains why, creates components, maintains consistency.
+4. **Design System Builder** — maintains buttons, icons, spacing, animations, colors, typography, components, cards. Every new screen automatically follows the design language.
+5. **Motion Designer** — motion curves, durations, states, micro-interactions, sound suggestions, transitions. E.g. the P Corp OS orb's listening/speaking/thinking/sleeping states, all with consistent motion principles.
+6. **Filmmaking Partner** — since Joshua is a filmmaker: "luxury commercial" → symmetrical compositions, negative space, controlled camera movement, natural lighting, restrained palette → shot list, storyboard, moodboard, lens suggestions, lighting references, editing rhythm, music direction, color grading notes. Understands how he actually makes films, not generic ideas.
+7. **Logo Designer** — not "here's 10 logos." Researches competitors, industry, history, symbolism, scalability first, then explains why something works or doesn't. A branding consultant, not a generator.
+8. **Typography Expert** — compares real candidates (Inter, Söhne, Neue Haas, SF Pro, Akkurat, Helvetica Now) on readability, emotion, licensing, accessibility before recommending one.
+9. **Brand Evolution** — notices drift over time ("Alpha Mode has gradually shifted toward premium corporate work, I think the visual identity should evolve") and says so unprompted.
+10. **Design Critic** — upload a UI, it critiques (navigation hierarchy, typography scale, spacing, primary-action emphasis, friction points), then redesigns it.
+11. **Website Designer** — thinks customer journey, conversion, information architecture, animation, SEO, interaction, loading, performance, accessibility — not just pages.
+12. **Personal Taste Model** — this is what makes it different from a generic assistant. After enough time, it just knows: Josh dislikes clutter, glassmorphism, over-designed interfaces, huge gradients, bright colors. He likes minimalism, premium, military precision, symmetry, negative space, thoughtful typography, luxury, cinematic composition. Eventually he stops having to explain his preferences at all.
+
+Target interaction shape: "Frank, I need a new dashboard" → Design Agent spends real time, returns 2-3 named directions (e.g. "Option A: Minimal Apple-inspired," "Option B: Executive military," "Option C: Cinematic editorial") with a specific recommendation and reasoning, not just raw output.
+
+**Scope note (2026-08-03):** Built as a single "Design Agent" per Joshua's explicit choice, not combined with Creative Director Agent above — first real version (same day) covers the Brand Guardian context (Alpha Mode + P Corp identities), the Personal Taste Model (his stated preferences, verbatim above), and the ask-before-generating / present-options-with-a-recommendation behavior, all doable as system-prompt content with no new infrastructure. Explicitly NOT built yet: Design Critic (needs image upload support in the chat UI, which doesn't exist), Brand Evolution tracking (needs persistent memory across sessions -- could reuse the existing save_memory/forget_memory tools later rather than new infrastructure), and true Design System maintenance (would mean the agent actually reading/tracking P Corp OS's real UI code, not just advising on it).
+
 ---
 
 ## Technology Division
