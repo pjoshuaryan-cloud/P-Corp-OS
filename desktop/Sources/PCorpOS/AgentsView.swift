@@ -4,13 +4,16 @@ import SwiftUI
 /// their real, persistent data actually visible, rather than only
 /// existing as something Frank calls via tool-use during conversation
 /// with no way to see it directly (the same gap the "Frank" nav section
-/// closed for memory_records). Operations Agent is the only specialist
-/// so far (backend/app/operations_agent.py) — its advisory output (SOPs,
-/// workflow suggestions) stays conversational, but its one piece of real
-/// persistent data, task tracking, is made visible here read-only.
+/// closed for memory_records). The specialist list itself now comes from
+/// GET /agents (backend/app/agents_registry.py) instead of one hardcoded
+/// SwiftUI card per agent (fixed 2026-08-04) -- so it keeps showing every
+/// real specialist as more get added, with no further UI changes needed.
+/// Operations Agent's one piece of real persistent data, task tracking,
+/// stays visible read-only below the agent cards.
 struct AgentsView: View {
     @Environment(\.appTheme) private var theme
-    @StateObject private var client = OperationsClient()
+    @StateObject private var agentsClient = AgentsClient()
+    @StateObject private var opsClient = OperationsClient()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -18,7 +21,7 @@ struct AgentsView: View {
             Divider().overlay(theme.divider)
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    OperationsAgentCard()
+                    agentSection
                     taskSection
                 }
                 .padding(24)
@@ -26,7 +29,10 @@ struct AgentsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
-        .task { await client.fetch() }
+        .task {
+            await agentsClient.fetch()
+            await opsClient.fetch()
+        }
     }
 
     private var header: some View {
@@ -41,13 +47,35 @@ struct AgentsView: View {
             }
             Spacer()
             Button {
-                Task { await client.fetch() }
+                Task {
+                    await agentsClient.fetch()
+                    await opsClient.fetch()
+                }
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.icon)
         }
         .padding(24)
+    }
+
+    @ViewBuilder
+    private var agentSection: some View {
+        if agentsClient.isLoading && agentsClient.agents.isEmpty {
+            Text("Loading…")
+                .font(PCorpFont.body(12))
+                .foregroundStyle(theme.textSecondary)
+        } else if let error = agentsClient.errorMessage {
+            Text(error)
+                .font(PCorpFont.body(12))
+                .foregroundStyle(theme.textSecondary)
+        } else {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(agentsClient.agents) { agent in
+                    AgentCard(agent: agent)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -60,21 +88,21 @@ struct AgentsView: View {
             Spacer()
         }
 
-        if client.isLoading && client.tasks.isEmpty {
+        if opsClient.isLoading && opsClient.tasks.isEmpty {
             Text("Loading…")
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
-        } else if let error = client.errorMessage {
+        } else if let error = opsClient.errorMessage {
             Text(error)
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
-        } else if client.tasks.isEmpty {
+        } else if opsClient.tasks.isEmpty {
             Text("Nothing open — ask Frank to add a task, or delegate something to the Operations Agent.")
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
         } else {
             LazyVStack(alignment: .leading, spacing: 10) {
-                ForEach(client.tasks) { task in
+                ForEach(opsClient.tasks) { task in
                     TaskRow(task: task)
                 }
             }
@@ -82,7 +110,8 @@ struct AgentsView: View {
     }
 }
 
-private struct OperationsAgentCard: View {
+private struct AgentCard: View {
+    let agent: Agent
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -90,22 +119,22 @@ private struct OperationsAgentCard: View {
             HStack(spacing: 10) {
                 ZStack {
                     Circle().fill(.regularMaterial).frame(width: 40, height: 40)
-                    Image(systemName: "checklist")
+                    Image(systemName: agent.icon)
                         .font(.system(size: 16))
                         .foregroundStyle(theme.textPrimary)
                 }
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Operations Agent")
+                    Text(agent.name)
                         .font(PCorpFont.body(15, weight: .semibold))
                         .foregroundStyle(theme.textPrimary)
-                    Text("SOPs, workflows, project planning, bottlenecks, automation")
+                    Text(agent.tagline)
                         .font(PCorpFont.body(11.5))
                         .foregroundStyle(theme.textSecondary)
                 }
                 Spacer()
                 HStack(spacing: 6) {
-                    Circle().fill(Color.green).frame(width: 6, height: 6)
-                    Text("ACTIVE")
+                    Circle().fill(agent.status == "active" ? Color.green : Color.gray).frame(width: 6, height: 6)
+                    Text(agent.status.uppercased())
                         .font(PCorpFont.label(9))
                         .trackedLabel(1.2)
                         .foregroundStyle(theme.textSecondary)
@@ -114,7 +143,7 @@ private struct OperationsAgentCard: View {
                 .padding(.vertical, 5)
                 .background(Capsule().fill(theme.textPrimary.opacity(0.05)))
             }
-            Text("Ask Frank to draft an SOP, plan a project, spot a bottleneck, or suggest an automation — he decides when to consult this agent rather than answering directly.")
+            Text(agent.detail)
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
         }

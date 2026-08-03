@@ -61,6 +61,7 @@ from app.alpha_mode_agent import (
 from app.alpha_mode_db import init_alpha_mode_db
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
+from app.agents_registry import list_agents
 from app.design_agent import DESIGN_AGENT_TOOL_NAMES, DESIGN_AGENT_TOOLS, execute_design_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
 from app.insights import compute_insights
@@ -180,6 +181,14 @@ async def operations_tasks(_: None = Depends(verify_token)) -> list[dict]:
     # Makes the "Agents" nav section's task list real, rather than only
     # visible to Frank himself via the system-prompt snapshot.
     return await list_open_tasks()
+
+
+@app.get("/agents")
+async def agents_endpoint(_: None = Depends(verify_token)) -> list[dict]:
+    # Backs the "Agents" section's list of specialist cards -- see
+    # agents_registry.py's docstring for why this is a small hand-kept
+    # list rather than introspecting main.py's tool-use schemas.
+    return await list_agents()
 
 
 @app.get("/insights")

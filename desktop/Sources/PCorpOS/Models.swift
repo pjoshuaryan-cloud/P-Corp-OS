@@ -89,6 +89,19 @@ struct OperationsTask: Identifiable, Decodable {
     }
 }
 
+/// Mirrors backend/app/agents_registry.py's AGENTS list -- the single
+/// source of truth for which specialist agents exist, fetched from
+/// GET /agents so the Agents section stays current as new agent modules
+/// are added, without hand-editing a SwiftUI card per agent.
+struct Agent: Identifiable, Decodable {
+    let id: String
+    let name: String
+    let icon: String
+    let tagline: String
+    let detail: String
+    let status: String
+}
+
 struct QuickAction: Identifiable {
     let id = UUID()
     let title: String
