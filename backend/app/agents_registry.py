@@ -71,6 +71,18 @@ AGENTS = [
         ),
         "status": "active",
     },
+    {
+        "id": "memory",
+        "name": "Memory Agent",
+        "icon": "brain",
+        "tagline": "Long-term memory, decision history, patterns, preferences",
+        "detail": (
+            "Ask Frank what's already known about a topic, to spot a recurring pattern, or to check whether "
+            "something conflicts with a past decision -- it searches everything actually remembered rather "
+            "than guessing."
+        ),
+        "status": "active",
+    },
 ]
 
 

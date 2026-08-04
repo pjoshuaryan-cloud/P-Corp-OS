@@ -208,6 +208,8 @@ Responsibilities: long-term memory, project memory, decision history, knowledge 
 
 This is the reason Frank gets smarter over time.
 
+**Scope note (2026-08-04):** Built as read/synthesis-only over the existing memory_records (app/memory.py, app/db.py) -- not a new "knowledge graph" or vector store, which is real infrastructure past what a flat-list-plus-system-prompt specialist needs to be useful today. save_memory/forget_memory stay Frank's own direct tools, not duplicated here. Worth revisiting the knowledge-graph piece once the record count is large enough that handing the whole list as context stops being enough.
+
 ---
 
 ## The Workflow
