@@ -62,6 +62,11 @@ from app.alpha_mode_db import init_alpha_mode_db
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
 from app.agents_registry import list_agents
+from app.creative_director_agent import (
+    CREATIVE_DIRECTOR_AGENT_TOOL_NAMES,
+    CREATIVE_DIRECTOR_AGENT_TOOLS,
+    execute_creative_director_agent_tool_call,
+)
 from app.design_agent import DESIGN_AGENT_TOOL_NAMES, DESIGN_AGENT_TOOLS, execute_design_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
 from app.insights import compute_insights
@@ -370,6 +375,7 @@ async def run_claude_turn(
                 *OPERATIONS_TOOLS,
                 *ALPHA_MODE_AGENT_TOOLS,
                 *DESIGN_AGENT_TOOLS,
+                *CREATIVE_DIRECTOR_AGENT_TOOLS,
             ],
         ) as stream:
             async for text in stream.text_stream:
@@ -405,6 +411,12 @@ async def run_claude_turn(
                 assistant_text += result
             elif block.name in DESIGN_AGENT_TOOL_NAMES:
                 result = await execute_design_agent_tool_call(block.name, block.input, client, websocket)
+                # Same reasoning as consult_operations_agent above --
+                # already streamed live, needs to land in the persisted
+                # transcript too.
+                assistant_text += result
+            elif block.name in CREATIVE_DIRECTOR_AGENT_TOOL_NAMES:
+                result = await execute_creative_director_agent_tool_call(block.name, block.input, client, websocket)
                 # Same reasoning as consult_operations_agent above --
                 # already streamed live, needs to land in the persisted
                 # transcript too.

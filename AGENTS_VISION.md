@@ -75,6 +75,8 @@ Responsibilities:
 
 Eventually it understands your personal style, including Project Obsidian and Alpha Mode.
 
+**Scope note (2026-08-04):** Built as its own agent, sibling to Design Agent rather than combined -- deliberately kept to a clean division of labor: this agent owns concepts/storyboards/shot lists/scripts/campaign ideas/client pitches (the "what are we making and why" layer), Design Agent owns branding/UI/design systems (the "what does it look like as a system" layer). Carries the same Brand Guardian context and Personal Taste Model as Design Agent, and the same ask-before-generating behavior. "Project Obsidian" context still deliberately skipped, same as Design Agent -- not re-asked, applying the earlier decision consistently.
+
 ### Design Agent
 
 Responsibilities:

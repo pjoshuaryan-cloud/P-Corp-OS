@@ -49,6 +49,17 @@ AGENTS = [
         ),
         "status": "active",
     },
+    {
+        "id": "creative_director",
+        "name": "Creative Director Agent",
+        "icon": "film",
+        "tagline": "Concepts, storyboards, shot lists, scripts, campaign ideas, client pitches",
+        "detail": (
+            "Ask Frank to develop a creative concept, storyboard a shoot, write a shot list, or draft a client "
+            "pitch -- it asks what's actually needed first, then produces real creative development, not vague ideas."
+        ),
+        "status": "active",
+    },
 ]
 
 
