@@ -140,6 +140,8 @@ Responsibilities: research literally anything — technology, markets, AI, compe
 
 It summarizes everything. Never dumps information. Only insights.
 
+**Scope note (2026-08-04):** Built with genuine live web search from day one, unlike most other agents' first versions -- Anthropic's Messages API has a native, server-executed web search tool, so this didn't need new infrastructure the way real Gmail access (Communications Agent) or a knowledge graph (Memory Agent) would. Confirmed working live with real, current search results.
+
 ---
 
 ## Trading Division

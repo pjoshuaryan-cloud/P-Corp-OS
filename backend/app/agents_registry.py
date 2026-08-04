@@ -83,6 +83,17 @@ AGENTS = [
         ),
         "status": "active",
     },
+    {
+        "id": "research",
+        "name": "Research Agent",
+        "icon": "magnifyingglass",
+        "tagline": "Technology, markets, competitors, business, science, legal, trends",
+        "detail": (
+            "Ask Frank to research anything with real web search -- it summarizes into real insight, never "
+            "dumps raw search results, and cites what it's drawing on."
+        ),
+        "status": "active",
+    },
 ]
 
 

@@ -75,6 +75,7 @@ from app.creative_director_agent import (
 from app.design_agent import DESIGN_AGENT_TOOL_NAMES, DESIGN_AGENT_TOOLS, execute_design_agent_tool_call
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
+from app.research_agent import RESEARCH_AGENT_TOOL_NAMES, RESEARCH_AGENT_TOOLS, execute_research_agent_tool_call
 from app.insights import compute_insights
 from app.operations_db import init_operations_db, list_open_tasks
 from app.db import (
@@ -384,6 +385,7 @@ async def run_claude_turn(
                 *CREATIVE_DIRECTOR_AGENT_TOOLS,
                 *COMMUNICATIONS_AGENT_TOOLS,
                 *MEMORY_AGENT_TOOLS,
+                *RESEARCH_AGENT_TOOLS,
             ],
         ) as stream:
             async for text in stream.text_stream:
@@ -437,6 +439,12 @@ async def run_claude_turn(
                 assistant_text += result
             elif block.name in MEMORY_AGENT_TOOL_NAMES:
                 result = await execute_memory_agent_tool_call(block.name, block.input, client, websocket)
+                # Same reasoning as consult_operations_agent above --
+                # already streamed live, needs to land in the persisted
+                # transcript too.
+                assistant_text += result
+            elif block.name in RESEARCH_AGENT_TOOL_NAMES:
+                result = await execute_research_agent_tool_call(block.name, block.input, client, websocket)
                 # Same reasoning as consult_operations_agent above --
                 # already streamed live, needs to land in the persisted
                 # transcript too.
