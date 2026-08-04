@@ -60,6 +60,17 @@ AGENTS = [
         ),
         "status": "active",
     },
+    {
+        "id": "communications",
+        "name": "Communications Agent",
+        "icon": "envelope",
+        "tagline": "Emails, messages, meeting notes, client replies, follow-ups, summaries",
+        "detail": (
+            "Ask Frank to draft an email, a client reply, meeting notes, or a follow-up -- it only writes drafts "
+            "for you to review and send yourself, it never sends anything on its own."
+        ),
+        "status": "active",
+    },
 ]
 
 

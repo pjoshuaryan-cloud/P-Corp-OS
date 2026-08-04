@@ -62,6 +62,11 @@ from app.alpha_mode_db import init_alpha_mode_db
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
 from app.agents_registry import list_agents
+from app.communications_agent import (
+    COMMUNICATIONS_AGENT_TOOL_NAMES,
+    COMMUNICATIONS_AGENT_TOOLS,
+    execute_communications_agent_tool_call,
+)
 from app.creative_director_agent import (
     CREATIVE_DIRECTOR_AGENT_TOOL_NAMES,
     CREATIVE_DIRECTOR_AGENT_TOOLS,
@@ -376,6 +381,7 @@ async def run_claude_turn(
                 *ALPHA_MODE_AGENT_TOOLS,
                 *DESIGN_AGENT_TOOLS,
                 *CREATIVE_DIRECTOR_AGENT_TOOLS,
+                *COMMUNICATIONS_AGENT_TOOLS,
             ],
         ) as stream:
             async for text in stream.text_stream:
@@ -417,6 +423,12 @@ async def run_claude_turn(
                 assistant_text += result
             elif block.name in CREATIVE_DIRECTOR_AGENT_TOOL_NAMES:
                 result = await execute_creative_director_agent_tool_call(block.name, block.input, client, websocket)
+                # Same reasoning as consult_operations_agent above --
+                # already streamed live, needs to land in the persisted
+                # transcript too.
+                assistant_text += result
+            elif block.name in COMMUNICATIONS_AGENT_TOOL_NAMES:
+                result = await execute_communications_agent_tool_call(block.name, block.input, client, websocket)
                 # Same reasoning as consult_operations_agent above --
                 # already streamed live, needs to land in the persisted
                 # transcript too.

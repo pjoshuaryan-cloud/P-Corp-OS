@@ -194,6 +194,8 @@ Responsibilities: emails, messages, meeting notes, client replies, follow-ups, s
 
 It drafts communications, but Frank decides what to send.
 
+**Scope note (2026-08-04):** Built as draft-only, deliberately -- "Frank decides what to send" above lines up exactly with the standing rule that sending any message on Joshua's behalf needs his own explicit approval, so there's no send tool at all rather than a send tool gated behind confirmation. No real inbox/calendar integration either -- that needs real Google OAuth infrastructure (Cloud project, consent screen, token storage), a genuinely separate, bigger project. The Gmail/Calendar MCP connectors available in a Claude Code session are scoped to that session only; the P Corp OS backend has no MCP client of its own and would need its own integration built from scratch if/when that's worth doing.
+
 ---
 
 ## Intelligence Division
