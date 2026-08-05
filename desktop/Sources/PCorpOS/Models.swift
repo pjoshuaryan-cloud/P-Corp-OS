@@ -102,6 +102,40 @@ struct Agent: Identifiable, Decodable {
     let status: String
 }
 
+/// Mirrors backend/app/automations_registry.py's AGENTS list -- the
+/// configured automation rules, fetched from GET /automations/rules.
+struct AutomationRule: Identifiable, Decodable {
+    let id: String
+    let triggerTool: String
+    let name: String
+    let description: String
+    let agent: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, description, agent
+        case triggerTool = "trigger_tool"
+    }
+}
+
+/// Mirrors backend/app/automations_db.py's automation_runs table -- real
+/// firing history, fetched from GET /automations/runs.
+struct AutomationRun: Identifiable, Decodable {
+    let id: Int
+    let ruleId: String
+    let ruleName: String
+    let triggerSummary: String?
+    let result: String
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, result
+        case ruleId = "rule_id"
+        case ruleName = "rule_name"
+        case triggerSummary = "trigger_summary"
+        case createdAt = "created_at"
+    }
+}
+
 struct QuickAction: Identifiable {
     let id = UUID()
     let title: String

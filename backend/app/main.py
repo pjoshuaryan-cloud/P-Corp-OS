@@ -62,6 +62,9 @@ from app.alpha_mode_db import init_alpha_mode_db
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
 from app.agents_registry import list_agents
+from app.automations import check_and_fire as check_and_fire_automation
+from app.automations_db import init_automations_db, list_runs as list_automation_runs
+from app.automations_registry import AUTOMATIONS
 from app.communications_agent import (
     COMMUNICATIONS_AGENT_TOOL_NAMES,
     COMMUNICATIONS_AGENT_TOOLS,
@@ -144,6 +147,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     await init_alpha_mode_db()
     await init_operations_db()
+    await init_automations_db()
     # A single reused httpx client, not one per /speak call — real bug
     # found and fixed 2026-07-30: creating a fresh AsyncClient() per
     # request meant paying a full DNS+TLS handshake to ElevenLabs every
@@ -201,6 +205,20 @@ async def agents_endpoint(_: None = Depends(verify_token)) -> list[dict]:
     # agents_registry.py's docstring for why this is a small hand-kept
     # list rather than introspecting main.py's tool-use schemas.
     return await list_agents()
+
+
+@app.get("/automations/rules")
+async def automations_rules(_: None = Depends(verify_token)) -> list[dict]:
+    # Backs the "Automations" section's list of configured rules --
+    # same hand-kept-registry reasoning as GET /agents.
+    return AUTOMATIONS
+
+
+@app.get("/automations/runs")
+async def automations_runs(_: None = Depends(verify_token)) -> list[dict]:
+    # Backs the "Automations" section's real firing history -- makes
+    # automations visible when they happen, not something silent.
+    return await list_automation_runs()
 
 
 @app.get("/insights")
@@ -473,6 +491,14 @@ async def run_claude_turn(
             elif block.name in ("add_task", "update_task_status"):
                 notification = json.dumps({"title": "Task updated", "body": result})
                 await websocket.send_text(f"\n[notify]{notification}")
+
+            automation_notification = await check_and_fire_automation(block.name, block.input, client)
+            if automation_notification:
+                # Deliberately a separate notification, not folded into
+                # the block above -- this is a rule firing as a real
+                # side effect of the tool call, not the tool call's own
+                # result, and the two shouldn't be conflated in the UI.
+                await websocket.send_text(f"\n[notify]{json.dumps(automation_notification)}")
         history.append({"role": "user", "content": tool_results})
 
 

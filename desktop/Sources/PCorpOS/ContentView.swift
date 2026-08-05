@@ -34,6 +34,8 @@ struct ContentView: View {
                     KnowledgeView()
                 case "Agents":
                     AgentsView()
+                case "Automations":
+                    AutomationsView()
                 case "Settings":
                     SettingsView()
                 default:
