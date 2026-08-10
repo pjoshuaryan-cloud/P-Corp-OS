@@ -50,7 +50,7 @@ struct Sidebar: View {
                     .trackedLabel(1.8)
                     .foregroundStyle(theme.textSecondary)
                 HStack(spacing: 7) {
-                    Circle().fill(theme.textPrimary).frame(width: 7, height: 7)
+                    Circle().fill(Color.green).frame(width: 7, height: 7)
                     Text("All Systems Operational")
                         .font(PCorpFont.body(12.5))
                         .foregroundStyle(theme.textPrimary)

@@ -104,7 +104,7 @@ private struct MissionStatusCard: View {
                 SectionLabel(text: "MISSION STATUS")
                 Spacer()
                 HStack(spacing: 4) {
-                    Circle().fill(theme.textPrimary).frame(width: 6, height: 6)
+                    Circle().fill(Color.green).frame(width: 6, height: 6)
                     Text("Active").font(PCorpFont.body(11, weight: .semibold)).foregroundStyle(theme.textPrimary)
                 }
             }
