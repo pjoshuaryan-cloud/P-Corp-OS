@@ -1,6 +1,6 @@
 # Alpha Mode Integration
 
-**Status:** Skeleton — scope is named, current tooling and integration mechanism are not.
+**Status:** Built and live (2026-08-02 onward) — Alpha Mode Agent exists, real Supabase integration with the actual Alpha Mode Media Admin app, verified end-to-end against production data. This doc previously described the project as an unstarted "wishlist" long after that stopped being true; rewritten 2026-08-10 to match reality, caught by a full-codebase audit against a new feature spec.
 
 ## Purpose
 
@@ -10,12 +10,19 @@ Define what Frank needs to understand about Alpha Mode Media's operations, and h
 
 Frank should eventually understand: projects, CRM, clients, invoices, deadlines, crew, post-production, equipment, suppliers, reporting, SOPs, analytics, operations, knowledge, and workflow improvements. He should strengthen the existing leadership structure (Joshua/Nick/Raoof — see FOUNDER_BRIEF.md → About Me for each founder's focus areas) rather than replace it.
 
+## What actually exists (2026-08-02 onward)
+
+- **Alpha Mode Agent** (`backend/app/alpha_mode_agent.py`) — Frank's second delegated specialist. Handles CRM, projects, invoices, crew, equipment, marketing calendar, reporting.
+- **The current tooling question is answered:** Alpha Mode already runs its own real app — Alpha Mode Media Admin (`~/Desktop/alpha-mode-media-app`), Electron + Supabase (Postgres), 9 modules (Dashboard, Marketing, Pre-Production, Production, Post-Production, Invoicing, Cost Estimate, Leads, Team). Found, got running, and verified live end-to-end 2026-08-02 — real Gatekeeper/malware rejection and a real Postgres-Changes real-time bug in the app's own code were both root-caused and fixed along the way.
+- **Integration mechanism: direct writes into the real Supabase database**, not a local copy that could drift. `add_project` and invoice-status-update tools (`app/alpha_mode_supabase.py`, using the Postgres `service_role` key server-side — correct here since this runs backend-side, never shipped to a client) write live into the same database the real app reads. Verified with a real test project created through a real conversation, visible in the actual app.
+- **Local SQLite** (`app/alpha_mode_db.py`) stays authoritative for clients, deliverables, crew, and equipment — these have no clean 1:1 match in the real Supabase schema (e.g., "client" is just a text field on a project there, not its own table). A deliberate, documented split, not an oversight.
+- **A real, unresolved security gap** (see `SECURITY.md`): the project/invoice writes above auto-execute with no confirmation step and no audit log, even though `SECURITY.md`'s own tier definitions name this exact kind of action ("writing to Alpha Mode's real CRM") as needing confirmation. Flagged for Joshua's explicit decision, not silently resolved.
+
 ## Open questions
 
-- What tools does Alpha Mode currently use for CRM, invoicing, project management, etc.? Not documented anywhere yet — this needs to come from Joshua, not be assumed.
-- Does Frank integration mean read access to existing tools via APIs, a migration to new tooling, or both?
-- Do Nick and Raoof get their own access to Frank/Alpha Mode agents, or does this stay Joshua's individual tool that surfaces Alpha Mode context to him alone?
+- Do Nick and Raoof get their own access to Frank/Alpha Mode agents, or does this stay Joshua's individual tool that surfaces Alpha Mode context to him alone? Still unaddressed.
+- Whether the Alpha Mode Agent's writes should require confirmation and/or get audit-logged (see `SECURITY.md`).
 
 ## Next step
 
-Needs an inventory of Alpha Mode's current systems before this can be more than a wishlist — good homework for a future session, not something to guess at here.
+Resolve the security-gap question above with Joshua directly. Otherwise, this integration is stable and in active use — no further build needed unless new Alpha Mode capabilities are requested.
