@@ -88,6 +88,7 @@ from app.db import (
     create_new_conversation,
     forget_memory_by_id,
     get_active_conversation_id,
+    get_focus_objective,
     init_db,
     list_conversations,
     load_history,
@@ -96,6 +97,7 @@ from app.db import (
     set_active_conversation,
 )
 from app.memory import FORGET_MEMORY_TOOL, SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
+from app.focus import FOCUS_TOOL_NAMES, FOCUS_TOOLS, execute_focus_tool_call
 from app.personality import SYSTEM_PROMPT
 from app.piper_tts import synthesize_wav_bytes
 
@@ -229,6 +231,15 @@ async def automations_runs(_: None = Depends(verify_token)) -> list[dict]:
     # Backs the "Automations" section's real firing history -- makes
     # automations visible when they happen, not something silent.
     return await list_automation_runs()
+
+
+@app.get("/focus")
+async def focus_endpoint(_: None = Depends(verify_token)) -> dict:
+    # Backs the War Room's Mission Status card's "Focus: ..." line --
+    # see db.py's get_focus_objective docstring for the deliberately
+    # minimal scope (just this one line, no on/off mode, no automatic
+    # deprioritization).
+    return await get_focus_objective()
 
 
 @app.get("/insights")
@@ -448,6 +459,7 @@ async def run_claude_turn(
             tools=[
                 SAVE_MEMORY_TOOL,
                 FORGET_MEMORY_TOOL,
+                *FOCUS_TOOLS,
                 *ALPHA_MODE_TOOLS,
                 *OPERATIONS_TOOLS,
                 *ALPHA_MODE_AGENT_TOOLS,
@@ -471,7 +483,9 @@ async def run_claude_turn(
         for block in final_message.content:
             if block.type != "tool_use":
                 continue
-            if block.name in ALPHA_MODE_TOOL_NAMES:
+            if block.name in FOCUS_TOOL_NAMES:
+                result = await execute_focus_tool_call(block.name, block.input)
+            elif block.name in ALPHA_MODE_TOOL_NAMES:
                 result = await execute_alpha_mode_tool_call(block.name, block.input)
             elif block.name in OPERATIONS_TOOL_NAMES:
                 result = await execute_operations_tool_call(block.name, block.input, client, websocket)
@@ -542,6 +556,9 @@ async def run_claude_turn(
                 notification = json.dumps(
                     {"title": "Frank forgot something", "body": result.removeprefix("Forgot: ")}
                 )
+                await websocket.send_text(f"\n[notify]{notification}")
+            elif block.name == "set_focus_objective":
+                notification = json.dumps({"title": "Focus updated", "body": block.input.get("objective", "")})
                 await websocket.send_text(f"\n[notify]{notification}")
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 notification = json.dumps({"title": "Alpha Mode Media updated", "body": result})

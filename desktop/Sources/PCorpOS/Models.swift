@@ -102,6 +102,20 @@ struct Agent: Identifiable, Decodable {
     let status: String
 }
 
+/// Mirrors backend/app/db.py's get_focus_objective() -- the War Room's
+/// Mission Status "Focus: ..." line, fetched from GET /focus. Both
+/// fields are nullable: no objective set yet is a real, honest state,
+/// not an error.
+struct FocusObjective: Decodable {
+    let objective: String?
+    let setAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case objective
+        case setAt = "set_at"
+    }
+}
+
 /// Mirrors backend/app/automations_registry.py's AGENTS list -- the
 /// configured automation rules, fetched from GET /automations/rules.
 struct AutomationRule: Identifiable, Decodable {

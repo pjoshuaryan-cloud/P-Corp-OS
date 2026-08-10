@@ -96,6 +96,7 @@ private struct MissionStatusCard: View {
     private let progress: Double = 0.68
     @Environment(\.appTheme) private var theme
     @State private var animatedProgress: Double = 0
+    @StateObject private var focusClient = FocusClient()
 
     var body: some View {
         CardContainer {
@@ -127,7 +128,7 @@ private struct MissionStatusCard: View {
             }
 
             HStack {
-                Text("Focus: Build systems that scale")
+                Text("Focus: \(focusClient.objective ?? "Nothing set yet")")
                     .font(PCorpFont.body(11))
                     .foregroundStyle(theme.textSecondary)
                 Spacer()
@@ -135,6 +136,9 @@ private struct MissionStatusCard: View {
                     .font(PCorpFont.body(11, weight: .semibold))
                     .foregroundStyle(theme.textPrimary)
             }
+        }
+        .task {
+            await focusClient.fetch()
         }
     }
 }

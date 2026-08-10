@@ -109,6 +109,15 @@ async def init_db() -> None:
             (newest_id,) = await cursor.fetchone()
             await db.execute("INSERT INTO app_state (id, active_conversation_id) VALUES (1, ?)", (newest_id,))
 
+        # Migration path: app_state existed before Focus Lock's objective
+        # columns did (2026-08-10). Nullable -- no objective set is a real,
+        # honest state (shown as an empty state in the UI), not an error.
+        cursor = await db.execute("PRAGMA table_info(app_state)")
+        columns = {row[1] async for row in cursor}
+        if "current_objective" not in columns:
+            await db.execute("ALTER TABLE app_state ADD COLUMN current_objective TEXT")
+            await db.execute("ALTER TABLE app_state ADD COLUMN objective_set_at TEXT")
+
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_records (
@@ -141,6 +150,28 @@ async def get_active_conversation_id() -> int:
 async def set_active_conversation(conversation_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE app_state SET active_conversation_id = ? WHERE id = 1", (conversation_id,))
+        await db.commit()
+
+
+async def get_focus_objective() -> dict:
+    """Focus Lock (2026-08-10) -- a real, settable "current objective,"
+    deliberately scoped to just this: no on/off mode, no context-switch
+    detection, no automatic deprioritization of anything. Joshua can
+    always override by asking Frank to change it (or a future direct UI
+    affordance) -- there's no enforcement mechanism to override."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT current_objective, objective_set_at FROM app_state WHERE id = 1")
+        row = await cursor.fetchone()
+        return {"objective": row["current_objective"], "set_at": row["objective_set_at"]}
+
+
+async def set_focus_objective(objective: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE app_state SET current_objective = ?, objective_set_at = datetime('now') WHERE id = 1",
+            (objective,),
+        )
         await db.commit()
 
 
