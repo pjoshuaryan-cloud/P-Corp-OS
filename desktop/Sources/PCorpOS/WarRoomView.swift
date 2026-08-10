@@ -1,8 +1,17 @@
+import AppKit
 import SwiftUI
 
 struct WarRoomView: View {
     @State private var inputText: String = ""
     @State private var showConversationList = false
+    // Image upload (2026-08-05): held as raw Data + a real MIME type, not
+    // just an NSImage -- the MIME type is what the backend needs to build
+    // Claude's own image content block, and re-deriving it from an NSImage
+    // later would be more work than just keeping what NSOpenPanel already
+    // told us via the file's UTType.
+    @State private var attachedImageData: Data? = nil
+    @State private var attachedImageMediaType: String? = nil
+    @State private var attachedImagePreview: NSImage? = nil
     @Environment(\.appTheme) private var theme
     @FocusState private var isInputFocused: Bool
     @StateObject private var backend = BackendClient()
@@ -142,6 +151,12 @@ struct WarRoomView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
+            if let preview = attachedImagePreview {
+                attachedImageChip(preview)
+                    .padding(.horizontal, 48)
+                    .padding(.bottom, 8)
+            }
+
             inputBar
                 .padding(.horizontal, 48)
                 .padding(.bottom, 32)
@@ -163,11 +178,55 @@ struct WarRoomView: View {
         }
     }
 
+    private func attachedImageChip(_ preview: NSImage) -> some View {
+        HStack(spacing: 8) {
+            Image(nsImage: preview)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 32, height: 32)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            Text("Image attached")
+                .font(PCorpFont.body(12))
+                .foregroundStyle(theme.textSecondary)
+            Spacer()
+            Button(action: clearAttachedImage) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(theme.textTertiary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 12).fill(theme.surface.opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+    }
+
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        backend.send(text)
+        guard !text.isEmpty || attachedImageData != nil else { return }
+        backend.send(text, imageData: attachedImageData, mediaType: attachedImageMediaType)
         inputText = ""
+        clearAttachedImage()
+    }
+
+    private func clearAttachedImage() {
+        attachedImageData = nil
+        attachedImageMediaType = nil
+        attachedImagePreview = nil
+    }
+
+    /// NSOpenPanel restricted to real image types -- .png/.jpeg cover what
+    /// Claude's vision input actually accepts; not offering formats it'd
+    /// just reject. Reads the raw bytes directly rather than re-encoding
+    /// through NSImage, so what gets sent is exactly the original file.
+    private func pickImage() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+        attachedImageData = data
+        attachedImageMediaType = url.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg"
+        attachedImagePreview = NSImage(data: data)
     }
 
     private func topBar(currentDate: Date) -> some View {
@@ -266,6 +325,15 @@ struct WarRoomView: View {
             }
             .buttonStyle(.plain)
             .help("Push-to-talk — click to start, stops and sends automatically once you stop talking")
+
+            Button(action: pickImage) {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(theme.textSecondary)
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+            .help("Attach an image — for Frank or the Design Agent to actually see")
 
             TextField("Talk to Frank...", text: $inputText)
                 .textFieldStyle(.plain)
@@ -585,9 +653,32 @@ private struct ChatBubble: View {
         if isPending {
             TypingIndicatorDots()
         } else if isUser {
-            Text(message.content)
-                .font(PCorpFont.body(14))
-                .foregroundStyle(theme.accentText)
+            VStack(alignment: .trailing, spacing: 8) {
+                if let imageData = message.imageData, let nsImage = NSImage(data: imageData) {
+                    // A real image from this live session -- the actual
+                    // bytes just sent, not re-fetched from disk.
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: 240, maxHeight: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                } else if message.hasStoredImage {
+                    // A reopened old conversation's message that had an
+                    // image -- shown as a plain indicator, not re-fetched
+                    // (see ChatMessage.hasStoredImage's own doc comment).
+                    HStack(spacing: 6) {
+                        Image(systemName: "photo")
+                        Text("Image attached")
+                    }
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle(theme.accentText.opacity(0.8))
+                }
+                if !message.content.isEmpty {
+                    Text(message.content)
+                        .font(PCorpFont.body(14))
+                        .foregroundStyle(theme.accentText)
+                }
+            }
         } else {
             SimpleMarkdownView(text: message.content)
         }

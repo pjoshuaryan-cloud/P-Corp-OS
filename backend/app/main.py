@@ -40,8 +40,10 @@ keypair auth, SMAppService packaging.
 """
 
 import asyncio
+import base64
 import json
 import os
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -115,6 +117,12 @@ MODEL = "claude-sonnet-5"
 # drafted document, etc.) that need more room.
 MAX_TOKENS = 4096
 AUTH_TOKEN = get_or_create_token()
+
+# Uploaded chat images land here (2026-08-05) -- filenames only in
+# messages.image_path, not the bytes themselves, keeps that column cheap
+# regardless of image size. Not synced/backed up anywhere yet, same as
+# every other local SQLite data in this project so far.
+ATTACHMENTS_DIR = Path(__file__).parent.parent / "data" / "attachments"
 
 # Optional — cloud text-to-speech (see .env.example). Confirmed decision
 # (2026-07-29): tried free-tier ElevenLabs first, which turned out to
@@ -333,13 +341,45 @@ async def websocket_chat(websocket: WebSocket) -> None:
     # Whichever conversation is active as of connect time — a client that
     # started a new chat right before reconnecting picks up the fresh one.
     conversation_id = await get_active_conversation_id()
-    history: list[dict[str, str]] = await load_history(conversation_id)
+    # image_path is dropped here, deliberately -- load_history() includes it
+    # for GET /history's benefit (the UI's "📎 image attached" placeholder for
+    # an old message), but Claude's own `messages=` list only accepts
+    # role/content, and reloading old history should show a past image was
+    # attached, not re-send it as real vision context on every reconnect
+    # (confirmed decision 2026-08-05 -- see load_history()'s docstring).
+    history: list[dict[str, str]] = [
+        {"role": row["role"], "content": row["content"]} for row in await load_history(conversation_id)
+    ]
 
     try:
         while True:
-            user_message = await websocket.receive_text()
-            history.append({"role": "user", "content": user_message})
-            await save_message(conversation_id, "user", user_message)
+            raw_message = await websocket.receive_text()
+            try:
+                payload = json.loads(raw_message)
+                user_text = payload.get("text", "")
+                image = payload.get("image")
+            except json.JSONDecodeError:
+                user_text = raw_message
+                image = None
+
+            image_path = None
+            if image and image.get("data") and image.get("media_type"):
+                ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+                extension = "png" if "png" in image["media_type"] else "jpg"
+                image_path = f"{uuid.uuid4()}.{extension}"
+                (ATTACHMENTS_DIR / image_path).write_bytes(base64.b64decode(image["data"]))
+                user_content = [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": image["media_type"], "data": image["data"]},
+                    },
+                    {"type": "text", "text": user_text},
+                ]
+            else:
+                user_content = user_text
+
+            history.append({"role": "user", "content": user_content})
+            await save_message(conversation_id, "user", user_text, image_path=image_path)
 
             system_prompt = (
                 SYSTEM_PROMPT + await build_memory_block() + await build_alpha_mode_block() + await build_operations_block()

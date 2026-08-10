@@ -8,6 +8,18 @@ struct ChatMessage: Identifiable {
     let id = UUID()
     let role: String
     var content: String
+    /// Real image bytes for a just-sent-this-session message -- rendered as
+    /// an actual thumbnail. nil for text-only messages, and also nil for a
+    /// message loaded from a *reopened* old conversation (see
+    /// hasStoredImage below) -- old images aren't re-fetched, only shown as
+    /// a placeholder, confirmed decision 2026-08-05 (cost of re-sending an
+    /// old image to Claude as real context on every reconnect vs. just
+    /// knowing one was attached).
+    var imageData: Data? = nil
+    /// True when GET /history reports this message had an image attached,
+    /// but the bytes weren't re-fetched (see imageData above) -- renders as
+    /// a plain "📎 image attached" indicator instead of the real picture.
+    var hasStoredImage: Bool = false
 }
 
 /// The connection from the shell to the Python backend, and the owner of
@@ -174,12 +186,26 @@ final class BackendClient: ObservableObject {
         listen()
     }
 
-    func send(_ text: String) {
+    /// mediaType is a real image MIME type ("image/png"/"image/jpeg") --
+    /// required alongside imageData, not inferred, since the wire payload
+    /// (WirePayload below) needs it for Claude's own content-block format.
+    func send(_ text: String, imageData: Data? = nil, mediaType: String? = nil) {
         guard let task else { return }
-        messages.append(ChatMessage(role: "user", content: text))
+        messages.append(ChatMessage(role: "user", content: text, imageData: imageData))
         messages.append(ChatMessage(role: "assistant", content: ""))
         isStreaming = true
-        task.send(.string(text)) { [weak self] error in
+
+        let wireImage = imageData.flatMap { data in
+            mediaType.map { WireImage(media_type: $0, data: data.base64EncodedString()) }
+        }
+        let payload = WirePayload(text: text, image: wireImage)
+        guard let json = try? JSONEncoder().encode(payload), let jsonString = String(data: json, encoding: .utf8) else {
+            appendToLastAssistantMessage("[connection error: couldn't encode message]")
+            isStreaming = false
+            return
+        }
+
+        task.send(.string(jsonString)) { [weak self] error in
             if let error {
                 Task { @MainActor in
                     self?.appendToLastAssistantMessage(
@@ -191,13 +217,26 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    private struct HistoryEntry: Decodable { let role: String; let content: String }
+    /// Wire format for a sent chat turn (2026-08-05, image upload support)
+    /// -- was a bare string before; now a small JSON envelope so an
+    /// optional image can ride alongside the text. See backend/app/
+    /// main.py's websocket handler for the matching decode side.
+    private struct WireImage: Encodable { let media_type: String; let data: String }
+    private struct WirePayload: Encodable { let text: String; let image: WireImage? }
+
+    private struct HistoryEntry: Decodable {
+        let role: String
+        let content: String
+        let image_path: String?
+    }
 
     private func loadHistory() async {
         do {
             let (data, _) = try await URLSession.shared.data(from: historyURL)
             let entries = try JSONDecoder().decode([HistoryEntry].self, from: data)
-            messages = entries.map { ChatMessage(role: $0.role, content: $0.content) }
+            messages = entries.map {
+                ChatMessage(role: $0.role, content: $0.content, hasStoredImage: $0.image_path != nil)
+            }
         } catch {
             // Not critical enough to surface a hard error on first load —
             // the thread just starts empty, same as before this existed.

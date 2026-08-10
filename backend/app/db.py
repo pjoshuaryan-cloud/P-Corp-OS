@@ -84,6 +84,12 @@ async def init_db() -> None:
         columns = {row[1] async for row in cursor}
         if "conversation_id" not in columns:
             await db.execute("ALTER TABLE messages ADD COLUMN conversation_id INTEGER NOT NULL DEFAULT 1")
+        # Migration path: messages existed before image_path did (2026-08-05,
+        # image upload support). Nullable -- most messages have no image.
+        # Stores a filename under data/attachments/, not the image bytes
+        # themselves -- keeps this TEXT column cheap regardless of image size.
+        if "image_path" not in columns:
+            await db.execute("ALTER TABLE messages ADD COLUMN image_path TEXT")
 
         await db.execute(
             """
@@ -199,22 +205,29 @@ async def list_conversations(query: str | None = None) -> list[dict]:
         ]
 
 
-async def load_history(conversation_id: int) -> list[dict[str, str]]:
+async def load_history(conversation_id: int) -> list[dict]:
+    # image_path is included for the UI (GET /history — the "📎 image
+    # attached" placeholder for a reopened old conversation) but is
+    # deliberately stripped back out before this shape reaches Claude's own
+    # message history (see main.py's websocket handler) -- a reopened old
+    # image is shown, not re-sent as real vision context every reload,
+    # confirmed decision 2026-08-05 (cost vs. Frank genuinely "re-seeing"
+    # it every time).
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id ASC",
+            "SELECT role, content, image_path FROM messages WHERE conversation_id = ? ORDER BY id ASC",
             (conversation_id,),
         )
         rows = await cursor.fetchall()
-        return [{"role": row["role"], "content": row["content"]} for row in rows]
+        return [{"role": row["role"], "content": row["content"], "image_path": row["image_path"]} for row in rows]
 
 
-async def save_message(conversation_id: int, role: str, content: str) -> None:
+async def save_message(conversation_id: int, role: str, content: str, image_path: str | None = None) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
-            (conversation_id, role, content),
+            "INSERT INTO messages (conversation_id, role, content, image_path) VALUES (?, ?, ?, ?)",
+            (conversation_id, role, content, image_path),
         )
         await db.commit()
 
