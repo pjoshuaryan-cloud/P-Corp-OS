@@ -16,13 +16,12 @@ Frank should eventually understand: projects, CRM, clients, invoices, deadlines,
 - **The current tooling question is answered:** Alpha Mode already runs its own real app — Alpha Mode Media Admin (`~/Desktop/alpha-mode-media-app`), Electron + Supabase (Postgres), 9 modules (Dashboard, Marketing, Pre-Production, Production, Post-Production, Invoicing, Cost Estimate, Leads, Team). Found, got running, and verified live end-to-end 2026-08-02 — real Gatekeeper/malware rejection and a real Postgres-Changes real-time bug in the app's own code were both root-caused and fixed along the way.
 - **Integration mechanism: direct writes into the real Supabase database**, not a local copy that could drift. `add_project` and invoice-status-update tools (`app/alpha_mode_supabase.py`, using the Postgres `service_role` key server-side — correct here since this runs backend-side, never shipped to a client) write live into the same database the real app reads. Verified with a real test project created through a real conversation, visible in the actual app.
 - **Local SQLite** (`app/alpha_mode_db.py`) stays authoritative for clients, deliverables, crew, and equipment — these have no clean 1:1 match in the real Supabase schema (e.g., "client" is just a text field on a project there, not its own table). A deliberate, documented split, not an oversight.
-- **A real, unresolved security gap** (see `SECURITY.md`): the project/invoice writes above auto-execute with no confirmation step and no audit log, even though `SECURITY.md`'s own tier definitions name this exact kind of action ("writing to Alpha Mode's real CRM") as needing confirmation. Flagged for Joshua's explicit decision, not silently resolved.
+- **Security gap, resolved 2026-08-10** (see `SECURITY.md`): the project/invoice writes above auto-execute with no confirmation step, which `SECURITY.md`'s own tier definitions name as needing one ("writing to Alpha Mode's real CRM"). Asked Joshua directly rather than guessing — decided to keep auto-execute now that real audit logging exists (every write is recorded: tool, input, result, timestamp). Revisit only if this becomes an actual problem in practice.
 
 ## Open questions
 
 - Do Nick and Raoof get their own access to Frank/Alpha Mode agents, or does this stay Joshua's individual tool that surfaces Alpha Mode context to him alone? Still unaddressed.
-- Whether the Alpha Mode Agent's writes should require confirmation and/or get audit-logged (see `SECURITY.md`).
 
 ## Next step
 
-Resolve the security-gap question above with Joshua directly. Otherwise, this integration is stable and in active use — no further build needed unless new Alpha Mode capabilities are requested.
+This integration is stable and in active use — no further build needed unless new Alpha Mode capabilities are requested.
