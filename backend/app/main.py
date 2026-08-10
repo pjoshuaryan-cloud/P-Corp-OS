@@ -98,6 +98,11 @@ from app.db import (
 )
 from app.memory import FORGET_MEMORY_TOOL, SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
 from app.focus import FOCUS_TOOL_NAMES, FOCUS_TOOLS, execute_focus_tool_call
+from app.decision_journal import (
+    DECISION_JOURNAL_TOOL_NAMES,
+    DECISION_JOURNAL_TOOLS,
+    execute_decision_journal_tool_call,
+)
 from app.personality import SYSTEM_PROMPT
 from app.piper_tts import synthesize_wav_bytes
 
@@ -460,6 +465,7 @@ async def run_claude_turn(
                 SAVE_MEMORY_TOOL,
                 FORGET_MEMORY_TOOL,
                 *FOCUS_TOOLS,
+                *DECISION_JOURNAL_TOOLS,
                 *ALPHA_MODE_TOOLS,
                 *OPERATIONS_TOOLS,
                 *ALPHA_MODE_AGENT_TOOLS,
@@ -485,6 +491,8 @@ async def run_claude_turn(
                 continue
             if block.name in FOCUS_TOOL_NAMES:
                 result = await execute_focus_tool_call(block.name, block.input)
+            elif block.name in DECISION_JOURNAL_TOOL_NAMES:
+                result = await execute_decision_journal_tool_call(block.name, block.input)
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 result = await execute_alpha_mode_tool_call(block.name, block.input)
             elif block.name in OPERATIONS_TOOL_NAMES:
@@ -559,6 +567,9 @@ async def run_claude_turn(
                 await websocket.send_text(f"\n[notify]{notification}")
             elif block.name == "set_focus_objective":
                 notification = json.dumps({"title": "Focus updated", "body": block.input.get("objective", "")})
+                await websocket.send_text(f"\n[notify]{notification}")
+            elif block.name == "log_decision":
+                notification = json.dumps({"title": "Decision logged", "body": block.input.get("decision", "")})
                 await websocket.send_text(f"\n[notify]{notification}")
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 notification = json.dumps({"title": "Alpha Mode Media updated", "body": result})

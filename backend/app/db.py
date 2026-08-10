@@ -137,6 +137,26 @@ async def init_db() -> None:
         if "deleted_at" not in columns:
             await db.execute("ALTER TABLE memory_records ADD COLUMN deleted_at TEXT")
 
+        # Decision Journal (2026-08-10) -- lives alongside memory_records
+        # rather than its own SQLite file: this is core Frank knowledge
+        # like memory, not a separate-retention-pattern concern like
+        # audit.db/automations.db. Capture-only first pass, same shape as
+        # audit logging's first pass -- reasoning/alternatives are
+        # optional since not every decision has a fleshed-out "why" worth
+        # recording, and this shouldn't create friction that discourages
+        # logging anything at all.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                decision TEXT NOT NULL,
+                reasoning TEXT,
+                alternatives TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+
         await db.commit()
 
 
@@ -297,6 +317,30 @@ async def save_memory_record(
             (type, title, content, int(sensitive)),
         )
         await db.commit()
+
+
+async def log_decision(decision: str, reasoning: str | None = None, alternatives: str | None = None) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO decisions (decision, reasoning, alternatives) VALUES (?, ?, ?)",
+            (decision, reasoning, alternatives),
+        )
+        await db.commit()
+
+
+async def list_decisions(limit: int = 100) -> list[dict]:
+    # Not wired to any endpoint or tool yet -- capture-only first pass,
+    # same reasoning as audit_db.list_recent_calls: get real data flowing
+    # before deciding what surfaces it (a UI view, a recall tool, both).
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, decision, reasoning, alternatives, created_at "
+            "FROM decisions ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 async def forget_memory_by_id(memory_id: int) -> bool:
