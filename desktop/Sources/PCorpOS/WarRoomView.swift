@@ -308,7 +308,7 @@ struct WarRoomView: View {
     }
 
     private var inputBar: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .bottom, spacing: 12) {
             // Voice-first: this used to be a small icon tucked into the top
             // toolbar, separate from the actual input area -- the literal
             // reason voice read as an accessory rather than the primary way
@@ -349,11 +349,19 @@ struct WarRoomView: View {
             .buttonStyle(.plain)
             .help("Attach an image — for Frank or the Design Agent to actually see")
 
-            TextField("Talk to Frank...", text: $inputText)
+            // Real bug found in live use 2026-08-10: a plain single-line
+            // TextField scrolled horizontally as one long line instead of
+            // wrapping -- axis: .vertical makes it grow downward as text
+            // wraps, capped at 6 lines so a large paste doesn't take over
+            // the input bar. Return still sends (onSubmit fires on Return
+            // regardless of axis on macOS); Shift+Return inserts a literal
+            // newline instead, same convention as iMessage/Slack.
+            TextField("Talk to Frank...", text: $inputText, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(PCorpFont.body(14))
                 .foregroundStyle(theme.textPrimary)
                 .focused($isInputFocused)
+                .lineLimit(1...6)
                 .onSubmit(sendMessage)
 
             if backend.isStreaming {
