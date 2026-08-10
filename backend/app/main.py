@@ -83,6 +83,7 @@ from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execut
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
 from app.research_agent import RESEARCH_AGENT_TOOL_NAMES, RESEARCH_AGENT_TOOLS, execute_research_agent_tool_call
 from app.insights import compute_insights
+from app.situation_room import compute_situation_room_alerts
 from app.operations_db import init_operations_db, list_open_tasks
 from app.db import (
     create_new_conversation,
@@ -268,6 +269,14 @@ async def insights_endpoint(_: None = Depends(verify_token)) -> list[dict]:
     # Real data behind the right rail's "Frank's Insights" card -- was
     # literal placeholder text before (see app/insights.py's docstring).
     return await compute_insights()
+
+
+@app.get("/situation-room")
+async def situation_room_endpoint(_: None = Depends(verify_token)) -> list[dict]:
+    # Backs War Room's escalated alert banner -- see
+    # app/situation_room.py's docstring for how this differs from the
+    # routine /insights list.
+    return await compute_situation_room_alerts()
 
 
 @app.delete("/memory/{memory_id}")

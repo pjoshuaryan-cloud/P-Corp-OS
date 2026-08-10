@@ -29,6 +29,21 @@ struct InsightItem: Identifiable, Decodable {
     }
 }
 
+/// Backs GET /situation-room (app/situation_room.py) — a stricter tier
+/// than InsightItem above, deliberately no icon field since these render
+/// as a single banner, not individual iconed rows like the Insights card.
+struct SituationRoomAlert: Identifiable, Decodable {
+    let id = UUID()
+    let title: String
+    let detail: String
+    let targetNavTitle: String
+
+    enum CodingKeys: String, CodingKey {
+        case title, detail
+        case targetNavTitle = "target_nav_title"
+    }
+}
+
 /// A row in the conversation switcher — backs GET /conversations. `id`
 /// matches the real backend conversation_id (not a client-generated UUID)
 /// since it has to round-trip to POST /conversations/{id}/activate.

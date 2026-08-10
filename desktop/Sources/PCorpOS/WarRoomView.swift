@@ -17,6 +17,7 @@ struct WarRoomView: View {
     @StateObject private var backend = BackendClient()
     @StateObject private var voiceInput = VoiceInput()
     @StateObject private var voiceOutput = VoiceOutput()
+    @StateObject private var situationRoom = SituationRoomClient()
     /// Set true right when a push-to-talk transcript is sent, consumed
     /// once that turn's reply finishes streaming -- the mechanism for
     /// "only speak replies to voice input" (confirmed decision,
@@ -49,6 +50,10 @@ struct WarRoomView: View {
     private func content(currentDate: Date) -> some View {
         VStack(spacing: 0) {
             topBar(currentDate: currentDate)
+
+            if !situationRoom.alerts.isEmpty {
+                SituationRoomBanner(alerts: situationRoom.alerts)
+            }
 
             if voiceInput.isListening {
                 // While actively recording, the blob takes over the center
@@ -164,6 +169,15 @@ struct WarRoomView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
         .onAppear { backend.connect() }
+        .task {
+            // Same 30s-poll reasoning as InsightsCard (RightRail.swift) --
+            // WarRoomView persists across the session, so a one-shot
+            // fetch would only ever reflect whatever was true at launch.
+            while !Task.isCancelled {
+                await situationRoom.fetch()
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            }
+        }
         .onChange(of: backend.isStreaming) { _, isStreaming in
             // isStreaming going true -> false is the real signal a turn
             // just completed (backend's own "\n[done]" sentinel) -- only
@@ -382,6 +396,40 @@ struct WarRoomView: View {
         )
         .shadow(color: theme.cardShadow, radius: isInputFocused ? 20 : 16, x: 0, y: isInputFocused ? 8 : 6)
         .animation(.easeOut(duration: 0.15), value: isInputFocused)
+    }
+}
+
+/// Situation Room (2026-08-10) -- an escalated alert banner, deliberately
+/// not styled like the calm right-rail Insights card: this should read
+/// as "interrupt," not "routine list." Only ever shown when
+/// SituationRoomClient.alerts is non-empty (WarRoomView.content), so its
+/// absence is the honest, common case, not something hidden behind a
+/// collapsed state.
+private struct SituationRoomBanner: View {
+    let alerts: [SituationRoomAlert]
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text("SITUATION ROOM")
+                    .font(PCorpFont.label(10))
+                    .trackedLabel(1.4)
+                    .foregroundStyle(.red)
+            }
+            ForEach(alerts) { alert in
+                Text("\(alert.title) — \(alert.detail)")
+                    .font(PCorpFont.body(12.5))
+                    .foregroundStyle(theme.textPrimary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 32)
+        .padding(.vertical, 12)
+        .background(Color.red.opacity(0.12))
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(.red.opacity(0.3)), alignment: .bottom)
     }
 }
 
