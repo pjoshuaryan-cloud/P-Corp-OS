@@ -157,6 +157,26 @@ async def init_db() -> None:
             """
         )
 
+        # Memory Graph (2026-08-10) -- linking-only first pass: an edge
+        # table over the two existing capture tables (memory_records,
+        # decisions). from_type/to_type keep it a plain column pair
+        # rather than two separate FK schemes per combination, since more
+        # linkable record types (tasks, projects) are a plausible future
+        # addition and shouldn't need a schema change to add.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_type TEXT NOT NULL CHECK (from_type IN ('memory', 'decision')),
+                from_id INTEGER NOT NULL,
+                to_type TEXT NOT NULL CHECK (to_type IN ('memory', 'decision')),
+                to_id INTEGER NOT NULL,
+                relationship TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+
         await db.commit()
 
 
@@ -341,6 +361,66 @@ async def list_decisions(limit: int = 100) -> list[dict]:
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+async def _resolve_memory_id(title: str) -> tuple[int, str] | None:
+    # Same exact-then-substring, most-recent-first matching as
+    # forget_memory_by_title -- Frank never sees a memory's raw row ID.
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, title FROM memory_records WHERE deleted_at IS NULL AND title = ? ORDER BY id DESC LIMIT 1",
+            (title,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            cursor = await db.execute(
+                "SELECT id, title FROM memory_records WHERE deleted_at IS NULL AND title LIKE ? ORDER BY id DESC LIMIT 1",
+                (f"%{title}%",),
+            )
+            row = await cursor.fetchone()
+        return (row["id"], row["title"]) if row else None
+
+
+async def _resolve_decision_id(text: str) -> tuple[int, str] | None:
+    # Same matching as _resolve_memory_id, against a decision's own
+    # wording instead of a title -- decisions have no separate title field.
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, decision FROM decisions WHERE decision = ? ORDER BY id DESC LIMIT 1",
+            (text,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            cursor = await db.execute(
+                "SELECT id, decision FROM decisions WHERE decision LIKE ? ORDER BY id DESC LIMIT 1",
+                (f"%{text}%",),
+            )
+            row = await cursor.fetchone()
+        return (row["id"], row["decision"]) if row else None
+
+
+async def link_records(from_type: str, from_text: str, to_type: str, to_text: str, relationship: str) -> str | None:
+    """Resolves both sides by the text Frank already has (a memory's title
+    or a decision's own wording), then records the edge. Returns a
+    human-readable confirmation of what got linked, or None if either
+    side couldn't be resolved."""
+    resolve_from = _resolve_memory_id if from_type == "memory" else _resolve_decision_id
+    resolve_to = _resolve_memory_id if to_type == "memory" else _resolve_decision_id
+    from_match = await resolve_from(from_text)
+    to_match = await resolve_to(to_text)
+    if from_match is None or to_match is None:
+        return None
+    from_id, from_label = from_match
+    to_id, to_label = to_match
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO memory_links (from_type, from_id, to_type, to_id, relationship) VALUES (?, ?, ?, ?, ?)",
+            (from_type, from_id, to_type, to_id, relationship),
+        )
+        await db.commit()
+    return f'"{from_label}" {relationship} "{to_label}"'
 
 
 async def forget_memory_by_id(memory_id: int) -> bool:

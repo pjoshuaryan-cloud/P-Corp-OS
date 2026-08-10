@@ -103,6 +103,7 @@ from app.decision_journal import (
     DECISION_JOURNAL_TOOLS,
     execute_decision_journal_tool_call,
 )
+from app.memory_graph import MEMORY_GRAPH_TOOL_NAMES, MEMORY_GRAPH_TOOLS, execute_memory_graph_tool_call
 from app.personality import SYSTEM_PROMPT
 from app.piper_tts import synthesize_wav_bytes
 
@@ -466,6 +467,7 @@ async def run_claude_turn(
                 FORGET_MEMORY_TOOL,
                 *FOCUS_TOOLS,
                 *DECISION_JOURNAL_TOOLS,
+                *MEMORY_GRAPH_TOOLS,
                 *ALPHA_MODE_TOOLS,
                 *OPERATIONS_TOOLS,
                 *ALPHA_MODE_AGENT_TOOLS,
@@ -493,6 +495,8 @@ async def run_claude_turn(
                 result = await execute_focus_tool_call(block.name, block.input)
             elif block.name in DECISION_JOURNAL_TOOL_NAMES:
                 result = await execute_decision_journal_tool_call(block.name, block.input)
+            elif block.name in MEMORY_GRAPH_TOOL_NAMES:
+                result = await execute_memory_graph_tool_call(block.name, block.input)
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 result = await execute_alpha_mode_tool_call(block.name, block.input)
             elif block.name in OPERATIONS_TOOL_NAMES:
@@ -570,6 +574,9 @@ async def run_claude_turn(
                 await websocket.send_text(f"\n[notify]{notification}")
             elif block.name == "log_decision":
                 notification = json.dumps({"title": "Decision logged", "body": block.input.get("decision", "")})
+                await websocket.send_text(f"\n[notify]{notification}")
+            elif block.name == "link_records" and result.startswith("Linked:"):
+                notification = json.dumps({"title": "Memories linked", "body": result.removeprefix("Linked: ")})
                 await websocket.send_text(f"\n[notify]{notification}")
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 notification = json.dumps({"title": "Alpha Mode Media updated", "body": result})
