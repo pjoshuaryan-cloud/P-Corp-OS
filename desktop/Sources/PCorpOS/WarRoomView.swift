@@ -349,20 +349,18 @@ struct WarRoomView: View {
             .buttonStyle(.plain)
             .help("Attach an image — for Frank or the Design Agent to actually see")
 
-            // Real bug found in live use 2026-08-10: a plain single-line
-            // TextField scrolled horizontally as one long line instead of
-            // wrapping -- axis: .vertical makes it grow downward as text
-            // wraps, capped at 6 lines so a large paste doesn't take over
-            // the input bar. Return still sends (onSubmit fires on Return
-            // regardless of axis on macOS); Shift+Return inserts a literal
-            // newline instead, same convention as iMessage/Slack.
-            TextField("Talk to Frank...", text: $inputText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(PCorpFont.body(14))
-                .foregroundStyle(theme.textPrimary)
-                .focused($isInputFocused)
-                .lineLimit(1...6)
-                .onSubmit(sendMessage)
+            // Real bug found in live use 2026-08-10, twice: a plain
+            // single-line TextField scrolled horizontally instead of
+            // wrapping -- the first fix (TextField(axis: .vertical)) grew
+            // correctly but left a stale truncated ghost of the old
+            // single-line render behind on screen, a known rough edge of
+            // that specific SwiftUI/macOS combination, not a logic bug
+            // here. TextEditor is the more battle-tested multi-line
+            // control on macOS -- placeholder text needs a manual overlay
+            // since TextEditor has no built-in one, and Return-to-send
+            // needs a manual key handler since TextEditor always treats
+            // Return as a plain newline (no onSubmit equivalent).
+            growingInputField
 
             if backend.isStreaming {
                 // Stop, same as Claude's own input bar -- actually
@@ -404,6 +402,29 @@ struct WarRoomView: View {
         )
         .shadow(color: theme.cardShadow, radius: isInputFocused ? 20 : 16, x: 0, y: isInputFocused ? 8 : 6)
         .animation(.easeOut(duration: 0.15), value: isInputFocused)
+    }
+
+    private var growingInputField: some View {
+        ZStack(alignment: .topLeading) {
+            if inputText.isEmpty {
+                Text("Talk to Frank...")
+                    .font(PCorpFont.body(14))
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(.top, 8)
+                    .allowsHitTesting(false)
+            }
+            TextEditor(text: $inputText)
+                .font(PCorpFont.body(14))
+                .foregroundStyle(theme.textPrimary)
+                .focused($isInputFocused)
+                .scrollContentBackground(.hidden)
+                .onKeyPress { press in
+                    guard press.key == .return, !press.modifiers.contains(.shift) else { return .ignored }
+                    sendMessage()
+                    return .handled
+                }
+        }
+        .frame(minHeight: 20, maxHeight: 120)
     }
 }
 
