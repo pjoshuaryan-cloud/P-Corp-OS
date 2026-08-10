@@ -654,9 +654,11 @@ private struct ChatBubble: View {
             TypingIndicatorDots()
         } else if isUser {
             VStack(alignment: .trailing, spacing: 8) {
-                if let imageData = message.imageData, let nsImage = NSImage(data: imageData) {
-                    // A real image from this live session -- the actual
-                    // bytes just sent, not re-fetched from disk.
+                if let nsImage = message.image {
+                    // Already decoded once at send time (BackendClient.send)
+                    // -- real bug fixed 2026-08-10: decoding here in the view
+                    // body re-ran on every re-render during streaming and
+                    // visibly froze the chat. See ChatMessage.image's doc.
                     Image(nsImage: nsImage)
                         .resizable()
                         .aspectRatio(contentMode: .fit)

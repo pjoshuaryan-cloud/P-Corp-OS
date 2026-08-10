@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// A single turn in the conversation — user or assistant. Mirrors
@@ -8,17 +9,24 @@ struct ChatMessage: Identifiable {
     let id = UUID()
     let role: String
     var content: String
-    /// Real image bytes for a just-sent-this-session message -- rendered as
-    /// an actual thumbnail. nil for text-only messages, and also nil for a
-    /// message loaded from a *reopened* old conversation (see
-    /// hasStoredImage below) -- old images aren't re-fetched, only shown as
-    /// a placeholder, confirmed decision 2026-08-05 (cost of re-sending an
-    /// old image to Claude as real context on every reconnect vs. just
-    /// knowing one was attached).
-    var imageData: Data? = nil
+    /// An already-decoded image for a just-sent-this-session message --
+    /// rendered as a real thumbnail. Deliberately a decoded NSImage, not
+    /// raw Data (real bug found and fixed 2026-08-10: the first version
+    /// stored raw Data and decoded it fresh via NSImage(data:) inside the
+    /// SwiftUI view body -- for a full-res Retina screenshot, that re-runs
+    /// an expensive decode on *every* re-render, which happens repeatedly
+    /// while a reply is streaming in, visibly freezing the whole chat view
+    /// even though the backend had already finished normally). Decoded
+    /// once at send time instead (see BackendClient.send below). nil for
+    /// text-only messages, and also nil for a message loaded from a
+    /// *reopened* old conversation (see hasStoredImage below) -- old
+    /// images aren't re-fetched, only shown as a placeholder, confirmed
+    /// decision 2026-08-05 (cost of re-sending an old image to Claude as
+    /// real context on every reconnect vs. just knowing one was attached).
+    var image: NSImage? = nil
     /// True when GET /history reports this message had an image attached,
-    /// but the bytes weren't re-fetched (see imageData above) -- renders as
-    /// a plain "📎 image attached" indicator instead of the real picture.
+    /// but the bytes weren't re-fetched (see image above) -- renders as a
+    /// plain "📎 image attached" indicator instead of the real picture.
     var hasStoredImage: Bool = false
 }
 
@@ -191,7 +199,10 @@ final class BackendClient: ObservableObject {
     /// (WirePayload below) needs it for Claude's own content-block format.
     func send(_ text: String, imageData: Data? = nil, mediaType: String? = nil) {
         guard let task else { return }
-        messages.append(ChatMessage(role: "user", content: text, imageData: imageData))
+        // Decoded exactly once, here -- not in the view body (see
+        // ChatMessage.image's doc comment for the real bug this fixes).
+        let decodedImage = imageData.flatMap { NSImage(data: $0) }
+        messages.append(ChatMessage(role: "user", content: text, image: decodedImage))
         messages.append(ChatMessage(role: "assistant", content: ""))
         isStreaming = true
 
