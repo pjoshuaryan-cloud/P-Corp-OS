@@ -64,6 +64,7 @@ from app.alpha_mode_db import init_alpha_mode_db
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
 from app.agents_registry import list_agents
+from app.audit_db import init_audit_db, record_tool_call
 from app.automations import check_and_fire as check_and_fire_automation
 from app.automations_db import init_automations_db, list_runs as list_automation_runs
 from app.automations_registry import AUTOMATIONS
@@ -156,6 +157,7 @@ async def lifespan(app: FastAPI):
     await init_alpha_mode_db()
     await init_operations_db()
     await init_automations_db()
+    await init_audit_db()
     # A single reused httpx client, not one per /speak call — real bug
     # found and fixed 2026-07-30: creating a fresh AsyncClient() per
     # request meant paying a full DNS+TLS handshake to ElevenLabs every
@@ -519,6 +521,12 @@ async def run_claude_turn(
                 assistant_text += result
             else:
                 result = await execute_tool_call(block.name, block.input)
+            # Real audit trail (2026-08-10, SECURITY.md's flagged gap) --
+            # every tool call, regardless of which branch above produced
+            # it, logged at this one point so no individual agent module
+            # needed touching. See audit_db.py's own docstring for why
+            # there's no "who" column.
+            await record_tool_call(block.name, block.input, result)
             tool_results.append(
                 {"type": "tool_result", "tool_use_id": block.id, "content": result}
             )
