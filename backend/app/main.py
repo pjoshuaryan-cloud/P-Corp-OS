@@ -608,7 +608,7 @@ async def run_claude_turn(
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 notification = json.dumps({"title": "Alpha Mode Media updated", "body": result})
                 await websocket.send_text(f"\n[notify]{notification}")
-            elif block.name in ("add_task", "update_task_status"):
+            elif block.name in ("add_task", "update_task_status", "delete_task"):
                 notification = json.dumps({"title": "Task updated", "body": result})
                 await websocket.send_text(f"\n[notify]{notification}")
 

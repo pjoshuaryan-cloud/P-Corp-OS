@@ -46,7 +46,7 @@ async def _overdue_and_upcoming_tasks(today: str, horizon: str) -> list[dict]:
     async with aiosqlite.connect(OPERATIONS_DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT title, area, due_date FROM tasks WHERE status != 'done' AND due_date IS NOT NULL ORDER BY due_date"
+            "SELECT title, area, due_date FROM tasks WHERE status != 'done' AND due_date IS NOT NULL AND deleted_at IS NULL ORDER BY due_date"
         )
         rows = await cursor.fetchall()
 

@@ -21,7 +21,7 @@ remember something via save_memory.
 
 from anthropic import AsyncAnthropic
 
-from app.operations_db import add_task, summarize_open_tasks, update_task_status
+from app.operations_db import add_task, delete_task, summarize_open_tasks, update_task_status
 
 OPERATIONS_AGENT_SYSTEM_PROMPT = """You are the Operations Agent inside P Corp OS -- a specialist Frank (the executive intelligence Joshua actually talks to) delegates to for operational work, not a persona Joshua addresses directly. You're being consulted mid-conversation; Frank will relay or incorporate what you say.
 
@@ -61,6 +61,23 @@ UPDATE_TASK_STATUS_TOOL = {
     },
 }
 
+DELETE_TASK_TOOL = {
+    "name": "delete_task",
+    "description": (
+        "Remove a task that shouldn't have existed at all -- test data, a mistaken entry, a duplicate. "
+        "Matches by title. Not for tasks that are simply finished or no longer relevant -- use "
+        "update_task_status for those (e.g. mark it \"done\" or \"cancelled\"), since this is for genuinely "
+        "bad rows, not real tasks reaching a real end state."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "identifier": {"type": "string", "description": "The task's title, or a close match."},
+        },
+        "required": ["identifier"],
+    },
+}
+
 CONSULT_OPERATIONS_AGENT_TOOL = {
     "name": "consult_operations_agent",
     "description": (
@@ -78,7 +95,7 @@ CONSULT_OPERATIONS_AGENT_TOOL = {
     },
 }
 
-OPERATIONS_TOOLS = [ADD_TASK_TOOL, UPDATE_TASK_STATUS_TOOL, CONSULT_OPERATIONS_AGENT_TOOL]
+OPERATIONS_TOOLS = [ADD_TASK_TOOL, UPDATE_TASK_STATUS_TOOL, DELETE_TASK_TOOL, CONSULT_OPERATIONS_AGENT_TOOL]
 OPERATIONS_TOOL_NAMES = {tool["name"] for tool in OPERATIONS_TOOLS}
 
 
@@ -99,6 +116,11 @@ async def execute_operations_tool_call(name: str, tool_input: dict, client: Asyn
         updated = await update_task_status(tool_input["identifier"], tool_input["new_status"])
         if updated:
             return f"Updated task status to {tool_input['new_status']}."
+        return f"No matching task found for \"{tool_input['identifier']}\"."
+    if name == "delete_task":
+        deleted_title = await delete_task(tool_input["identifier"])
+        if deleted_title:
+            return f"Deleted task: {deleted_title}"
         return f"No matching task found for \"{tool_input['identifier']}\"."
     if name == "consult_operations_agent":
         task_context = await summarize_open_tasks()

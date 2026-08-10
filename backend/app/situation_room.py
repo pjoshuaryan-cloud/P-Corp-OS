@@ -35,7 +35,7 @@ async def _severely_overdue_tasks(today: date) -> list[dict]:
     async with aiosqlite.connect(OPERATIONS_DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT title, area, due_date FROM tasks WHERE status != 'done' AND due_date IS NOT NULL"
+            "SELECT title, area, due_date FROM tasks WHERE status != 'done' AND due_date IS NOT NULL AND deleted_at IS NULL"
         )
         rows = await cursor.fetchall()
 

@@ -36,6 +36,17 @@ async def init_operations_db() -> None:
             )
             """
         )
+        # Migration path: tasks existed before deleted_at did. Real gap
+        # found 2026-08-10: a test task (bad due date, never real) had no
+        # way to be removed -- only add_task/update_task_status existed,
+        # and marking a test row "done" would have been dishonest. Soft
+        # delete, not a real DELETE, same reasoning as memory_records'
+        # deleted_at -- keeps delete_task in SECURITY.md's "Regular"
+        # auto-allowed tier (reversible), not "needs confirmation."
+        cursor = await db.execute("PRAGMA table_info(tasks)")
+        columns = {row[1] async for row in cursor}
+        if "deleted_at" not in columns:
+            await db.execute("ALTER TABLE tasks ADD COLUMN deleted_at TEXT")
         await db.commit()
 
 
@@ -49,25 +60,51 @@ async def add_task(title: str, area: str | None = None, due_date: str | None = N
         return title
 
 
-async def update_task_status(identifier: str, new_status: str) -> bool:
-    """Matches by title (exact, then substring), most recent first — Frank
-    doesn't see raw task IDs, same reasoning as memory's forget-by-title."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+async def _find_task_id(db: aiosqlite.Connection, identifier: str) -> int | None:
+    # Shared by update_task_status/delete_task -- exact title match
+    # (case-insensitive), then substring, most recent first. Frank
+    # doesn't see raw task IDs, same reasoning as memory's forget-by-title.
+    cursor = await db.execute(
+        "SELECT id FROM tasks WHERE title = ? COLLATE NOCASE AND deleted_at IS NULL ORDER BY id DESC LIMIT 1",
+        (identifier,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
         cursor = await db.execute(
-            "SELECT id FROM tasks WHERE title = ? COLLATE NOCASE ORDER BY id DESC LIMIT 1", (identifier,)
+            "SELECT id FROM tasks WHERE title LIKE ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1",
+            (f"%{identifier}%",),
         )
         row = await cursor.fetchone()
-        if row is None:
-            cursor = await db.execute(
-                "SELECT id FROM tasks WHERE title LIKE ? ORDER BY id DESC LIMIT 1", (f"%{identifier}%",)
-            )
-            row = await cursor.fetchone()
-        if row is None:
+    return row["id"] if row else None
+
+
+async def update_task_status(identifier: str, new_status: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        task_id = await _find_task_id(db, identifier)
+        if task_id is None:
             return False
-        await db.execute("UPDATE tasks SET status = ? WHERE id = ?", (new_status, row["id"]))
+        await db.execute("UPDATE tasks SET status = ? WHERE id = ?", (new_status, task_id))
         await db.commit()
         return True
+
+
+async def delete_task(identifier: str) -> str | None:
+    """Soft delete -- for tasks that shouldn't have existed at all (test
+    data, a mistaken entry), distinct from update_task_status's "done"/
+    "blocked"/etc., which is for tasks that genuinely happened. Returns
+    the deleted task's real title (so Frank can confirm what happened),
+    or None if nothing matched."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        task_id = await _find_task_id(db, identifier)
+        if task_id is None:
+            return None
+        cursor = await db.execute("SELECT title FROM tasks WHERE id = ?", (task_id,))
+        row = await cursor.fetchone()
+        await db.execute("UPDATE tasks SET deleted_at = datetime('now') WHERE id = ?", (task_id,))
+        await db.commit()
+        return row["title"]
 
 
 async def list_open_tasks() -> list[dict]:
@@ -77,7 +114,8 @@ async def list_open_tasks() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, title, status, area, due_date, notes, created_at FROM tasks WHERE status != 'done' ORDER BY id DESC"
+            "SELECT id, title, status, area, due_date, notes, created_at FROM tasks "
+            "WHERE status != 'done' AND deleted_at IS NULL ORDER BY id DESC"
         )
         rows = await cursor.fetchall()
         return [
@@ -101,7 +139,7 @@ async def summarize_open_tasks() -> str:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT title, area, due_date, notes FROM tasks WHERE status != 'done' ORDER BY id"
+            "SELECT title, area, due_date, notes FROM tasks WHERE status != 'done' AND deleted_at IS NULL ORDER BY id"
         )
         rows = await cursor.fetchall()
         if not rows:
