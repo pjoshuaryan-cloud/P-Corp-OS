@@ -308,7 +308,7 @@ struct WarRoomView: View {
     }
 
     private var inputBar: some View {
-        HStack(alignment: .bottom, spacing: 12) {
+        HStack(spacing: 12) {
             // Voice-first: this used to be a small icon tucked into the top
             // toolbar, separate from the actual input area -- the literal
             // reason voice read as an accessory rather than the primary way
@@ -349,18 +349,12 @@ struct WarRoomView: View {
             .buttonStyle(.plain)
             .help("Attach an image — for Frank or the Design Agent to actually see")
 
-            // Real bug found in live use 2026-08-10, twice: a plain
-            // single-line TextField scrolled horizontally instead of
-            // wrapping -- the first fix (TextField(axis: .vertical)) grew
-            // correctly but left a stale truncated ghost of the old
-            // single-line render behind on screen, a known rough edge of
-            // that specific SwiftUI/macOS combination, not a logic bug
-            // here. TextEditor is the more battle-tested multi-line
-            // control on macOS -- placeholder text needs a manual overlay
-            // since TextEditor has no built-in one, and Return-to-send
-            // needs a manual key handler since TextEditor always treats
-            // Return as a plain newline (no onSubmit equivalent).
-            growingInputField
+            TextField("Talk to Frank...", text: $inputText)
+                .textFieldStyle(.plain)
+                .font(PCorpFont.body(14))
+                .foregroundStyle(theme.textPrimary)
+                .focused($isInputFocused)
+                .onSubmit(sendMessage)
 
             if backend.isStreaming {
                 // Stop, same as Claude's own input bar -- actually
@@ -402,29 +396,6 @@ struct WarRoomView: View {
         )
         .shadow(color: theme.cardShadow, radius: isInputFocused ? 20 : 16, x: 0, y: isInputFocused ? 8 : 6)
         .animation(.easeOut(duration: 0.15), value: isInputFocused)
-    }
-
-    private var growingInputField: some View {
-        ZStack(alignment: .topLeading) {
-            if inputText.isEmpty {
-                Text("Talk to Frank...")
-                    .font(PCorpFont.body(14))
-                    .foregroundStyle(theme.textSecondary)
-                    .padding(.top, 8)
-                    .allowsHitTesting(false)
-            }
-            TextEditor(text: $inputText)
-                .font(PCorpFont.body(14))
-                .foregroundStyle(theme.textPrimary)
-                .focused($isInputFocused)
-                .scrollContentBackground(.hidden)
-                .onKeyPress { press in
-                    guard press.key == .return, !press.modifiers.contains(.shift) else { return .ignored }
-                    sendMessage()
-                    return .handled
-                }
-        }
-        .frame(minHeight: 20, maxHeight: 120)
     }
 }
 
