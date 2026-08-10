@@ -80,6 +80,7 @@ from app.creative_director_agent import (
 )
 from app.design_agent import DESIGN_AGENT_TOOL_NAMES, DESIGN_AGENT_TOOLS, execute_design_agent_tool_call
 from app.debate import DEBATE_TOOL_NAMES, DEBATE_TOOLS, execute_debate_tool_call
+from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES, LEGACY_VAULT_TOOLS, execute_legacy_vault_tool_call
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
 from app.research_agent import RESEARCH_AGENT_TOOL_NAMES, RESEARCH_AGENT_TOOLS, execute_research_agent_tool_call
@@ -495,6 +496,7 @@ async def run_claude_turn(
                 *MEMORY_GRAPH_TOOLS,
                 *SHADOW_MODE_TOOLS,
                 *DEBATE_TOOLS,
+                *LEGACY_VAULT_TOOLS,
                 *ALPHA_MODE_TOOLS,
                 *OPERATIONS_TOOLS,
                 *ALPHA_MODE_AGENT_TOOLS,
@@ -532,6 +534,8 @@ async def run_claude_turn(
                 # already streamed live, needs to land in the persisted
                 # transcript too.
                 assistant_text += result
+            elif block.name in LEGACY_VAULT_TOOL_NAMES:
+                result = await execute_legacy_vault_tool_call(block.name, block.input)
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 result = await execute_alpha_mode_tool_call(block.name, block.input)
             elif block.name in OPERATIONS_TOOL_NAMES:
@@ -612,6 +616,14 @@ async def run_claude_turn(
                 await websocket.send_text(f"\n[notify]{notification}")
             elif block.name == "link_records" and result.startswith("Linked:"):
                 notification = json.dumps({"title": "Memories linked", "body": result.removeprefix("Linked: ")})
+                await websocket.send_text(f"\n[notify]{notification}")
+            elif block.name == "save_to_legacy_vault":
+                notification = json.dumps({"title": "Legacy Vault updated", "body": block.input.get("title", "")})
+                await websocket.send_text(f"\n[notify]{notification}")
+            elif block.name == "delete_from_legacy_vault" and result.startswith("Deleted from Legacy Vault:"):
+                notification = json.dumps(
+                    {"title": "Legacy Vault entry removed", "body": result.removeprefix("Deleted from Legacy Vault: ")}
+                )
                 await websocket.send_text(f"\n[notify]{notification}")
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 notification = json.dumps({"title": "Alpha Mode Media updated", "body": result})

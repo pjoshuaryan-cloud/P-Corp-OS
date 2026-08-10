@@ -193,6 +193,25 @@ async def init_db() -> None:
             """
         )
 
+        # Legacy Vault (2026-08-10) -- succession/emergency info meant for
+        # someone else if something happens to Joshua (instructions,
+        # account locations, who to contact), never credentials/passwords
+        # themselves. Deliberately its own table, not a memory_records
+        # type: entries here must never get folded into build_memory_block
+        # and casually surface in an unrelated conversation the way
+        # regular memories do -- see app/legacy_vault.py's docstring.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS legacy_vault (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                deleted_at TEXT
+            )
+            """
+        )
+
         await db.commit()
 
 
@@ -454,6 +473,45 @@ async def get_recent_activity(limit: int = 20) -> list[dict]:
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+async def save_legacy_entry(title: str, content: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT INTO legacy_vault (title, content) VALUES (?, ?)", (title, content))
+        await db.commit()
+
+
+async def list_legacy_entries() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, title, content, created_at FROM legacy_vault WHERE deleted_at IS NULL ORDER BY id ASC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def forget_legacy_entry(title: str) -> str | None:
+    # Same exact-then-substring, most-recent-first matching as
+    # forget_memory_by_title -- Frank never sees a vault entry's raw row ID.
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, title FROM legacy_vault WHERE deleted_at IS NULL AND title = ? ORDER BY id DESC LIMIT 1",
+            (title,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            cursor = await db.execute(
+                "SELECT id, title FROM legacy_vault WHERE deleted_at IS NULL AND title LIKE ? ORDER BY id DESC LIMIT 1",
+                (f"%{title}%",),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        await db.execute("UPDATE legacy_vault SET deleted_at = datetime('now') WHERE id = ?", (row["id"],))
+        await db.commit()
+        return row["title"]
 
 
 async def forget_memory_by_id(memory_id: int) -> bool:
