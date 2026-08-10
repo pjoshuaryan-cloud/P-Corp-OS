@@ -209,10 +209,10 @@ private struct InsightsCard: View {
             }
             if client.insights.isEmpty {
                 // Honest, not fake -- real data checked and there's
-                // genuinely nothing overdue or due soon right now, rather
-                // than always showing three placeholder rows regardless
-                // of whether anything's actually true.
-                Text(client.isLoading ? "Checking…" : "Nothing overdue or due soon.")
+                // genuinely nothing overdue, due soon, or worth following
+                // up on right now, rather than always showing placeholder
+                // rows regardless of whether anything's actually true.
+                Text(client.isLoading ? "Checking…" : "Nothing overdue, due soon, or worth following up on.")
                     .font(PCorpFont.body(12))
                     .foregroundStyle(theme.textSecondary)
             } else {

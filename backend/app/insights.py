@@ -16,6 +16,13 @@ data without requiring Joshua to ask.
 
 Only overdue items, or ones due within the next 7 days, are surfaced --
 a task due next month isn't an "insight," it's just backlog.
+
+Opportunity Radar (2026-08-10, from the additive feature spec) folded in
+here rather than becoming its own card: Joshua confirmed "extend the
+existing Insights mechanism" over a new UI surface, and its one signal
+(warm/hot leads in the real Alpha Mode `leads` table with no follow-up
+sent) is the same deterministic, data-already-exists shape as everything
+else in this file.
 """
 
 from datetime import date, timedelta
@@ -24,6 +31,7 @@ import aiosqlite
 
 from app.alpha_mode_db import DB_PATH as ALPHA_MODE_DB_PATH
 from app.alpha_mode_db import clients_needing_outreach
+from app.alpha_mode_supabase import leads_needing_followup
 from app.operations_db import DB_PATH as OPERATIONS_DB_PATH
 
 HORIZON_DAYS = 7
@@ -110,6 +118,28 @@ async def _clients_needing_outreach() -> list[dict]:
     return insights
 
 
+async def _leads_needing_followup() -> list[dict]:
+    # Opportunity Radar (2026-08-10): the one signal Joshua confirmed --
+    # warm/hot leads with no follow-up sent -- folded into this existing
+    # card rather than a new one, per the additive spec's own "extend,
+    # don't duplicate" rule.
+    leads = await leads_needing_followup()
+    insights = []
+    for lead in leads:
+        score = lead.get("qualification_score")
+        detail = f"{lead['client']} — qualification score {score}" if score is not None else lead["client"]
+        insights.append(
+            {
+                "title": f"{lead['temperature'].capitalize()} lead needs follow-up",
+                "detail": detail,
+                "target_nav_title": "War Room",
+                "icon": "flame",
+                "priority": 1,
+            }
+        )
+    return insights
+
+
 async def compute_insights(limit: int = 5) -> list[dict]:
     today = date.today().isoformat()
     horizon = (date.today() + timedelta(days=HORIZON_DAYS)).isoformat()
@@ -117,7 +147,8 @@ async def compute_insights(limit: int = 5) -> list[dict]:
     tasks = await _overdue_and_upcoming_tasks(today, horizon)
     invoices = await _overdue_and_upcoming_invoices(today, horizon)
     outreach = await _clients_needing_outreach()
+    leads = await _leads_needing_followup()
 
-    combined = tasks + invoices + outreach
+    combined = tasks + invoices + outreach + leads
     combined.sort(key=lambda item: (item["priority"], item["detail"]))
     return combined[:limit]

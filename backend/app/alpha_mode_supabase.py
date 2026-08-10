@@ -109,6 +109,25 @@ async def set_invoice_status(client_name: str, project_name: str | None, new_sta
     return rows[0] if rows else None
 
 
+async def leads_needing_followup() -> list[dict]:
+    """Opportunity Radar's one signal (2026-08-10): warm/hot leads in the
+    real `leads` table that haven't had a follow-up sent yet. Read-only,
+    fails soft (empty list) same reasoning as summarize_block() -- a bad
+    Supabase request here shouldn't take down the whole Insights card."""
+    try:
+        return await select_rows(
+            "leads",
+            {
+                "select": "client,temperature,qualification_score,created_at",
+                "temperature": "in.(warm,hot)",
+                "follow_up_sent": "eq.false",
+                "order": "created_at.asc",
+            },
+        )
+    except Exception:
+        return []
+
+
 async def summarize_block() -> str:
     """Live snapshot of real Supabase projects/pending invoices for
     Frank's context -- same style as alpha_mode_db.summarize(). Fails soft
