@@ -111,6 +111,8 @@ Target interaction shape: "Frank, I need a new dashboard" → Design Agent spend
 
 **Scope note (2026-08-03):** Built as a single "Design Agent" per Joshua's explicit choice, not combined with Creative Director Agent above — first real version (same day) covers the Brand Guardian context (Alpha Mode + P Corp identities), the Personal Taste Model (his stated preferences, verbatim above), and the ask-before-generating / present-options-with-a-recommendation behavior, all doable as system-prompt content with no new infrastructure. Explicitly NOT built yet: Design Critic (needs image upload support in the chat UI, which doesn't exist), Brand Evolution tracking (needs persistent memory across sessions -- could reuse the existing save_memory/forget_memory tools later rather than new infrastructure), and true Design System maintenance (would mean the agent actually reading/tracking P Corp OS's real UI code, not just advising on it).
 
+**Update (2026-08-10):** Design Critic is now real. Image upload shipped in the War Room chat, and when Joshua attaches an image and Frank delegates to this agent, the actual image is forwarded directly (not described secondhand by Frank) -- a genuine multi-modal call, this agent actually looking at pixels. Verified live on a real screenshot: correctly identified it as a build log rather than a finished screen, critiqued specific real elements actually visible (diff stats, sidebar, status pills, a toast notification), grounded in Joshua's own stated taste -- not generic design platitudes. Brand Evolution tracking and true Design System maintenance remain the only still-deferred pieces of the original 12-capability vision.
+
 ---
 
 ## Technology Division

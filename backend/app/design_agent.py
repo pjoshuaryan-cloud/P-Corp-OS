@@ -7,14 +7,19 @@ That doc's Design Agent section also has his full 12-capability
 elaboration (Brand Guardian, Creative Director, UI Designer, Design
 System Builder, Motion Designer, Filmmaking Partner, Logo Designer,
 Typography Expert, Brand Evolution, Design Critic, Website Designer,
-Personal Taste Model) -- this first version covers what's doable as
+Personal Taste Model) -- this first version covered what's doable as
 system-prompt content alone (brand context, his stated taste, and the
-ask-before-generating/present-options behavior). Explicitly deferred:
-Design Critic on actual uploaded images (no image support in the chat
-UI yet), Brand Evolution tracked persistently across sessions (could
-reuse save_memory/forget_memory later rather than new infrastructure),
-and genuine Design System maintenance (would mean reading/tracking P
-Corp OS's real UI code, not just advising on it).
+ask-before-generating/present-options behavior). Explicitly deferred at
+the time: Design Critic on actual uploaded images, since no image
+support existed in the chat UI. That blocker is gone as of 2026-08-10
+(image upload shipped) -- this agent now genuinely looks at an attached
+image directly, not just Frank's paraphrase of it (see
+execute_design_agent_tool_call's `image` param, forwarded from
+main.py's run_claude_turn). Still deferred: Brand Evolution tracked
+persistently across sessions (could reuse save_memory/forget_memory
+later rather than new infrastructure), and genuine Design System
+maintenance (would mean reading/tracking P Corp OS's real UI code, not
+just advising on it).
 
 Same proven architecture as Operations Agent and Alpha Mode Agent -- a
 second, streamed Claude call using a distinct system prompt, invoked as
@@ -44,7 +49,7 @@ He generally shouldn't have to restate these -- weigh every recommendation again
 HOW YOU WORK:
 - For an open-ended or campaign-shaped request ("design a campaign for X," "new landing page," "new dashboard"), don't jump straight to output. First ask what's actually needed to do this properly -- objective, audience, where it lives, timeline, emotion/tone -- unless Joshua has already given you enough to work with.
 - When you do produce direction, default to 2-3 named, distinct options (e.g. "Option A: Minimal Apple-inspired," "Option B: Executive military," "Option C: Cinematic editorial") with a specific recommendation and the reasoning behind it -- not an undifferentiated wall of ideas.
-- If asked to critique something (a page, a flow, a piece of design described to you), give a real critique with specific problems named (hierarchy, spacing, emphasis, friction) before proposing the fix -- don't just redesign silently.
+- If asked to critique something -- a page, a flow, or a real image you've been shown directly -- give a real critique with specific problems named (hierarchy, spacing, emphasis, friction, contrast, alignment) before proposing the fix. When you have an actual image in front of you, look at it properly and reference what's actually there, not generic design platitudes that could apply to anything.
 - If Joshua is a filmmaker asking about a shoot or commercial, think in real production terms: composition, camera movement, lighting, color grading, lens choices, editing rhythm -- not generic "creative ideas."
 
 Be direct and concise, matching Frank's own communication style. Give a real answer or a real recommendation (actual color/type choices, an actual logo direction, an actual design system structure), not a description of what one might look like."""
@@ -54,8 +59,11 @@ CONSULT_DESIGN_AGENT_TOOL = {
     "name": "consult_design_agent",
     "description": (
         "Delegate to the Design Agent for genuine design work: branding direction, UI/UX feedback, typography "
-        "choices, logo concepts, building out a design system, iconography, or motion/animation direction. Use "
-        "this rather than answering yourself when the request calls for real design-specific depth."
+        "choices, logo concepts, building out a design system, iconography, or motion/animation direction. If "
+        "Joshua attached an image this turn and wants it critiqued or discussed as a design, delegate here -- "
+        "the actual image is automatically forwarded to this agent, it doesn't need to be described in the "
+        "request text. Use this rather than answering yourself when the request calls for real design-specific "
+        "depth."
     ),
     "input_schema": {
         "type": "object",
@@ -70,14 +78,30 @@ DESIGN_AGENT_TOOLS = [CONSULT_DESIGN_AGENT_TOOL]
 DESIGN_AGENT_TOOL_NAMES = {tool["name"] for tool in DESIGN_AGENT_TOOLS}
 
 
-async def execute_design_agent_tool_call(name: str, tool_input: dict, client: AsyncAnthropic, websocket) -> str:
+async def execute_design_agent_tool_call(
+    name: str, tool_input: dict, client: AsyncAnthropic, websocket, image: dict | None = None
+) -> str:
     if name == "consult_design_agent":
+        if image and image.get("data") and image.get("media_type"):
+            # The real image Joshua attached this turn, forwarded directly
+            # -- Design Critic actually looking at pixels, not working from
+            # Frank's secondhand description of them (2026-08-10).
+            content = [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": image["media_type"], "data": image["data"]},
+                },
+                {"type": "text", "text": tool_input["request"]},
+            ]
+        else:
+            content = tool_input["request"]
+
         assistant_text = ""
         async with client.messages.stream(
             model="claude-sonnet-5",
             max_tokens=4096,
             system=DESIGN_AGENT_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": tool_input["request"]}],
+            messages=[{"role": "user", "content": content}],
         ) as stream:
             async for text in stream.text_stream:
                 assistant_text += text

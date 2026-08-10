@@ -387,7 +387,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
 
             try:
                 assistant_reply = await run_claude_turn(
-                    client, system_prompt, history, websocket
+                    client, system_prompt, history, websocket, image=image
                 )
             except Exception as error:
                 # A client-initiated stop (BackendClient.stopGenerating())
@@ -418,6 +418,7 @@ async def run_claude_turn(
     system_prompt: str,
     history: list,
     websocket: WebSocket,
+    image: dict | None = None,
 ) -> str:
     """Runs one user turn to completion, including any save_memory round
     trips — Frank may call the tool, see the result, then keep talking. Text
@@ -425,7 +426,16 @@ async def run_claude_turn(
     mutated in place with any intermediate tool_use/tool_result turns (valid
     context for the rest of this live connection); the caller is responsible
     for appending the single final assistant text turn once this returns,
-    since that's the flat, plain-text form persisted to SQLite."""
+    since that's the flat, plain-text form persisted to SQLite.
+
+    image (2026-08-10, Design Critic) is this turn's raw attachment, if
+    any -- Frank already sees it directly (it's part of `history`'s own
+    content blocks), but a delegated specialist's own isolated Claude
+    call doesn't share that history, so if Frank delegates to a
+    vision-aware agent (currently just Design Agent), the same image is
+    forwarded to it directly. Only ever the image from *this* turn, not
+    an earlier one in the same conversation -- same "don't re-inject an
+    old image" reasoning as reopening a past conversation."""
     assistant_text = ""
     while True:
         async with client.messages.stream(
@@ -478,7 +488,7 @@ async def run_claude_turn(
                 # transcript too.
                 assistant_text += result
             elif block.name in DESIGN_AGENT_TOOL_NAMES:
-                result = await execute_design_agent_tool_call(block.name, block.input, client, websocket)
+                result = await execute_design_agent_tool_call(block.name, block.input, client, websocket, image=image)
                 # Same reasoning as consult_operations_agent above --
                 # already streamed live, needs to land in the persisted
                 # transcript too.
