@@ -79,6 +79,7 @@ from app.creative_director_agent import (
     execute_creative_director_agent_tool_call,
 )
 from app.design_agent import DESIGN_AGENT_TOOL_NAMES, DESIGN_AGENT_TOOLS, execute_design_agent_tool_call
+from app.debate import DEBATE_TOOL_NAMES, DEBATE_TOOLS, execute_debate_tool_call
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
 from app.research_agent import RESEARCH_AGENT_TOOL_NAMES, RESEARCH_AGENT_TOOLS, execute_research_agent_tool_call
@@ -493,6 +494,7 @@ async def run_claude_turn(
                 *DECISION_JOURNAL_TOOLS,
                 *MEMORY_GRAPH_TOOLS,
                 *SHADOW_MODE_TOOLS,
+                *DEBATE_TOOLS,
                 *ALPHA_MODE_TOOLS,
                 *OPERATIONS_TOOLS,
                 *ALPHA_MODE_AGENT_TOOLS,
@@ -524,6 +526,12 @@ async def run_claude_turn(
                 result = await execute_memory_graph_tool_call(block.name, block.input)
             elif block.name in SHADOW_MODE_TOOL_NAMES:
                 result = await execute_shadow_mode_tool_call(block.name, block.input)
+            elif block.name in DEBATE_TOOL_NAMES:
+                result = await execute_debate_tool_call(block.name, block.input, client, websocket)
+                # Same reasoning as consult_operations_agent below --
+                # already streamed live, needs to land in the persisted
+                # transcript too.
+                assistant_text += result
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 result = await execute_alpha_mode_tool_call(block.name, block.input)
             elif block.name in OPERATIONS_TOOL_NAMES:
