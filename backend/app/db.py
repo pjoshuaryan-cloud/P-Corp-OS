@@ -177,6 +177,22 @@ async def init_db() -> None:
             """
         )
 
+        # Shadow Mode (2026-08-10) -- passive activity awareness, scoped
+        # to app name only (never window titles, URLs, or file contents).
+        # One row per frontmost-app change, not a fixed-interval poll --
+        # ActivityTracker.swift only calls POST /activity/log when the
+        # frontmost app actually changes, so this is already a segmented
+        # history, not raw samples.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_name TEXT NOT NULL,
+                started_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+
         await db.commit()
 
 
@@ -421,6 +437,23 @@ async def link_records(from_type: str, from_text: str, to_type: str, to_text: st
         )
         await db.commit()
     return f'"{from_label}" {relationship} "{to_label}"'
+
+
+async def log_activity(app_name: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT INTO activity_log (app_name) VALUES (?)", (app_name,))
+        await db.commit()
+
+
+async def get_recent_activity(limit: int = 20) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT app_name, started_at FROM activity_log ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 async def forget_memory_by_id(memory_id: int) -> bool:

@@ -28,6 +28,10 @@ struct PCorpOSApp: App {
            let icon = NSImage(contentsOf: url) {
             NSApplication.shared.applicationIconImage = icon
         }
+
+        // Shadow Mode (2026-08-10) -- see ActivityTracker.swift's own
+        // docstring for what this does and doesn't capture.
+        ActivityTracker.shared.start()
     }
 
     var body: some Scene {

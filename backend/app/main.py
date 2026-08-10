@@ -93,6 +93,7 @@ from app.db import (
     list_conversations,
     load_history,
     load_memory_records,
+    log_activity,
     save_message,
     set_active_conversation,
 )
@@ -104,6 +105,7 @@ from app.decision_journal import (
     execute_decision_journal_tool_call,
 )
 from app.memory_graph import MEMORY_GRAPH_TOOL_NAMES, MEMORY_GRAPH_TOOLS, execute_memory_graph_tool_call
+from app.shadow_mode import SHADOW_MODE_TOOL_NAMES, SHADOW_MODE_TOOLS, execute_shadow_mode_tool_call
 from app.personality import SYSTEM_PROMPT
 from app.piper_tts import synthesize_wav_bytes
 
@@ -152,6 +154,10 @@ ALPHA_MODE_TOOL_NAMES = {tool["name"] for tool in ALPHA_MODE_TOOLS}
 
 class SpeakRequest(BaseModel):
     text: str
+
+
+class ActivityLogRequest(BaseModel):
+    app_name: str
 
 
 def verify_token(token: str) -> None:
@@ -246,6 +252,15 @@ async def focus_endpoint(_: None = Depends(verify_token)) -> dict:
     # minimal scope (just this one line, no on/off mode, no automatic
     # deprioritization).
     return await get_focus_objective()
+
+
+@app.post("/activity/log")
+async def activity_log_endpoint(body: ActivityLogRequest, _: None = Depends(verify_token)) -> dict:
+    # Shadow Mode's write path -- called by ActivityTracker.swift whenever
+    # the frontmost app changes, not a Frank tool. See shadow_mode.py's
+    # docstring for why capture and recall are split this way.
+    await log_activity(body.app_name)
+    return {"status": "ok"}
 
 
 @app.get("/insights")
@@ -468,6 +483,7 @@ async def run_claude_turn(
                 *FOCUS_TOOLS,
                 *DECISION_JOURNAL_TOOLS,
                 *MEMORY_GRAPH_TOOLS,
+                *SHADOW_MODE_TOOLS,
                 *ALPHA_MODE_TOOLS,
                 *OPERATIONS_TOOLS,
                 *ALPHA_MODE_AGENT_TOOLS,
@@ -497,6 +513,8 @@ async def run_claude_turn(
                 result = await execute_decision_journal_tool_call(block.name, block.input)
             elif block.name in MEMORY_GRAPH_TOOL_NAMES:
                 result = await execute_memory_graph_tool_call(block.name, block.input)
+            elif block.name in SHADOW_MODE_TOOL_NAMES:
+                result = await execute_shadow_mode_tool_call(block.name, block.input)
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 result = await execute_alpha_mode_tool_call(block.name, block.input)
             elif block.name in OPERATIONS_TOOL_NAMES:
