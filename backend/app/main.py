@@ -61,6 +61,7 @@ from app.alpha_mode_agent import (
     execute_alpha_mode_agent_tool_call,
 )
 from app.alpha_mode_db import init_alpha_mode_db
+from app.alpha_mode_supabase import dashboard_snapshot as alpha_mode_dashboard_snapshot
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
 from app.agents_registry import list_agents
@@ -271,6 +272,13 @@ async def insights_endpoint(_: None = Depends(verify_token)) -> list[dict]:
     # Real data behind the right rail's "Frank's Insights" card -- was
     # literal placeholder text before (see app/insights.py's docstring).
     return await compute_insights()
+
+
+@app.get("/alpha-mode/dashboard")
+async def alpha_mode_dashboard_endpoint(_: None = Depends(verify_token)) -> dict:
+    # Backs the sidebar's real "Alpha Mode Media" section -- see
+    # alpha_mode_supabase.dashboard_snapshot's docstring.
+    return await alpha_mode_dashboard_snapshot()
 
 
 @app.get("/situation-room")

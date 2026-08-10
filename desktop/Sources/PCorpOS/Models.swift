@@ -117,6 +117,68 @@ struct Agent: Identifiable, Decodable {
     let status: String
 }
 
+/// Backs GET /alpha-mode/dashboard (app/alpha_mode_supabase.py's
+/// dashboard_snapshot) -- real data from the actual Alpha Mode Media
+/// Admin Supabase database, not placeholder content. `id` is a local
+/// UUID, same reasoning as InsightItem: this list is recomputed on
+/// every fetch, nothing to reference by a stable ID client-side.
+struct AlphaModeProject: Identifiable, Decodable {
+    let id = UUID()
+    let client: String
+    let projectName: String?
+    let stage: String
+    let dueDate: String?
+
+    enum CodingKeys: String, CodingKey {
+        case client
+        case projectName = "project_name"
+        case stage
+        case dueDate = "due_date"
+    }
+}
+
+struct AlphaModeInvoiceProject: Decodable {
+    let client: String
+    let projectName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case client
+        case projectName = "project_name"
+    }
+}
+
+struct AlphaModeInvoice: Identifiable, Decodable {
+    let id = UUID()
+    let amount: Double
+    let status: String
+    let dueDate: String?
+    let project: AlphaModeInvoiceProject
+
+    enum CodingKeys: String, CodingKey {
+        case amount, status
+        case dueDate = "due_date"
+        case project = "projects"
+    }
+}
+
+struct AlphaModeLead: Identifiable, Decodable {
+    let id = UUID()
+    let client: String
+    let temperature: String
+    let qualificationScore: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case client, temperature
+        case qualificationScore = "qualification_score"
+    }
+}
+
+struct AlphaModeDashboard: Decodable {
+    let projects: [AlphaModeProject]
+    let invoices: [AlphaModeInvoice]
+    let leads: [AlphaModeLead]
+}
+
 /// Mirrors backend/app/db.py's get_focus_objective() -- the War Room's
 /// Mission Status "Focus: ..." line, fetched from GET /focus. Both
 /// fields are nullable: no objective set yet is a real, honest state,

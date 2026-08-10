@@ -28,6 +28,8 @@ struct ContentView: View {
                     WarRoomView()
                 case "Frank":
                     FrankView()
+                case "Alpha Mode Media":
+                    AlphaModeDashboardView()
                 case "Calendar":
                     CalendarView()
                 case "Knowledge":

@@ -128,6 +128,43 @@ async def leads_needing_followup() -> list[dict]:
         return []
 
 
+async def get_open_projects(limit: int = 50) -> list[dict]:
+    return await select_rows(
+        "projects", {"select": "client,project_name,stage,due_date", "order": "created_at.desc", "limit": str(limit)}
+    )
+
+
+async def get_pending_invoices(limit: int = 50) -> list[dict]:
+    return await select_rows(
+        "invoices",
+        {
+            "select": "amount,status,due_date,projects(client,project_name)",
+            "status": "neq.paid",
+            "order": "due_date.asc",
+            "limit": str(limit),
+        },
+    )
+
+
+async def dashboard_snapshot() -> dict:
+    """Backs the sidebar's real Alpha Mode Media section (2026-08-10) --
+    was a generic unbuilt placeholder before. Each section fails soft
+    independently (empty list, not an exception) so one bad Supabase
+    request doesn't blank the whole dashboard -- same reasoning as
+    leads_needing_followup's own fail-soft handling."""
+
+    async def _safe(coro):
+        try:
+            return await coro
+        except Exception:
+            return []
+
+    projects = await _safe(get_open_projects())
+    invoices = await _safe(get_pending_invoices())
+    leads = await _safe(leads_needing_followup())
+    return {"projects": projects, "invoices": invoices, "leads": leads}
+
+
 async def summarize_block() -> str:
     """Live snapshot of real Supabase projects/pending invoices for
     Frank's context -- same style as alpha_mode_db.summarize(). Fails soft
@@ -136,18 +173,8 @@ async def summarize_block() -> str:
     need to render regardless (same reasoning as the summarize() early-
     return bug fixed 2026-08-02)."""
     try:
-        projects = await select_rows(
-            "projects", {"select": "client,project_name,stage,due_date", "order": "created_at.desc", "limit": "50"}
-        )
-        invoices = await select_rows(
-            "invoices",
-            {
-                "select": "amount,status,due_date,projects(client,project_name)",
-                "status": "neq.paid",
-                "order": "due_date.asc",
-                "limit": "50",
-            },
-        )
+        projects = await get_open_projects()
+        invoices = await get_pending_invoices()
     except Exception:
         return ""
 
