@@ -25,14 +25,14 @@ final class ActivityTracker {
             queue: .main
         ) { [weak self] notification in
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  let name = app.localizedName else { return }
+                  app.isRealApp, let name = app.localizedName else { return }
             Task { @MainActor in
                 self?.logChange(name)
             }
         }
         // Log whatever's frontmost at launch too -- otherwise it never
         // gets recorded until the user switches away from it.
-        if let name = NSWorkspace.shared.frontmostApplication?.localizedName {
+        if let app = NSWorkspace.shared.frontmostApplication, app.isRealApp, let name = app.localizedName {
             logChange(name)
         }
     }
@@ -61,4 +61,15 @@ final class ActivityTracker {
         request.httpBody = try? JSONEncoder().encode(ActivityLogPayload(appName: name))
         _ = try? await URLSession.shared.data(for: request)
     }
+}
+
+private extension NSRunningApplication {
+    // Real bug found 2026-08-10: system helpers like UserNotificationCenter
+    // (the notification-banner process) briefly become "frontmost" and got
+    // logged as if the user switched to them. .regular is the same
+    // activation policy macOS itself uses to decide what gets a Dock icon
+    // -- filtering to it excludes that whole class of transient system UI
+    // (Dock, SystemUIServer, notification banners, Spotlight, etc.) without
+    // hardcoding a blocklist of specific process names.
+    var isRealApp: Bool { activationPolicy == .regular }
 }
