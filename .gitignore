@@ -1,6 +1,13 @@
 # Swift Package Manager build artifacts
 desktop/.build/
 desktop/.swiftpm/
+PCorpKit/.build/
+PCorpKit/.swiftpm/
+
+# Xcode per-user state (ios/) -- machine/user-specific, not shared config
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+ios/**/DerivedData/
 
 # Python backend
 backend/.venv/
