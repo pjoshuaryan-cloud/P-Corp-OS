@@ -1,4 +1,5 @@
 import SwiftUI
+import PCorpKit
 
 /// The "Alpha Mode Media" nav section (2026-08-10) -- real data from the
 /// actual Alpha Mode Media Admin Supabase database (open projects,

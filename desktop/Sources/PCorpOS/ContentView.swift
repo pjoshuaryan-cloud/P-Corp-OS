@@ -1,4 +1,5 @@
 import AppKit
+import PCorpKit
 import SwiftUI
 
 /// Root layout: sidebar, center content, right rail — a plain HStack rather

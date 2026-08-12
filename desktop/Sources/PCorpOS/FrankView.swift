@@ -1,4 +1,5 @@
 import SwiftUI
+import PCorpKit
 
 /// The "Frank" nav section — makes the memory_records table (backend/app/db.py)
 /// actually visible. Before this, a saved memory only existed as something

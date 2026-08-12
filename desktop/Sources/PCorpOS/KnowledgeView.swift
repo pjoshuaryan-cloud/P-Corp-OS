@@ -1,4 +1,5 @@
 import SwiftUI
+import PCorpKit
 
 /// The "Knowledge" nav section — a browser for this project's own markdown
 /// docs (KnowledgeDocs.swift), not a generic file browser. Master-detail:

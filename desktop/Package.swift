@@ -6,9 +6,13 @@ let package = Package(
     platforms: [
         .macOS(.v14)
     ],
+    dependencies: [
+        .package(path: "../PCorpKit")
+    ],
     targets: [
         .executableTarget(
             name: "PCorpOS",
+            dependencies: ["PCorpKit"],
             path: "Sources/PCorpOS",
             resources: [
                 .copy("Resources/P_logo.pdf"),

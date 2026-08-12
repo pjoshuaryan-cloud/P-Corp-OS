@@ -1,4 +1,5 @@
 import SwiftUI
+import PCorpKit
 
 /// The "Automations" nav section — real event-triggered rules (Frank
 /// consults an agent automatically when a matching tool call happens,

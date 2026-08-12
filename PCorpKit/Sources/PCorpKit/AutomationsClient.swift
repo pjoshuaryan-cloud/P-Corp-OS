@@ -3,19 +3,21 @@ import Foundation
 /// Plain REST fetch for GET /automations/rules and GET /automations/runs --
 /// same one-shot pattern as AgentsClient/OperationsClient.
 @MainActor
-final class AutomationsClient: ObservableObject {
-    @Published private(set) var rules: [AutomationRule] = []
-    @Published private(set) var runs: [AutomationRun] = []
-    @Published private(set) var isLoading = false
-    @Published private(set) var errorMessage: String?
+public final class AutomationsClient: ObservableObject {
+    @Published public private(set) var rules: [AutomationRule] = []
+    @Published public private(set) var runs: [AutomationRun] = []
+    @Published public private(set) var isLoading = false
+    @Published public private(set) var errorMessage: String?
+
+    public init() {}
 
     private func url(path: String) -> URL {
-        var components = URLComponents(string: "http://127.0.0.1:8731\(path)")!
+        var components = URLComponents(string: "http://\(BackendHost.host):8731\(path)")!
         components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
         return components.url!
     }
 
-    func fetch() async {
+    public func fetch() async {
         isLoading = true
         errorMessage = nil
         do {

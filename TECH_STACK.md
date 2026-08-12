@@ -29,7 +29,7 @@ Record the technology choices for each layer, with the trade-offs that justified
 
 ## Open questions
 
-- iOS companion specifics: how much of the SwiftUI desktop code is literally shared vs. adapted per-platform (this is a real question even with SwiftUI — "shared framework" isn't "zero mobile-specific work"). Lower urgency than the items above — best resolved once actual iOS companion work begins rather than speculatively now.
+- ~~iOS companion specifics: how much of the SwiftUI desktop code is literally shared vs. adapted per-platform (this is a real question even with SwiftUI — "shared framework" isn't "zero mobile-specific work"). Lower urgency than the items above — best resolved once actual iOS companion work begins rather than speculatively now.~~ **Answered 2026-08-12, with real code, not a plan:** models and all networking clients moved into a new local `PCorpKit` package both platforms import (see `CHANGELOG.md`) — genuine reuse, not a rewrite. Navigation (`NavItem`/`PlaceholderData`) stayed desktop-only, confirmed not shareable: the fixed 3-column sidebar has no mobile equivalent. Two things needed a pluggable-provider pattern instead of being directly shared: `AuthToken` (desktop reads a local file on the same Mac as the backend; iOS can't) and `SystemNotification` (desktop shells out to `osascript`; unavailable in an iOS sandbox). The actual iOS app target itself is the next real step, not yet started.
 
 ## Next step
 

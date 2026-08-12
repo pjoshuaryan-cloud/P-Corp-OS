@@ -4,18 +4,20 @@ import Foundation
 /// OperationsClient/MemoryClient, not routed through BackendClient's
 /// WebSocket since this is a simple read, not a persistent stream.
 @MainActor
-final class AgentsClient: ObservableObject {
-    @Published private(set) var agents: [Agent] = []
-    @Published private(set) var isLoading = false
-    @Published private(set) var errorMessage: String?
+public final class AgentsClient: ObservableObject {
+    @Published public private(set) var agents: [Agent] = []
+    @Published public private(set) var isLoading = false
+    @Published public private(set) var errorMessage: String?
+
+    public init() {}
 
     private var url: URL {
-        var components = URLComponents(string: "http://127.0.0.1:8731/agents")!
+        var components = URLComponents(string: "http://\(BackendHost.host):8731/agents")!
         components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
         return components.url!
     }
 
-    func fetch() async {
+    public func fetch() async {
         isLoading = true
         errorMessage = nil
         do {

@@ -1,33 +1,47 @@
-import AppKit
 import Foundation
+#if canImport(UIKit)
+import UIKit
+public typealias PlatformImage = UIImage
+#else
+import AppKit
+public typealias PlatformImage = NSImage
+#endif
 
 /// A single turn in the conversation — user or assistant. Mirrors
 /// backend/app/db.py's `messages` table. Conversations can now start fresh
 /// (startNewConversation below) — durable memory, not the transcript, is
 /// what carries "there is only ever one Frank" forward. See app/db.py.
-struct ChatMessage: Identifiable {
-    let id = UUID()
-    let role: String
-    var content: String
+public struct ChatMessage: Identifiable {
+    public let id = UUID()
+    public let role: String
+    public var content: String
     /// An already-decoded image for a just-sent-this-session message --
-    /// rendered as a real thumbnail. Deliberately a decoded NSImage, not
-    /// raw Data (real bug found and fixed 2026-08-10: the first version
-    /// stored raw Data and decoded it fresh via NSImage(data:) inside the
-    /// SwiftUI view body -- for a full-res Retina screenshot, that re-runs
-    /// an expensive decode on *every* re-render, which happens repeatedly
-    /// while a reply is streaming in, visibly freezing the whole chat view
-    /// even though the backend had already finished normally). Decoded
-    /// once at send time instead (see BackendClient.send below). nil for
-    /// text-only messages, and also nil for a message loaded from a
-    /// *reopened* old conversation (see hasStoredImage below) -- old
-    /// images aren't re-fetched, only shown as a placeholder, confirmed
-    /// decision 2026-08-05 (cost of re-sending an old image to Claude as
-    /// real context on every reconnect vs. just knowing one was attached).
-    var image: NSImage? = nil
+    /// rendered as a real thumbnail. Deliberately a decoded PlatformImage
+    /// (NSImage on macOS, UIImage on iOS), not raw Data (real bug found
+    /// and fixed 2026-08-10: the first version stored raw Data and
+    /// decoded it fresh via NSImage(data:) inside the SwiftUI view body --
+    /// for a full-res Retina screenshot, that re-runs an expensive decode
+    /// on *every* re-render, which happens repeatedly while a reply is
+    /// streaming in, visibly freezing the whole chat view even though the
+    /// backend had already finished normally). Decoded once at send time
+    /// instead (see BackendClient.send below). nil for text-only messages,
+    /// and also nil for a message loaded from a *reopened* old
+    /// conversation (see hasStoredImage below) -- old images aren't
+    /// re-fetched, only shown as a placeholder, confirmed decision
+    /// 2026-08-05 (cost of re-sending an old image to Claude as real
+    /// context on every reconnect vs. just knowing one was attached).
+    public var image: PlatformImage? = nil
     /// True when GET /history reports this message had an image attached,
     /// but the bytes weren't re-fetched (see image above) -- renders as a
     /// plain "📎 image attached" indicator instead of the real picture.
-    var hasStoredImage: Bool = false
+    public var hasStoredImage: Bool = false
+
+    public init(role: String, content: String, image: PlatformImage? = nil, hasStoredImage: Bool = false) {
+        self.role = role
+        self.content = content
+        self.image = image
+        self.hasStoredImage = hasStoredImage
+    }
 }
 
 /// The connection from the shell to the Python backend, and the owner of
@@ -38,10 +52,12 @@ struct ChatMessage: Identifiable {
 /// app continues the same conversation instead of starting blank, matching
 /// the backend's own "one continuous conversation" persistence.
 @MainActor
-final class BackendClient: ObservableObject {
-    @Published private(set) var messages: [ChatMessage] = []
-    @Published private(set) var isConnected: Bool = false
-    @Published private(set) var isStreaming: Bool = false
+public final class BackendClient: ObservableObject {
+    @Published public private(set) var messages: [ChatMessage] = []
+    @Published public private(set) var isConnected: Bool = false
+    @Published public private(set) var isStreaming: Bool = false
+
+    public init() {}
 
     private var task: URLSessionWebSocketTask?
 
@@ -60,31 +76,32 @@ final class BackendClient: ObservableObject {
     /// (search + date grouping) already makes any of them reachable.
     private static var hasStartedFreshThisLaunch = false
 
-    /// Bound to 127.0.0.1 only, matching the backend's own binding — this
-    /// isn't reachable over the network, only from this same machine.
-    /// Token appended fresh at connect time (see AuthToken.swift) — the
-    /// backend rejects any connection without it (SECURITY.md's local-auth
-    /// fix).
+    /// Host comes from BackendHost.host (2026-08-12) -- "127.0.0.1" by
+    /// default (desktop: same Mac as the backend, unreachable over the
+    /// network by design), settable by the iOS app to this Mac's
+    /// Tailscale IP. Token appended fresh at connect time (see
+    /// AuthToken.swift) — the backend rejects any connection without it
+    /// (SECURITY.md's local-auth fix).
     private var wsURL: URL {
-        var components = URLComponents(string: "ws://127.0.0.1:8731/ws")!
+        var components = URLComponents(string: "ws://\(BackendHost.host):8731/ws")!
         components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
         return components.url!
     }
 
     private var historyURL: URL {
-        var components = URLComponents(string: "http://127.0.0.1:8731/history")!
+        var components = URLComponents(string: "http://\(BackendHost.host):8731/history")!
         components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
         return components.url!
     }
 
     private var newConversationURL: URL {
-        var components = URLComponents(string: "http://127.0.0.1:8731/conversations")!
+        var components = URLComponents(string: "http://\(BackendHost.host):8731/conversations")!
         components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
         return components.url!
     }
 
     private func conversationListURL(query: String?) -> URL {
-        var components = URLComponents(string: "http://127.0.0.1:8731/conversations")!
+        var components = URLComponents(string: "http://\(BackendHost.host):8731/conversations")!
         var items = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
         if let query, !query.isEmpty {
             items.append(URLQueryItem(name: "q", value: query))
@@ -94,7 +111,7 @@ final class BackendClient: ObservableObject {
     }
 
     private func activateURL(_ conversationID: Int) -> URL {
-        var components = URLComponents(string: "http://127.0.0.1:8731/conversations/\(conversationID)/activate")!
+        var components = URLComponents(string: "http://\(BackendHost.host):8731/conversations/\(conversationID)/activate")!
         components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
         return components.url!
     }
@@ -104,7 +121,7 @@ final class BackendClient: ObservableObject {
     /// conversation was active at connect time — see backend/app/main.py).
     /// Memory (SECURITY.md-classified "regular" tool, app/memory.py) is
     /// untouched by this; only the transcript resets.
-    func startNewConversation() async {
+    public func startNewConversation() async {
         messages = []
         var request = URLRequest(url: newConversationURL)
         request.httpMethod = "POST"
@@ -118,7 +135,7 @@ final class BackendClient: ObservableObject {
     /// message content (backend/app/db.py's list_conversations), not just
     /// each conversation's preview — indefinite history only stays useful
     /// if you can actually find something in it later.
-    func fetchConversationList(query: String? = nil) async -> [ConversationSummary] {
+    public func fetchConversationList(query: String? = nil) async -> [ConversationSummary] {
         do {
             let (data, _) = try await URLSession.shared.data(from: conversationListURL(query: query))
             return try JSONDecoder().decode([ConversationSummary].self, from: data)
@@ -130,7 +147,7 @@ final class BackendClient: ObservableObject {
     /// Reopens an older conversation — makes it active, then reconnects
     /// (same reasoning as startNewConversation: the live WebSocket needs a
     /// fresh connection to pick up whichever conversation is now active).
-    func switchToConversation(_ conversationID: Int) async {
+    public func switchToConversation(_ conversationID: Int) async {
         messages = []
         var request = URLRequest(url: activateURL(conversationID))
         request.httpMethod = "POST"
@@ -139,7 +156,7 @@ final class BackendClient: ObservableObject {
         connect()
     }
 
-    func connect() {
+    public func connect() {
         guard task == nil else { return }
         let task = URLSession.shared.webSocketTask(with: wsURL)
         self.task = task
@@ -167,7 +184,7 @@ final class BackendClient: ObservableObject {
         _ = try? await URLSession.shared.data(for: request)
     }
 
-    func disconnect() {
+    public func disconnect() {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         isConnected = false
@@ -181,7 +198,7 @@ final class BackendClient: ObservableObject {
     /// since the interrupted turn was never persisted server-side and a
     /// reload would silently erase the partial reply still visible in
     /// `messages`, which is exactly what should stay on screen.
-    func stopGenerating() {
+    public func stopGenerating() {
         isStreaming = false
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -197,11 +214,11 @@ final class BackendClient: ObservableObject {
     /// mediaType is a real image MIME type ("image/png"/"image/jpeg") --
     /// required alongside imageData, not inferred, since the wire payload
     /// (WirePayload below) needs it for Claude's own content-block format.
-    func send(_ text: String, imageData: Data? = nil, mediaType: String? = nil) {
+    public func send(_ text: String, imageData: Data? = nil, mediaType: String? = nil) {
         guard let task else { return }
         // Decoded exactly once, here -- not in the view body (see
         // ChatMessage.image's doc comment for the real bug this fixes).
-        let decodedImage = imageData.flatMap { NSImage(data: $0) }
+        let decodedImage = imageData.flatMap { PlatformImage(data: $0) }
         messages.append(ChatMessage(role: "user", content: text, image: decodedImage))
         messages.append(ChatMessage(role: "assistant", content: ""))
         isStreaming = true

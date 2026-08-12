@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import PCorpKit
 
 /// Text-to-speech for Frank's replies -- the output half of "talking to
 /// Frank," alongside VoiceInput.swift's push-to-talk input. Confirmed

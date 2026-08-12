@@ -1,4 +1,5 @@
 import SwiftUI
+import PCorpKit
 
 /// The "Calendar" nav section — real events from the macOS Calendar app
 /// (SystemCalendar.swift), not placeholder data. Read-only: this shows what's

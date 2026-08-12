@@ -1,4 +1,5 @@
 import SwiftUI
+import PCorpKit
 
 struct RightRail: View {
     @Binding var selectedID: UUID?

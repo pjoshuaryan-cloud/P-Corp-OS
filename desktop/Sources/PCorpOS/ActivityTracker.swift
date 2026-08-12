@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PCorpKit
 
 /// Shadow Mode (2026-08-10) -- passive activity awareness, app name only.
 /// Observes NSWorkspace's own frontmost-app-change notification, a public

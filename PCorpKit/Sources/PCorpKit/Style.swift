@@ -5,25 +5,25 @@ import SwiftUI
 /// noticeably less "default SwiftUI" than the plain SF Pro used in the first
 /// pass, and generous tracking on labels matches the wide-letter-spacing look
 /// Joshua pointed to in his reference mockups.
-enum PCorpFont {
-    static func display(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
+public enum PCorpFont {
+    public static func display(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
         .system(size: size, weight: weight, design: .rounded)
     }
 
-    static func body(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+    public static func body(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .rounded)
     }
 
     /// Small all-caps section labels ("MISSION STATUS", "TODAY'S AGENDA", …) —
     /// always paired with wide tracking via `.trackedLabel()`.
-    static func label(_ size: CGFloat = 10.5) -> Font {
+    public static func label(_ size: CGFloat = 10.5) -> Font {
         .system(size: size, weight: .semibold, design: .rounded)
     }
 }
 
 extension View {
     /// Wide letter-spacing for all-caps labels, matching the reference look.
-    func trackedLabel(_ amount: CGFloat = 1.4) -> some View {
+    public func trackedLabel(_ amount: CGFloat = 1.4) -> some View {
         self.tracking(amount)
     }
 }
@@ -31,12 +31,18 @@ extension View {
 /// A fully rounded (capsule) button — filled for primary actions, tinted for
 /// secondary chips like the Quick Actions grid. Replaces the default
 /// `.borderedProminent` style, which only rounds corners slightly on macOS.
-struct PillButtonStyle: ButtonStyle {
+/// `.onHover` is a real no-op on touch-only iOS (no pointer, no crash) --
+/// harmless there, not desktop-only code that needed splitting out.
+public struct PillButtonStyle: ButtonStyle {
     var filled: Bool = true
     @Environment(\.appTheme) private var theme
     @State private var isHovering = false
 
-    func makeBody(configuration: Configuration) -> some View {
+    public init(filled: Bool = true) {
+        self.filled = filled
+    }
+
+    public func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(PCorpFont.body(12.5, weight: .semibold))
             .padding(.horizontal, 16)
@@ -63,18 +69,20 @@ struct PillButtonStyle: ButtonStyle {
 }
 
 extension ButtonStyle where Self == PillButtonStyle {
-    static var pillFilled: PillButtonStyle { PillButtonStyle(filled: true) }
-    static var pillTinted: PillButtonStyle { PillButtonStyle(filled: false) }
+    public static var pillFilled: PillButtonStyle { PillButtonStyle(filled: true) }
+    public static var pillTinted: PillButtonStyle { PillButtonStyle(filled: false) }
 }
 
 /// A circular icon-only button with real hover/press feedback — replaces
 /// bare `Image(systemName:)` glyphs sitting unstyled in toolbars (the top
 /// bar's search/mic icons had none of this before).
-struct IconButtonStyle: ButtonStyle {
+public struct IconButtonStyle: ButtonStyle {
     @Environment(\.appTheme) private var theme
     @State private var isHovering = false
 
-    func makeBody(configuration: Configuration) -> some View {
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 15))
             .foregroundStyle(theme.textPrimary)
@@ -94,5 +102,5 @@ struct IconButtonStyle: ButtonStyle {
 }
 
 extension ButtonStyle where Self == IconButtonStyle {
-    static var icon: IconButtonStyle { IconButtonStyle() }
+    public static var icon: IconButtonStyle { IconButtonStyle() }
 }

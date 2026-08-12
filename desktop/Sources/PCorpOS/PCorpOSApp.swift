@@ -1,4 +1,5 @@
 import AppKit
+import PCorpKit
 import SwiftUI
 
 @main
@@ -8,6 +9,34 @@ struct PCorpOSApp: App {
     @AppStorage(AppStorageKeys.darkModeEnabled) private var darkModeEnabled = false
 
     init() {
+        // Desktop's half of AuthToken's pluggable provider (PCorpKit) --
+        // reads fresh from the local backend data file on every access
+        // (not cached), so a regenerated token is picked up without
+        // restarting. Set once, here, before any *Client.swift network
+        // call can happen.
+        AuthToken.provider = {
+            let url = ProjectPaths.repoRoot.appendingPathComponent("backend/data/auth_token")
+            return try? String(contentsOf: url, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        // Desktop's half of SystemNotification's pluggable poster
+        // (PCorpKit) -- real macOS notification via `osascript`, not
+        // `UserNotifications`: confirmed directly (2026-07-25) that
+        // UNUserNotificationCenter hard-crashes on this app
+        // ("bundleProxyForCurrentProcess is nil"), since it's still a raw
+        // `swift build` executable, not a real .app bundle. `osascript`
+        // doesn't need the calling process to have its own bundle
+        // identity, so it works today; revisit once SMAppService
+        // packaging gives this app a real bundle.
+        SystemNotification.poster = { title, body in
+            let script = "display notification \(Self.appleScriptString(body)) with title \(Self.appleScriptString(title))"
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-e", script]
+            try? process.run()
+        }
+
         // This is a plain SPM executable, not a proper .app bundle built by
         // Xcode — there's no Info.plist/asset-catalog icon pipeline to hook
         // into. Setting the Dock icon at runtime is the correct way to get a
@@ -49,5 +78,15 @@ struct PCorpOSApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
+    }
+
+    /// Escapes a string for embedding in an AppleScript string literal —
+    /// backslash first, then double-quote, in that order (matters: escaping
+    /// quotes first would double-escape the backslashes just added for them).
+    private static func appleScriptString(_ text: String) -> String {
+        let escaped = text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 }
