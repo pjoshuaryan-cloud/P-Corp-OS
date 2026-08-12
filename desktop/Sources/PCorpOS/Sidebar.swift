@@ -99,7 +99,7 @@ private struct NavRow: View {
                 Image(systemName: item.systemImage)
                     .font(.system(size: 15))
                     .frame(width: 20)
-                    .foregroundStyle(isSelected ? theme.textPrimary : theme.textPrimary.opacity(0.55))
+                    .foregroundStyle((IconColors.forNavItem(item.title) ?? theme.textPrimary).opacity(isSelected ? 1.0 : 0.55))
             }
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title)

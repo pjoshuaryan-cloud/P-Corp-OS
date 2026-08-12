@@ -121,7 +121,7 @@ private struct AgentCard: View {
                     Circle().fill(.regularMaterial).frame(width: 40, height: 40)
                     Image(systemName: agent.icon)
                         .font(.system(size: 16))
-                        .foregroundStyle(theme.textPrimary)
+                        .foregroundStyle(IconColors.forAgentIcon(agent.icon))
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(agent.name)
