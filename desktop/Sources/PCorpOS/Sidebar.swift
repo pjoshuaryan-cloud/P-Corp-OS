@@ -94,7 +94,7 @@ private struct NavRow: View {
                     .scaledToFit()
                     .frame(width: 15, height: 15)
                     .frame(width: 20)
-                    .foregroundStyle(isSelected ? theme.textPrimary : theme.textPrimary.opacity(0.55))
+                    .foregroundStyle(IconColors.alphaModeBrandBlue.opacity(isSelected ? 1.0 : 0.55))
             } else {
                 Image(systemName: item.systemImage)
                     .font(.system(size: 15))
