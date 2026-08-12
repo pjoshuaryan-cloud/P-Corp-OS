@@ -1,39 +1,60 @@
 import SwiftUI
 import PCorpKit
+import PhotosUI
 
-/// The real War Room screen (2026-08-12) -- replaces the first pass's
-/// plain chat thread. Desktop's own docs call War Room "the primary
-/// interface, not a stub" (WAR_ROOM.md), so this is the one screen
-/// worth making properly real before any broader mobile navigation --
-/// deferred, not forgotten (see ROADMAP.md).
+/// The real War Room screen (2026-08-12, restyled to match desktop
+/// pixel-for-pixel where the layout allows). Desktop's own docs call
+/// War Room "the primary interface, not a stub" (WAR_ROOM.md), so this
+/// is the one screen worth making properly real before any broader
+/// mobile navigation -- deferred, not forgotten (see ROADMAP.md).
 ///
-/// Reuses PCorpKit's PCorpFont directly -- the typography was already
-/// cross-platform, no redesign needed there. Colors deliberately use
-/// iOS's own native semantic colors (systemBackground, .secondary,
-/// accentColor) instead of porting AppTheme's manual light/dark toggle
-/// -- desktop has its own in-app dark-mode switch because it predates
-/// following the OS setting automatically; a first-class iOS app should
-/// just respect the system appearance the normal iOS way, not carry
-/// that same manual toggle over. Desktop's separate right-rail cards
-/// (Mission Status, Insights, Situation Room) become a fixed, non-
-/// scrolling header here rather than another column, with the chat
-/// getting its own dedicated scroll region below -- real bug found
-/// live (2026-08-12): an earlier version put everything, cards and
-/// chat both, in one combined ScrollView with no auto-scroll, so a
-/// reply could render successfully but sit off-screen below the cards,
-/// looking exactly like "no response" even though it wasn't. Chat now
-/// gets its own ScrollViewReader/auto-scroll, same proven pattern as
-/// desktop's own ChatThreadView. Today's Agenda is deliberately
-/// excluded -- desktop's version reads the macOS Calendar app via
-/// AppleScript, which has no iOS equivalent; a real mobile agenda
-/// would need iOS's own EventKit against the iPhone's own calendar, a
-/// genuinely separate feature not built yet.
+/// Now uses PCorpKit's real AppTheme via `\.appTheme`, exactly the way
+/// every desktop view does -- reversed from the first cut, which used
+/// iOS's own native semantic colors instead. Direct ask: match desktop
+/// as closely as possible. The exact colors, card chrome (regularMaterial
+/// + theme.background.opacity(0.35) + strokeBorder + shadow), chat
+/// bubble styling, and input bar treatment are all copied from
+/// desktop's own RightRail.swift/WarRoomView.swift, not approximated.
+/// No manual dark-mode toggle yet, though -- there's no Settings screen
+/// on iOS to put one in (out of scope, see ROADMAP.md's "10 other nav
+/// destinations" note); AppTheme is picked from the system's actual
+/// current appearance instead (ContentView.swift), the best available
+/// signal absent a real toggle, not a guess.
+///
+/// Desktop's separate right-rail cards (Mission Status, Insights,
+/// Situation Room) are a fixed, non-scrolling header here rather than
+/// another column, with the chat getting its own dedicated scroll
+/// region below -- real bug found and fixed live (2026-08-12): an
+/// earlier version put everything in one combined ScrollView with no
+/// auto-scroll, so a reply could render successfully but sit off-screen
+/// below the cards, looking exactly like "no response." Today's Agenda
+/// is deliberately excluded -- desktop's version reads the macOS
+/// Calendar app via AppleScript, which has no iOS equivalent; a real
+/// mobile agenda would need iOS's own EventKit against the iPhone's own
+/// calendar, a genuinely separate feature not built yet. Voice
+/// input/image attach (desktop's mic/paperclip buttons) are also not
+/// built on iOS yet -- VoiceInput.swift is a desktop-only file, not in
+/// PCorpKit -- so the input bar only has text + send, styled to match.
+///
+/// Update (2026-08-12): voice input and image attach are now built here
+/// too, via their own iOS-appropriate mechanisms -- VoiceInput.swift
+/// (ported from desktop's, swapping its macOS-only mic-selector step for
+/// an AVAudioSession activation) and PhotosPicker (SwiftUI's own iOS photo
+/// picker, replacing desktop's NSOpenPanel) -- same mic/paperclip buttons,
+/// same push-to-talk and attached-image-chip behavior, same styling.
 struct WarRoomView: View {
     @StateObject private var backend = BackendClient()
     @StateObject private var focusClient = FocusClient()
     @StateObject private var insightsClient = InsightsClient()
     @StateObject private var situationRoomClient = SituationRoomClient()
+    @StateObject private var voiceInput = VoiceInput()
     @State private var inputText = ""
+    @State private var photoPickerItem: PhotosPickerItem?
+    @State private var attachedImageData: Data?
+    @State private var attachedImageMediaType: String?
+    @State private var attachedImagePreview: UIImage?
+    @FocusState private var isInputFocused: Bool
+    @Environment(\.appTheme) private var theme
 
     private var greeting: String {
         switch Calendar.current.component(.hour, from: .now) {
@@ -44,157 +65,278 @@ struct WarRoomView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                if !situationRoomClient.alerts.isEmpty {
-                    situationRoomBanner
-                }
-                dashboardHeader
-                Divider()
-                ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming)
-                inputBar
+        VStack(spacing: 0) {
+            if !situationRoomClient.alerts.isEmpty {
+                situationRoomBanner
             }
-            .background(Color(.systemBackground))
-            .navigationBarHidden(true)
-            .task {
-                backend.connect()
-                await focusClient.fetch()
-                await insightsClient.fetch()
-                await situationRoomClient.fetch()
+            dashboardHeader
+            Divider().overlay(theme.divider)
+            ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming)
+            if let preview = attachedImagePreview {
+                attachedImageChip(preview)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+            }
+            inputBar
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+        }
+        .background(theme.background)
+        .task {
+            backend.connect()
+            await focusClient.fetch()
+            await insightsClient.fetch()
+            await situationRoomClient.fetch()
+        }
+        .onChange(of: photoPickerItem) { _, newItem in
+            guard let newItem else { return }
+            Task {
+                guard let data = try? await newItem.loadTransferable(type: Data.self),
+                      let image = UIImage(data: data)
+                else { return }
+                await MainActor.run {
+                    attachedImageData = data
+                    attachedImageMediaType = "image/jpeg"
+                    attachedImagePreview = image
+                }
             }
         }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { isInputFocused = false }
+            }
+        }
+    }
+
+    private func attachedImageChip(_ preview: UIImage) -> some View {
+        HStack(spacing: 8) {
+            Image(uiImage: preview)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 32, height: 32)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            Text("Image attached")
+                .font(PCorpFont.body(12))
+                .foregroundStyle(theme.textSecondary)
+            Spacer()
+            Button(action: clearAttachedImage) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(theme.textTertiary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 12).fill(theme.surface.opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+    }
+
+    private func clearAttachedImage() {
+        photoPickerItem = nil
+        attachedImageData = nil
+        attachedImageMediaType = nil
+        attachedImagePreview = nil
     }
 
     private var dashboardHeader: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("\(greeting), Joshx.")
-                .font(PCorpFont.display(20))
+                .font(PCorpFont.body(13, weight: .semibold))
+                .foregroundStyle(theme.textPrimary)
             missionStatusCard
             if !insightsClient.insights.isEmpty {
                 insightsCard
             }
         }
-        .padding()
+        .padding(16)
     }
 
     private var missionStatusCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        CardContainer {
             HStack {
                 sectionLabel("MISSION STATUS")
                 Spacer()
                 HStack(spacing: 4) {
                     Circle().fill(Color.green).frame(width: 6, height: 6)
-                    Text("Active").font(PCorpFont.body(11, weight: .semibold))
+                    Text("Active").font(PCorpFont.body(11, weight: .semibold)).foregroundStyle(theme.textPrimary)
                 }
             }
             Text("Create Leverage.\nFreedom Tomorrow.")
-                .font(PCorpFont.display(17))
+                .font(PCorpFont.display(19))
+                .foregroundStyle(theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Focus: \(focusClient.objective ?? "Nothing set yet")")
-                .font(PCorpFont.body(12))
-                .foregroundStyle(.secondary)
+                .font(PCorpFont.body(11))
+                .foregroundStyle(theme.textSecondary)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemBackground)))
     }
 
     private var insightsCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        CardContainer {
             sectionLabel("FRANK'S INSIGHTS")
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 ForEach(insightsClient.insights) { insight in
-                    HStack(spacing: 8) {
+                    HStack(alignment: .top, spacing: 10) {
                         Image(systemName: insight.systemImage)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 1) {
+                            .font(.system(size: 13))
+                            .foregroundStyle(theme.textPrimary)
+                            .frame(width: 22, height: 22)
+                            .background(Circle().fill(theme.textPrimary.opacity(0.06)))
+                        VStack(alignment: .leading, spacing: 2) {
                             Text(insight.title)
                                 .font(PCorpFont.body(12.5, weight: .semibold))
+                                .foregroundStyle(theme.textPrimary)
                             Text(insight.detail)
                                 .font(PCorpFont.body(11.5))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(theme.textSecondary)
                         }
                     }
                 }
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemBackground)))
     }
 
     private var situationRoomBanner: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-                Text("SITUATION ROOM").font(PCorpFont.label(9.5)).foregroundStyle(.red)
+                Text("SITUATION ROOM")
+                    .font(PCorpFont.label(10))
+                    .tracking(1.4)
+                    .foregroundStyle(.red)
             }
             ForEach(situationRoomClient.alerts) { alert in
-                Text("\(alert.title) — \(alert.detail)").font(PCorpFont.body(12))
+                Text("\(alert.title) — \(alert.detail)")
+                    .font(PCorpFont.body(12.5))
+                    .foregroundStyle(theme.textPrimary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .background(Color.red.opacity(0.12))
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(.red.opacity(0.3)), alignment: .bottom)
     }
 
     private var inputBar: some View {
-        HStack(spacing: 10) {
-            TextField("Talk to Frank...", text: $inputText)
-                .textFieldStyle(.roundedBorder)
+        HStack(spacing: 12) {
             Button {
-                backend.send(inputText)
-                inputText = ""
+                voiceInput.toggle { transcript in
+                    guard let transcript else { return }
+                    backend.send(transcript)
+                }
             } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 28))
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(theme.accentText)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(voiceInput.isListening ? Color.red : theme.accentFill))
             }
-            .disabled(inputText.isEmpty)
+            .buttonStyle(.plain)
+
+            PhotosPicker(selection: $photoPickerItem, matching: .images) {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(theme.textSecondary)
+                    .frame(width: 32, height: 32)
+            }
+
+            TextField("Talk to Frank...", text: $inputText)
+                .textFieldStyle(.plain)
+                .font(PCorpFont.body(14))
+                .foregroundStyle(theme.textPrimary)
+                .focused($isInputFocused)
+                .onSubmit(sendMessage)
+
+            if backend.isStreaming {
+                Button(action: backend.stopGenerating) {
+                    Image(systemName: "square.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.accentText)
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(theme.accentFill))
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button(action: sendMessage) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(theme.accentText)
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(theme.accentFill))
+                }
+                .buttonStyle(.plain)
+                .disabled(inputText.isEmpty)
+            }
         }
-        .padding()
-        .background(.ultraThinMaterial)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 24).fill(.ultraThinMaterial))
+        .background(RoundedRectangle(cornerRadius: 24).fill(theme.surface.opacity(0.3)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24)
+                .strokeBorder(isInputFocused ? theme.textPrimary : theme.surfaceBorder, lineWidth: isInputFocused ? 2 : 1)
+        )
+        .shadow(color: theme.cardShadow, radius: isInputFocused ? 20 : 16, x: 0, y: isInputFocused ? 8 : 6)
+        .animation(.easeOut(duration: 0.15), value: isInputFocused)
+    }
+
+    private func sendMessage() {
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || attachedImageData != nil else { return }
+        backend.send(text, imageData: attachedImageData, mediaType: attachedImageMediaType)
+        inputText = ""
+        clearAttachedImage()
     }
 
     private func sectionLabel(_ text: String) -> some View {
         Text(text)
             .font(PCorpFont.label(9.5))
-            .tracking(1.4)
-            .foregroundStyle(.secondary)
+            .tracking(1.6)
+            .foregroundStyle(theme.textSecondary)
+    }
+}
+
+/// Exact match for desktop's own private CardContainer (RightRail.swift).
+private struct CardContainer<Content: View>: View {
+    let content: Content
+    @Environment(\.appTheme) private var theme
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            content
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(.regularMaterial))
+        .background(RoundedRectangle(cornerRadius: 18).fill(theme.background.opacity(0.35)))
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(theme.surfaceBorder))
+        .shadow(color: theme.cardShadow, radius: 12, x: 0, y: 4)
     }
 }
 
 /// Its own dedicated scroll region with auto-scroll-to-newest, including
 /// while a reply is still streaming in -- same proven pattern as
-/// desktop's own ChatThreadView (WarRoomView.swift there), extracted
-/// into its own type here for the same reason: isolating what needs to
-/// re-render on every streamed token from the dashboard cards above it,
-/// which don't.
+/// desktop's own ChatThreadView, and the same chat bubble styling
+/// (ChatBubble there) copied here rather than approximated.
 private struct ChatThreadView: View {
     let messages: [ChatMessage]
     let isStreaming: Bool
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(messages) { message in
-                        HStack {
-                            if message.role == "user" { Spacer(minLength: 40) }
-                            Text(message.content.isEmpty ? "…" : message.content)
-                                .font(PCorpFont.body(14))
-                                .padding(10)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(message.role == "user" ? Color.accentColor.opacity(0.15) : Color(.secondarySystemBackground))
-                                )
-                            if message.role == "assistant" { Spacer(minLength: 40) }
-                        }
-                        .id(message.id)
+                        ChatBubble(message: message).id(message.id)
                     }
                 }
-                .padding()
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
             }
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: messages.count) { _, _ in scrollToEnd(proxy) }
             .onChange(of: messages.last?.content) { _, _ in scrollToEnd(proxy) }
             .onAppear { scrollToEnd(proxy, animated: false) }
@@ -208,6 +350,54 @@ private struct ChatThreadView: View {
         } else {
             proxy.scrollTo(lastID, anchor: .bottom)
         }
+    }
+}
+
+/// Exact match for desktop's own private ChatBubble (WarRoomView.swift
+/// there) -- same colors, corner radius, padding, max width, spacer
+/// widths. Plain Text, not desktop's markdown renderer -- that lives in
+/// a desktop-only file (SimpleMarkdownView), a real follow-up, not a
+/// shortfall of this pass specifically.
+private struct ChatBubble: View {
+    let message: ChatMessage
+    @Environment(\.appTheme) private var theme
+
+    private var isUser: Bool { message.role == "user" }
+
+    var body: some View {
+        HStack {
+            if isUser { Spacer(minLength: 40) }
+
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 8) {
+                if let image = message.image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: 240, maxHeight: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                } else if message.hasStoredImage {
+                    HStack(spacing: 6) {
+                        Image(systemName: "photo")
+                        Text("Image attached")
+                    }
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle((isUser ? theme.accentText : theme.textPrimary).opacity(0.8))
+                }
+                if !message.content.isEmpty || (message.image == nil && !message.hasStoredImage) {
+                    Text(message.content.isEmpty ? "…" : message.content)
+                        .font(PCorpFont.body(14))
+                }
+            }
+            .foregroundStyle(isUser ? theme.accentText : theme.textPrimary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 16).fill(isUser ? theme.accentFill : theme.surface.opacity(0.7)))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(isUser ? Color.clear : theme.surfaceBorder))
+            .frame(maxWidth: 340, alignment: isUser ? .trailing : .leading)
+
+            if !isUser { Spacer(minLength: 40) }
+        }
+        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
     }
 }
 

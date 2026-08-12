@@ -59,5 +59,11 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Push-to-talk lets you speak to Frank instead of typing.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Frank transcribes what you say via push-to-talk so it can be sent as a real message.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Attach a photo to a message to Frank.</string>
 </dict>
 </plist>
