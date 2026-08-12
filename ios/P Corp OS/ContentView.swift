@@ -1,27 +1,23 @@
 import SwiftUI
 import PCorpKit
 
-/// First real iOS screen (2026-08-12) -- proves the whole pipeline works
-/// end to end: PCorpKit's shared BackendClient talking to the same
-/// backend the desktop app uses, over the Tailscale listener, from a
-/// real iPhone. Deliberately minimal -- a plain chat thread, not War
-/// Room's full visual design -- that's real follow-on work once this
-/// proves out, not part of proving the plumbing works.
+/// Token gate for the app -- once connected, hands off to WarRoomView
+/// (2026-08-12), the real screen. This file's own first pass (a plain
+/// chat thread) proved the pipeline worked; that content now lives in
+/// WarRoomView.swift, properly designed.
 struct ContentView: View {
-    @StateObject private var backend = BackendClient()
     // Keychain-backed (2026-08-12), not @AppStorage/UserDefaults --
     // loaded once here since Keychain reads are synchronous and cheap;
     // updated explicitly in tokenEntryView's Connect button rather than
     // relying on a property wrapper to persist it automatically.
     @State private var storedToken: String = KeychainTokenStore.load() ?? ""
     @State private var tokenInput = ""
-    @State private var inputText = ""
 
     var body: some View {
         if storedToken.isEmpty {
             tokenEntryView
         } else {
-            chatView
+            WarRoomView()
         }
     }
 
@@ -46,40 +42,6 @@ struct ContentView: View {
             .disabled(tokenInput.isEmpty)
         }
         .padding()
-    }
-
-    private var chatView: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(backend.messages) { message in
-                            HStack {
-                                if message.role == "user" { Spacer() }
-                                Text(message.content.isEmpty ? "…" : message.content)
-                                    .padding(10)
-                                    .background(message.role == "user" ? Color.blue.opacity(0.15) : Color.gray.opacity(0.12))
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                                if message.role == "assistant" { Spacer() }
-                            }
-                        }
-                    }
-                    .padding()
-                }
-                HStack {
-                    TextField("Talk to Frank...", text: $inputText)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Send") {
-                        backend.send(inputText)
-                        inputText = ""
-                    }
-                    .disabled(inputText.isEmpty)
-                }
-                .padding()
-            }
-            .navigationTitle("Frank")
-            .onAppear { backend.connect() }
-        }
     }
 }
 
