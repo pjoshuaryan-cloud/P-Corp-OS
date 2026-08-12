@@ -23,6 +23,8 @@ this change (those now only exist in Supabase). Not fixed here --
 flagged as a follow-up, not guessed at.
 """
 
+from datetime import date, timedelta
+
 from app.supabase_client import insert_row, select_rows, update_rows
 
 PROJECT_STAGES = {"briefed", "shooting", "editing", "review", "delivered", "client_revert", "final_delivered"}
@@ -122,6 +124,32 @@ async def leads_needing_followup() -> list[dict]:
                 "temperature": "in.(warm,hot)",
                 "follow_up_sent": "eq.false",
                 "order": "created_at.asc",
+            },
+        )
+    except Exception:
+        return []
+
+
+QUOTE_STALE_AFTER_DAYS = 14
+
+
+async def quotes_needing_followup(stale_after_days: int = QUOTE_STALE_AFTER_DAYS) -> list[dict]:
+    """Opportunity Radar's second signal (2026-08-10): quotes sent but
+    still sitting unanswered (`quote_status` still 'sent', never moved to
+    'accepted'/'declined') for stale_after_days+. Same 14-day default as
+    insights.py's own OUTREACH_STALE_AFTER_DAYS -- a reasonable, if
+    somewhat arbitrary, cadence; adjust if it proves too noisy or too
+    quiet once actually used. Read-only, fails soft (empty list) same
+    reasoning as leads_needing_followup()."""
+    cutoff = (date.today() - timedelta(days=stale_after_days)).isoformat()
+    try:
+        return await select_rows(
+            "leads",
+            {
+                "select": "client,quote_amount,quote_sent_date",
+                "quote_status": "eq.sent",
+                "quote_sent_date": f"lte.{cutoff}",
+                "order": "quote_sent_date.asc",
             },
         )
     except Exception:

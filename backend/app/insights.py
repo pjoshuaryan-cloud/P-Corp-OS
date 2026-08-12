@@ -19,10 +19,10 @@ a task due next month isn't an "insight," it's just backlog.
 
 Opportunity Radar (2026-08-10, from the additive feature spec) folded in
 here rather than becoming its own card: Joshua confirmed "extend the
-existing Insights mechanism" over a new UI surface, and its one signal
+existing Insights mechanism" over a new UI surface, and its signals
 (warm/hot leads in the real Alpha Mode `leads` table with no follow-up
-sent) is the same deterministic, data-already-exists shape as everything
-else in this file.
+sent; quotes sent but sitting unanswered) are the same deterministic,
+data-already-exists shape as everything else in this file.
 """
 
 from datetime import date, timedelta
@@ -31,7 +31,7 @@ import aiosqlite
 
 from app.alpha_mode_db import DB_PATH as ALPHA_MODE_DB_PATH
 from app.alpha_mode_db import clients_needing_outreach
-from app.alpha_mode_supabase import leads_needing_followup
+from app.alpha_mode_supabase import leads_needing_followup, quotes_needing_followup
 from app.operations_db import DB_PATH as OPERATIONS_DB_PATH
 
 HORIZON_DAYS = 7
@@ -140,6 +140,31 @@ async def _leads_needing_followup() -> list[dict]:
     return insights
 
 
+async def _quotes_needing_followup() -> list[dict]:
+    # Opportunity Radar's second signal (2026-08-10): quotes sent but
+    # sitting unanswered for 14+ days -- same extend-not-duplicate
+    # reasoning as the leads signal above.
+    quotes = await quotes_needing_followup()
+    insights = []
+    for quote in quotes:
+        amount = quote.get("quote_amount")
+        detail = (
+            f"{quote['client']} — R{amount:,.2f} quote, sent {quote['quote_sent_date']}"
+            if amount
+            else f"{quote['client']} — quote sent {quote['quote_sent_date']}"
+        )
+        insights.append(
+            {
+                "title": "Quote awaiting response",
+                "detail": detail,
+                "target_nav_title": "War Room",
+                "icon": "hourglass",
+                "priority": 1,
+            }
+        )
+    return insights
+
+
 async def compute_insights(limit: int = 5) -> list[dict]:
     today = date.today().isoformat()
     horizon = (date.today() + timedelta(days=HORIZON_DAYS)).isoformat()
@@ -148,7 +173,8 @@ async def compute_insights(limit: int = 5) -> list[dict]:
     invoices = await _overdue_and_upcoming_invoices(today, horizon)
     outreach = await _clients_needing_outreach()
     leads = await _leads_needing_followup()
+    quotes = await _quotes_needing_followup()
 
-    combined = tasks + invoices + outreach + leads
+    combined = tasks + invoices + outreach + leads + quotes
     combined.sort(key=lambda item: (item["priority"], item["detail"]))
     return combined[:limit]
