@@ -1,15 +1,20 @@
 import SwiftUI
 
 /// The first section beyond War Room with real, interactive content instead
-/// of a placeholder — toggles actually flip and hold state. Nothing here is
-/// wired to a backend or persisted anywhere (except dark mode, which is
-/// deliberately real — it drives AppTheme app-wide via @AppStorage, not a
-/// no-op switch). Still Phase 2 (buttons work, navigation works, still no
-/// intelligence), not Phase 3+.
+/// of a placeholder — toggles actually flip and hold state. Two are real,
+/// persisted via @AppStorage: dark mode (drives AppTheme app-wide) and
+/// Show System Status (2026-08-10, drives Sidebar's status block). The
+/// rest (Proactive Insights, Sound Effects) are still no-ops. Still
+/// Phase 2 (buttons work, navigation works, still no intelligence), not
+/// Phase 3+.
 struct SettingsView: View {
     @State private var proactiveInsights = true
     @State private var soundEffects = false
-    @State private var showSystemStatus = true
+
+    // Real now (2026-08-10) -- same @AppStorage pattern as darkModeEnabled
+    // below, so Sidebar.swift can read the same key directly rather than
+    // this view owning state Sidebar has no access to.
+    @AppStorage(AppStorageKeys.showSystemStatus) private var showSystemStatus = true
 
     // Real now (SMAppService packaging, stage 3) — was a stubbed @State that
     // did nothing. Reads actual registration status on appear rather than a

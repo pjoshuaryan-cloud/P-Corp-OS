@@ -62,4 +62,5 @@ extension EnvironmentValues {
 /// automatically via @AppStorage, without a separate observable object.
 enum AppStorageKeys {
     static let darkModeEnabled = "darkModeEnabled"
+    static let showSystemStatus = "showSystemStatus"
 }

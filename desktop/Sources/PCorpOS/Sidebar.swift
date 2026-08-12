@@ -4,6 +4,10 @@ struct Sidebar: View {
     @Binding var selectedID: UUID?
     @Environment(\.appTheme) private var theme
     @Namespace private var selectionNamespace
+    // Real (2026-08-10) -- same key Settings' "Show System Status" toggle
+    // writes to, so flipping it there takes effect here without any
+    // shared state object, same @AppStorage pattern as dark mode.
+    @AppStorage(AppStorageKeys.showSystemStatus) private var showSystemStatus = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -43,21 +47,23 @@ struct Sidebar: View {
 
             Spacer(minLength: 24)
 
-            Divider()
-            VStack(alignment: .leading, spacing: 6) {
-                Text("SYSTEM STATUS")
-                    .font(PCorpFont.label(9.5))
-                    .trackedLabel(1.8)
-                    .foregroundStyle(theme.textSecondary)
-                HStack(spacing: 7) {
-                    Circle().fill(Color.green).frame(width: 7, height: 7)
-                    Text("All Systems Operational")
-                        .font(PCorpFont.body(12.5))
-                        .foregroundStyle(theme.textPrimary)
+            if showSystemStatus {
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("SYSTEM STATUS")
+                        .font(PCorpFont.label(9.5))
+                        .trackedLabel(1.8)
+                        .foregroundStyle(theme.textSecondary)
+                    HStack(spacing: 7) {
+                        Circle().fill(Color.green).frame(width: 7, height: 7)
+                        Text("All Systems Operational")
+                            .font(PCorpFont.body(12.5))
+                            .foregroundStyle(theme.textPrimary)
+                    }
                 }
+                .padding(.horizontal, 22)
+                .padding(.vertical, 24)
             }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 24)
         }
         .frame(minWidth: 220, idealWidth: 240)
         .background(.ultraThinMaterial)
