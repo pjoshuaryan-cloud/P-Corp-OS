@@ -9,7 +9,11 @@ import PCorpKit
 /// proves out, not part of proving the plumbing works.
 struct ContentView: View {
     @StateObject private var backend = BackendClient()
-    @AppStorage("backendAuthToken") private var storedToken = ""
+    // Keychain-backed (2026-08-12), not @AppStorage/UserDefaults --
+    // loaded once here since Keychain reads are synchronous and cheap;
+    // updated explicitly in tokenEntryView's Connect button rather than
+    // relying on a property wrapper to persist it automatically.
+    @State private var storedToken: String = KeychainTokenStore.load() ?? ""
     @State private var tokenInput = ""
     @State private var inputText = ""
 
@@ -34,7 +38,9 @@ struct ContentView: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
             Button("Connect") {
-                storedToken = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmed = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                KeychainTokenStore.save(trimmed)
+                storedToken = trimmed
             }
             .buttonStyle(.borderedProminent)
             .disabled(tokenInput.isEmpty)
