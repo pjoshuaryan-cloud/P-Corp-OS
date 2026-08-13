@@ -42,6 +42,20 @@ import PhotosUI
 /// an AVAudioSession activation) and PhotosPicker (SwiftUI's own iOS photo
 /// picker, replacing desktop's NSOpenPanel) -- same mic/paperclip buttons,
 /// same push-to-talk and attached-image-chip behavior, same styling.
+///
+/// Update (2026-08-13): real bug found live -- "Frank doesn't respond."
+/// Root cause confirmed server-side first (backend/data/pcorp.db showed a
+/// real, correctly-generated reply sitting there that never reached the
+/// phone): BackendClient.connect() (PCorpKit) only ever opens a socket
+/// once and guards against reopening it (`task == nil`), which is exactly
+/// right for desktop -- a Mac app is never suspended -- but wrong for
+/// iOS, where the OS suspends network activity whenever the phone locks
+/// or the app backgrounds, leaving `task` non-nil but silently dead.
+/// Fixed with a scenePhase watcher, scoped to iOS only rather than
+/// touching PCorpKit's shared connect() logic: returning to `.active`
+/// force-reconnects (disconnect() clears the stale task, then connect()
+/// opens a fresh one and reloads history so nothing sent while
+/// disconnected is lost from view).
 struct WarRoomView: View {
     @StateObject private var backend = BackendClient()
     @StateObject private var focusClient = FocusClient()
@@ -55,6 +69,7 @@ struct WarRoomView: View {
     @State private var attachedImagePreview: UIImage?
     @FocusState private var isInputFocused: Bool
     @Environment(\.appTheme) private var theme
+    @Environment(\.scenePhase) private var scenePhase
 
     private var greeting: String {
         switch Calendar.current.component(.hour, from: .now) {
@@ -87,6 +102,11 @@ struct WarRoomView: View {
             await focusClient.fetch()
             await insightsClient.fetch()
             await situationRoomClient.fetch()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            backend.disconnect()
+            backend.connect()
         }
         .onChange(of: photoPickerItem) { _, newItem in
             guard let newItem else { return }
