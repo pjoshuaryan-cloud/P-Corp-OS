@@ -59,6 +59,8 @@ struct RootView: View {
                         SettingsView()
                     case "Automations":
                         AutomationsView()
+                    case "Agents":
+                        AgentsView()
                     default:
                         SectionPlaceholderView(item: selectedItem)
                     }
