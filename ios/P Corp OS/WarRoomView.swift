@@ -121,12 +121,6 @@ struct WarRoomView: View {
                 }
             }
         }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") { isInputFocused = false }
-            }
-        }
     }
 
     private func attachedImageChip(_ preview: UIImage) -> some View {
@@ -169,6 +163,8 @@ struct WarRoomView: View {
             }
         }
         .padding(16)
+        .contentShape(Rectangle())
+        .onTapGesture { isInputFocused = false }
     }
 
     private var missionStatusCard: some View {

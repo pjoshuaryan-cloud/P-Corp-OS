@@ -13,12 +13,13 @@ struct ContentView: View {
     // relying on a property wrapper to persist it automatically.
     @State private var storedToken: String = KeychainTokenStore.load() ?? ""
     @State private var tokenInput = ""
-    // Desktop's AppTheme is picked from a manual Settings toggle;
-    // there's no Settings screen on iOS yet to put one in (see
-    // WarRoomView.swift's docstring), so this follows the system's own
-    // current appearance instead -- the best available signal absent a
-    // real toggle, not a guess.
-    @Environment(\.colorScheme) private var colorScheme
+    // Real now (2026-08-13), resolving a flagged deviation from the
+    // earlier visual-matching pass: desktop picks AppTheme from a manual
+    // Settings toggle, not the system appearance, but there was no
+    // Settings screen on iOS yet to host one, so this fell back to
+    // following colorScheme instead. SettingsView.swift now exists, so
+    // this reads the same @AppStorage key desktop does.
+    @AppStorage(AppStorageKeys.darkModeEnabled) private var darkModeEnabled = false
 
     var body: some View {
         Group {
@@ -28,7 +29,7 @@ struct ContentView: View {
                 RootView()
             }
         }
-        .environment(\.appTheme, colorScheme == .dark ? .dark : .light)
+        .environment(\.appTheme, darkModeEnabled ? .dark : .light)
     }
 
     // No exact desktop equivalent -- desktop reads its token from a
@@ -39,10 +40,10 @@ struct ContentView: View {
         VStack(spacing: 16) {
             Text("Connect to Frank")
                 .font(PCorpFont.display(20))
-                .foregroundStyle(colorScheme == .dark ? AppTheme.dark.textPrimary : AppTheme.light.textPrimary)
+                .foregroundStyle(darkModeEnabled ? AppTheme.dark.textPrimary : AppTheme.light.textPrimary)
             Text("Paste the auth token from your Mac's backend/data/auth_token file.")
                 .font(PCorpFont.body(13))
-                .foregroundStyle(colorScheme == .dark ? AppTheme.dark.textSecondary : AppTheme.light.textSecondary)
+                .foregroundStyle(darkModeEnabled ? AppTheme.dark.textSecondary : AppTheme.light.textSecondary)
                 .multilineTextAlignment(.center)
             TextField("Auth token", text: $tokenInput)
                 .textFieldStyle(.roundedBorder)

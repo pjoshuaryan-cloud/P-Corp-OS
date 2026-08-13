@@ -35,7 +35,13 @@ public struct AppTheme {
 
     public static let dark = AppTheme(
         background: Color(white: 0.07),
-        surface: Color(white: 0.12),
+        // Bumped from a flat Color(white: 0.12) (2026-08-13) — too close to
+        // background's 0.07 to read as a distinct elevated panel once the
+        // .regularMaterial/.ultraThinMaterial blur is layered on top; cards
+        // and the input bar read as plain dark grey slabs instead of
+        // elevated surfaces. A touch of warmth (not pure neutral grey)
+        // reads as richer than just raising the white value alone.
+        surface: Color(red: 0.165, green: 0.155, blue: 0.175),
         surfaceBorder: Color.white.opacity(0.09),
         textPrimary: .white,
         textSecondary: Color.white.opacity(0.6),
