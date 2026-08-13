@@ -57,6 +57,8 @@ struct RootView: View {
                         FrankView()
                     case "Settings":
                         SettingsView()
+                    case "Automations":
+                        AutomationsView()
                     default:
                         SectionPlaceholderView(item: selectedItem)
                     }
