@@ -61,6 +61,8 @@ struct RootView: View {
                         AutomationsView()
                     case "Agents":
                         AgentsView()
+                    case "Knowledge":
+                        KnowledgeView()
                     default:
                         SectionPlaceholderView(item: selectedItem)
                     }

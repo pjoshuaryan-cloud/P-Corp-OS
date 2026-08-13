@@ -81,6 +81,7 @@ from app.creative_director_agent import (
 )
 from app.design_agent import DESIGN_AGENT_TOOL_NAMES, DESIGN_AGENT_TOOLS, execute_design_agent_tool_call
 from app.debate import DEBATE_TOOL_NAMES, DEBATE_TOOLS, execute_debate_tool_call
+from app.knowledge import list_docs as list_knowledge_docs, read_doc as read_knowledge_doc
 from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES, LEGACY_VAULT_TOOLS, execute_legacy_vault_tool_call
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
@@ -247,6 +248,22 @@ async def automations_runs(_: None = Depends(verify_token)) -> list[dict]:
     # Backs the "Automations" section's real firing history -- makes
     # automations visible when they happen, not something silent.
     return await list_automation_runs()
+
+
+@app.get("/knowledge")
+async def knowledge_list(_: None = Depends(verify_token)) -> list[dict]:
+    # Backs the iOS "Knowledge" section's doc list -- desktop reads these
+    # same files directly off local disk instead (see app/knowledge.py's
+    # docstring for why the phone needs this network path that desktop
+    # doesn't).
+    return await list_knowledge_docs()
+
+
+@app.get("/knowledge/{filename}")
+async def knowledge_content(filename: str, _: None = Depends(verify_token)) -> dict[str, str]:
+    # filename is validated against a fixed allowlist inside read_doc, not
+    # trusted as a free-form path -- see app/knowledge.py.
+    return {"content": await read_knowledge_doc(filename)}
 
 
 @app.get("/focus")
