@@ -27,6 +27,8 @@ struct RootView: View {
                     switch selectedItem.title {
                     case "War Room":
                         WarRoomView()
+                    case "Frank":
+                        FrankView()
                     default:
                         SectionPlaceholderView(item: selectedItem)
                     }
