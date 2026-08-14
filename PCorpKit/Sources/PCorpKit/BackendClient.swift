@@ -200,10 +200,18 @@ public final class BackendClient: ObservableObject {
     /// `messages`, which is exactly what should stay on screen.
     public func stopGenerating() {
         isStreaming = false
-        task?.cancel(with: .goingAway, reason: nil)
-        task = nil
-        isConnected = false
+        reopenSocket()
+    }
 
+    /// Shared by stopGenerating() and send()'s reconnect-on-send fallback
+    /// below -- deliberately NOT loadHistory()/startFreshConversationForLaunch(),
+    /// same reasoning as stopGenerating()'s own original comment: this fires
+    /// mid-session, not at app launch, so reloading would either erase an
+    /// in-flight partial reply (stopGenerating's case) or race the optimistic
+    /// user-message append send() is about to do (its case) against an async
+    /// history fetch that doesn't know about it yet.
+    private func reopenSocket() {
+        task?.cancel(with: .goingAway, reason: nil)
         let newTask = URLSession.shared.webSocketTask(with: wsURL)
         task = newTask
         newTask.resume()
@@ -215,6 +223,20 @@ public final class BackendClient: ObservableObject {
     /// required alongside imageData, not inferred, since the wire payload
     /// (WirePayload below) needs it for Claude's own content-block format.
     public func send(_ text: String, imageData: Data? = nil, mediaType: String? = nil) {
+        // Real bug found live (2026-08-14): if the connection had silently
+        // died since the last message -- backend restarted, network drop,
+        // anything -- `task` was nil here and this whole function was a
+        // total no-op: no message appended, no error, nothing. Exactly
+        // matched a real report ("sent a message no response") with zero
+        // visible symptom to debug from. `listen()`'s own `.failure` case
+        // already nils `task` correctly; the actual gap was never trying
+        // to reconnect before giving up, on any platform -- this isn't
+        // iOS-specific the way the scenePhase fix was, a Mac with a stale
+        // connection open when its backend restarts hits the exact same
+        // silent no-op.
+        if task == nil {
+            reopenSocket()
+        }
         guard let task else { return }
         // Decoded exactly once, here -- not in the view body (see
         // ChatMessage.image's doc comment for the real bug this fixes).
