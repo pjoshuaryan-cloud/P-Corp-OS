@@ -63,6 +63,8 @@ struct RootView: View {
                         AgentsView()
                     case "Knowledge":
                         KnowledgeView()
+                    case "Alpha Mode Media":
+                        AlphaModeDashboardView()
                     default:
                         SectionPlaceholderView(item: selectedItem)
                     }
