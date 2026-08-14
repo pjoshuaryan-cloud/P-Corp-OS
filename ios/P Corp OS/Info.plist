@@ -65,5 +65,7 @@
 	<string>Frank transcribes what you say via push-to-talk so it can be sent as a real message.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Attach a photo to a message to Frank.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Frank shows your upcoming events in the Calendar section.</string>
 </dict>
 </plist>

@@ -65,6 +65,8 @@ struct RootView: View {
                         KnowledgeView()
                     case "Alpha Mode Media":
                         AlphaModeDashboardView()
+                    case "Calendar":
+                        CalendarView()
                     default:
                         SectionPlaceholderView(item: selectedItem)
                     }
