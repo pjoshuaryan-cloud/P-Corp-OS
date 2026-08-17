@@ -94,6 +94,18 @@ AGENTS = [
         ),
         "status": "active",
     },
+    {
+        "id": "trading_division",
+        "name": "Trading Division Agent",
+        "icon": "chart.line.uptrend.xyaxis",
+        "tagline": "Backtest, walk-forward, and Monte Carlo results -- read-only",
+        "detail": (
+            "Ask Frank about the trading robot's recorded backtest, walk-forward, or Monte Carlo results -- "
+            "strictly read-only reporting over its own real outputs, never a trade recommendation, never live "
+            "account access, never a change to the EA's actual code."
+        ),
+        "status": "active",
+    },
 ]
 
 

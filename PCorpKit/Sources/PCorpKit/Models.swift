@@ -172,6 +172,77 @@ public struct AlphaModeDashboard: Decodable {
     public let leads: [AlphaModeLead]
 }
 
+/// A backtest or walk-forward run from the trading robot's own real
+/// results database (research.sqlite, a completely separate repo -- see
+/// backend/app/trading_division.py's docstring for the read-only
+/// boundary). Both run types share the same shape, differentiated only
+/// by which GET /trading-division/dashboard array they arrive in.
+public struct TradingDivisionRun: Identifiable, Decodable {
+    public let id = UUID()
+    public let runId: Int
+    public let symbol: String?
+    public let entryTimeframe: String?
+    public let startAt: String?
+    public let endAt: String?
+    public let createdAt: String
+    public let totalTrades: Int?
+    public let winRatePct: Double?
+    public let profitFactor: Double?
+    public let maxDrawdownPct: Double?
+    public let totalPnl: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case runId = "run_id"
+        case symbol
+        case entryTimeframe = "entry_timeframe"
+        case startAt = "start_at"
+        case endAt = "end_at"
+        case createdAt = "created_at"
+        case totalTrades = "total_trades"
+        case winRatePct = "win_rate_pct"
+        case profitFactor = "profit_factor"
+        case maxDrawdownPct = "max_drawdown_pct"
+        case totalPnl = "total_pnl"
+    }
+}
+
+public struct TradingDivisionMonteCarloRun: Identifiable, Decodable {
+    public let id = UUID()
+    public let runId: Int
+    public let createdAt: String
+    public let numSimulations: Int
+    public let probabilityOfRuinPct: Double
+    public let finalBalanceP5: Double?
+    public let finalBalanceP50: Double?
+    public let finalBalanceP95: Double?
+    public let maxDrawdownP50: Double?
+    public let maxDrawdownP95: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case runId = "run_id"
+        case createdAt = "created_at"
+        case numSimulations = "num_simulations"
+        case probabilityOfRuinPct = "probability_of_ruin_pct"
+        case finalBalanceP5 = "final_balance_p5"
+        case finalBalanceP50 = "final_balance_p50"
+        case finalBalanceP95 = "final_balance_p95"
+        case maxDrawdownP50 = "max_drawdown_p50"
+        case maxDrawdownP95 = "max_drawdown_p95"
+    }
+}
+
+public struct TradingDivisionDashboard: Decodable {
+    public let backtests: [TradingDivisionRun]
+    public let walkforwardRuns: [TradingDivisionRun]
+    public let montecarloRuns: [TradingDivisionMonteCarloRun]
+
+    enum CodingKeys: String, CodingKey {
+        case backtests
+        case walkforwardRuns = "walkforward_runs"
+        case montecarloRuns = "montecarlo_runs"
+    }
+}
+
 /// Mirrors backend/app/db.py's get_focus_objective() -- the War Room's
 /// Mission Status "Focus: ..." line, fetched from GET /focus. Both
 /// fields are nullable: no objective set yet is a real, honest state,

@@ -31,6 +31,8 @@ struct ContentView: View {
                     FrankView()
                 case "Alpha Mode Media":
                     AlphaModeDashboardView()
+                case "Trading Division":
+                    TradingDivisionView()
                 case "Calendar":
                     CalendarView()
                 case "Knowledge":

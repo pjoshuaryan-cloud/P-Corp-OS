@@ -82,6 +82,12 @@ from app.creative_director_agent import (
 from app.design_agent import DESIGN_AGENT_TOOL_NAMES, DESIGN_AGENT_TOOLS, execute_design_agent_tool_call
 from app.debate import DEBATE_TOOL_NAMES, DEBATE_TOOLS, execute_debate_tool_call
 from app.knowledge import list_docs as list_knowledge_docs, read_doc as read_knowledge_doc
+from app.trading_division import dashboard_snapshot as trading_division_dashboard_snapshot
+from app.trading_division_agent import (
+    TRADING_DIVISION_AGENT_TOOL_NAMES,
+    TRADING_DIVISION_AGENT_TOOLS,
+    execute_trading_division_agent_tool_call,
+)
 from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES, LEGACY_VAULT_TOOLS, execute_legacy_vault_tool_call
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
@@ -264,6 +270,13 @@ async def knowledge_content(filename: str, _: None = Depends(verify_token)) -> d
     # filename is validated against a fixed allowlist inside read_doc, not
     # trusted as a free-form path -- see app/knowledge.py.
     return {"content": await read_knowledge_doc(filename)}
+
+
+@app.get("/trading-division/dashboard")
+async def trading_division_dashboard(_: None = Depends(verify_token)) -> dict:
+    # Backs the desktop "Trading Division" section -- read-only, see
+    # app/trading_division.py's own docstring for the full boundary.
+    return await trading_division_dashboard_snapshot()
 
 
 @app.get("/focus")
@@ -530,6 +543,7 @@ async def run_claude_turn(
                 *COMMUNICATIONS_AGENT_TOOLS,
                 *MEMORY_AGENT_TOOLS,
                 *RESEARCH_AGENT_TOOLS,
+                *TRADING_DIVISION_AGENT_TOOLS,
             ],
         ) as stream:
             async for text in stream.text_stream:
@@ -605,6 +619,12 @@ async def run_claude_turn(
                 assistant_text += result
             elif block.name in RESEARCH_AGENT_TOOL_NAMES:
                 result = await execute_research_agent_tool_call(block.name, block.input, client, websocket)
+                # Same reasoning as consult_operations_agent above --
+                # already streamed live, needs to land in the persisted
+                # transcript too.
+                assistant_text += result
+            elif block.name in TRADING_DIVISION_AGENT_TOOL_NAMES:
+                result = await execute_trading_division_agent_tool_call(block.name, block.input, client, websocket)
                 # Same reasoning as consult_operations_agent above --
                 # already streamed live, needs to land in the persisted
                 # transcript too.
