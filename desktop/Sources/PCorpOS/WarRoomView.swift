@@ -161,6 +161,14 @@ struct WarRoomView: View {
                     .frame(maxWidth: .infinity)
 
                 Spacer(minLength: 20)
+
+                // Stats row sits below Frank himself, not competing with
+                // him — "Frank > Mission > Intelligence > Navigation" per
+                // the brief's own stated hierarchy (item 21).
+                WarRoomCommandMap()
+                    .padding(.horizontal, 48)
+
+                Spacer(minLength: 20)
             } else {
                 ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
