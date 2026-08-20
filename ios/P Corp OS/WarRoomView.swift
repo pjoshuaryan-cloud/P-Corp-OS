@@ -189,6 +189,13 @@ struct WarRoomView: View {
             Text("\(greeting), Joshx.")
                 .font(PCorpFont.body(13, weight: .semibold))
                 .foregroundStyle(theme.textPrimary)
+            // Ported from desktop's own WarRoomCommandMap.swift
+            // (2026-08-20, Face-Lift iOS parity pass) -- desktop places
+            // this below Frank's orb, which iOS's dashboard-cards-always-
+            // visible layout doesn't have in this spot; placing it right
+            // after the greeting, before the cards, is the closest honest
+            // analog -- quiet ambient info ahead of the actionable cards.
+            WarRoomCommandMap()
             missionStatusCard
             if !insightsClient.insights.isEmpty {
                 insightsCard
