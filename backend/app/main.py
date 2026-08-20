@@ -82,6 +82,8 @@ from app.creative_director_agent import (
 from app.design_agent import DESIGN_AGENT_TOOL_NAMES, DESIGN_AGENT_TOOLS, execute_design_agent_tool_call
 from app.debate import DEBATE_TOOL_NAMES, DEBATE_TOOLS, execute_debate_tool_call
 from app.knowledge import list_docs as list_knowledge_docs, read_doc as read_knowledge_doc
+from app.personal_db import dashboard_snapshot as personal_dashboard_snapshot, init_personal_db
+from app.personal_tools import PERSONAL_TOOL_NAMES, PERSONAL_TOOLS, build_personal_block, execute_personal_tool_call
 from app.trading_division import dashboard_snapshot as trading_division_dashboard_snapshot
 from app.trading_division_agent import (
     TRADING_DIVISION_AGENT_TOOL_NAMES,
@@ -181,6 +183,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     await init_alpha_mode_db()
     await init_operations_db()
+    await init_personal_db()
     await init_automations_db()
     await init_audit_db()
     # A single reused httpx client, not one per /speak call — real bug
@@ -277,6 +280,13 @@ async def trading_division_dashboard(_: None = Depends(verify_token)) -> dict:
     # Backs the desktop "Trading Division" section -- read-only, see
     # app/trading_division.py's own docstring for the full boundary.
     return await trading_division_dashboard_snapshot()
+
+
+@app.get("/personal/dashboard")
+async def personal_dashboard(_: None = Depends(verify_token)) -> dict:
+    # Backs the desktop "Personal" section -- goals/habits only, see
+    # app/personal_db.py's own docstring for scope.
+    return await personal_dashboard_snapshot()
 
 
 @app.get("/focus")
@@ -465,7 +475,11 @@ async def websocket_chat(websocket: WebSocket) -> None:
             await save_message(conversation_id, "user", user_text, image_path=image_path)
 
             system_prompt = (
-                SYSTEM_PROMPT + await build_memory_block() + await build_alpha_mode_block() + await build_operations_block()
+                SYSTEM_PROMPT
+                + await build_memory_block()
+                + await build_alpha_mode_block()
+                + await build_operations_block()
+                + await build_personal_block()
             )
 
             try:
@@ -544,6 +558,7 @@ async def run_claude_turn(
                 *MEMORY_AGENT_TOOLS,
                 *RESEARCH_AGENT_TOOLS,
                 *TRADING_DIVISION_AGENT_TOOLS,
+                *PERSONAL_TOOLS,
             ],
         ) as stream:
             async for text in stream.text_stream:
@@ -629,6 +644,8 @@ async def run_claude_turn(
                 # already streamed live, needs to land in the persisted
                 # transcript too.
                 assistant_text += result
+            elif block.name in PERSONAL_TOOL_NAMES:
+                result = await execute_personal_tool_call(block.name, block.input)
             else:
                 result = await execute_tool_call(block.name, block.input)
             # Real audit trail (2026-08-10, SECURITY.md's flagged gap) --

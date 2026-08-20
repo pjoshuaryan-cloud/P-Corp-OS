@@ -33,6 +33,8 @@ struct ContentView: View {
                     AlphaModeDashboardView()
                 case "Trading Division":
                     TradingDivisionView()
+                case "Personal":
+                    PersonalView()
                 case "Calendar":
                     CalendarView()
                 case "Knowledge":

@@ -243,6 +243,42 @@ public struct TradingDivisionDashboard: Decodable {
     }
 }
 
+/// A personal goal (backend/app/personal_db.py) -- deliberately narrow
+/// scope (goals/habits only, no marriage/health/family), see that
+/// file's own docstring for why.
+public struct PersonalGoal: Identifiable, Decodable {
+    public let id: Int
+    public let title: String
+    public let status: String
+    public let targetDate: String?
+    public let notes: String?
+    public let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, status, notes
+        case targetDate = "target_date"
+        case createdAt = "created_at"
+    }
+}
+
+public struct PersonalHabit: Identifiable, Decodable {
+    public let id: Int
+    public let title: String
+    public let cadence: String?
+    public let notes: String?
+    public let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, cadence, notes
+        case createdAt = "created_at"
+    }
+}
+
+public struct PersonalDashboard: Decodable {
+    public let goals: [PersonalGoal]
+    public let habits: [PersonalHabit]
+}
+
 /// Mirrors backend/app/db.py's get_focus_objective() -- the War Room's
 /// Mission Status "Focus: ..." line, fetched from GET /focus. Both
 /// fields are nullable: no objective set yet is a real, honest state,
