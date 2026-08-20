@@ -19,6 +19,16 @@ public enum PCorpFont {
     public static func label(_ size: CGFloat = 10.5) -> Font {
         .system(size: size, weight: .semibold, design: .rounded)
     }
+
+    /// "Machine information" typographic register (2026-08-20) — system
+    /// telemetry, status text, counts. Deliberately distinct from the
+    /// rounded design used everywhere else: the Face-Lift brief's own
+    /// distinction between "human information" (large, rounded, warm) and
+    /// "machine information" (technical, monospaced). Only the new
+    /// system-status header uses this so far — not retrofitted elsewhere.
+    public static func mono(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
+        .system(size: size, weight: weight, design: .monospaced)
+    }
 }
 
 extension View {

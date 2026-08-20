@@ -14,6 +14,16 @@ struct ContentView: View {
     // transparent, fades to full opacity right on appear.
     @State private var hasAppeared = false
     @State private var keyMonitor: Any?
+    // Lifted here from WarRoomView (2026-08-20, SystemStatusHeader) so the
+    // new status strip can read real connection/streaming/alert state
+    // across all 11 sections, not just while War Room happens to be
+    // selected. Real side benefit, not just a side effect: the connection
+    // now survives navigating away from and back to War Room, instead of
+    // tearing down and reconnecting every time `.id(selectedItem.id)`
+    // recreates WarRoomView.
+    @StateObject private var backend = BackendClient()
+    @StateObject private var situationRoom = SituationRoomClient()
+    @State private var situationRoomPollTask: Task<Void, Never>?
 
     private var selectedItem: NavItem {
         PlaceholderData.navItems.first { $0.id == selectedID } ?? PlaceholderData.navItems[0]
@@ -23,10 +33,14 @@ struct ContentView: View {
         HStack(spacing: 0) {
             Sidebar(selectedID: $selectedID)
 
+            VStack(spacing: 0) {
+                SystemStatusHeader(backend: backend, situationRoom: situationRoom)
+
+                HStack(spacing: 0) {
             Group {
                 switch selectedItem.title {
                 case "War Room":
-                    WarRoomView()
+                    WarRoomView(backend: backend, situationRoom: situationRoom)
                 case "Frank":
                     FrankView()
                 case "Alpha Mode Media":
@@ -55,6 +69,8 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             RightRail(selectedID: $selectedID)
+                }
+            }
         }
         .frame(minWidth: 1100, minHeight: 700)
         .opacity(hasAppeared ? 1 : 0)
@@ -63,6 +79,8 @@ struct ContentView: View {
                 hasAppeared = true
             }
             installKeyboardShortcutsIfNeeded()
+            backend.connect()
+            startSituationRoomPolling()
 
             // This is a raw, unbundled executable (built via `swift build`,
             // not a proper Xcode-built .app) — diagnosed and confirmed that
@@ -95,6 +113,24 @@ struct ContentView: View {
             if let monitor = keyMonitor {
                 NSEvent.removeMonitor(monitor)
                 keyMonitor = nil
+            }
+            situationRoomPollTask?.cancel()
+            situationRoomPollTask = nil
+        }
+    }
+
+    /// Moved here from WarRoomView's own `.task` (2026-08-20) -- same 30s-
+    /// poll reasoning as InsightsCard (RightRail.swift): this view persists
+    /// across the whole session now, so a one-shot fetch would only ever
+    /// reflect whatever was true at launch. Started from `.onAppear` rather
+    /// than a `.task` modifier since it now needs to keep running across
+    /// section navigation, not just while a single subview is on screen.
+    private func startSituationRoomPolling() {
+        guard situationRoomPollTask == nil else { return }
+        situationRoomPollTask = Task {
+            while !Task.isCancelled {
+                await situationRoom.fetch()
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
         }
     }

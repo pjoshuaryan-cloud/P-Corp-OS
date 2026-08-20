@@ -1,6 +1,26 @@
 import SwiftUI
 import PCorpKit
 
+/// One named group in the sidebar's nav list -- pure display grouping,
+/// resolved back against PlaceholderData.navItems by title. Deliberately
+/// NOT a change to NavItem/PlaceholderData.navItems itself: ContentView's
+/// Cmd+1-9 shortcuts index into that array by position and its switch
+/// routes by title, so the underlying array stays exactly as it was,
+/// same order, same 11 elements -- only how it's visually chunked here
+/// changes.
+private struct NavGroup {
+    let label: String
+    let itemTitles: [String]
+}
+
+private let navGroups: [NavGroup] = [
+    NavGroup(label: "CORE", itemTitles: ["War Room", "Frank"]),
+    NavGroup(label: "DIVISIONS", itemTitles: ["Alpha Mode Media", "Trading Division", "Finance"]),
+    NavGroup(label: "LIFE", itemTitles: ["Personal", "Calendar"]),
+    NavGroup(label: "INTELLIGENCE", itemTitles: ["Knowledge", "Agents", "Automations"]),
+    NavGroup(label: "SYSTEM", itemTitles: ["Settings"]),
+]
+
 struct Sidebar: View {
     @Binding var selectedID: UUID?
     @Environment(\.appTheme) private var theme
@@ -9,6 +29,15 @@ struct Sidebar: View {
     // writes to, so flipping it there takes effect here without any
     // shared state object, same @AppStorage pattern as dark mode.
     @AppStorage(AppStorageKeys.showSystemStatus) private var showSystemStatus = true
+
+    init(selectedID: Binding<UUID?>) {
+        self._selectedID = selectedID
+        #if DEBUG
+        let grouped = Set(navGroups.flatMap(\.itemTitles))
+        let actual = Set(PlaceholderData.navItems.map(\.title))
+        assert(grouped == actual, "Sidebar navGroups is out of sync with PlaceholderData.navItems: missing \(actual.subtracting(grouped)), extra \(grouped.subtracting(actual))")
+        #endif
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -34,13 +63,25 @@ struct Sidebar: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(PlaceholderData.navItems) { item in
-                        NavRow(item: item, isSelected: item.id == selectedID, namespace: selectionNamespace)
-                            .onTapGesture {
-                                withAnimation(.easeOut(duration: 0.22)) {
-                                    selectedID = item.id
+                    ForEach(Array(navGroups.enumerated()), id: \.offset) { index, group in
+                        Text(group.label)
+                            .font(PCorpFont.label(9.5))
+                            .trackedLabel(1.6)
+                            .foregroundStyle(theme.textTertiary)
+                            .padding(.horizontal, Spacing.sm)
+                            .padding(.top, index == 0 ? 0 : Spacing.lg)
+                            .padding(.bottom, Spacing.xs)
+
+                        ForEach(group.itemTitles.compactMap { title in
+                            PlaceholderData.navItems.first { $0.title == title }
+                        }) { item in
+                            NavRow(item: item, isSelected: item.id == selectedID, namespace: selectionNamespace)
+                                .onTapGesture {
+                                    withAnimation(.easeOut(duration: AnimationTiming.standard)) {
+                                        selectedID = item.id
+                                    }
                                 }
-                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 14)
@@ -66,7 +107,13 @@ struct Sidebar: View {
                 .padding(.vertical, 24)
             }
         }
-        .frame(minWidth: 220, idealWidth: 240)
+        // Explicit maxWidth added (2026-08-20): without one, this had no
+        // hard cap, and restructuring ContentView's HStack to add the new
+        // SystemStatusHeader (nesting the center content in a VStack
+        // rather than a flat 3-child HStack) changed how SwiftUI
+        // distributed extra window space -- the sidebar started growing
+        // with the window instead of staying a fixed narrow column.
+        .frame(minWidth: 220, idealWidth: 240, maxWidth: 260)
         .background(.ultraThinMaterial)
         .background(theme.surface.opacity(0.3)) // faint theme tint under the glass so it doesn't go fully neutral
     }

@@ -93,10 +93,7 @@ private struct SectionLabel: View {
 }
 
 private struct MissionStatusCard: View {
-    // Placeholder value — not wired to anything real yet.
-    private let progress: Double = 0.68
     @Environment(\.appTheme) private var theme
-    @State private var animatedProgress: Double = 0
     @StateObject private var focusClient = FocusClient()
 
     var body: some View {
@@ -114,29 +111,14 @@ private struct MissionStatusCard: View {
                 .foregroundStyle(theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(theme.textPrimary.opacity(0.1))
-                    Capsule().fill(theme.textPrimary)
-                        .frame(width: proxy.size.width * animatedProgress)
-                }
-            }
-            .frame(height: 5)
-            .onAppear {
-                withAnimation(.easeOut(duration: 0.9).delay(0.15)) {
-                    animatedProgress = progress
-                }
-            }
-
-            HStack {
-                Text("Focus: \(focusClient.objective ?? "Nothing set yet")")
-                    .font(PCorpFont.body(11))
-                    .foregroundStyle(theme.textSecondary)
-                Spacer()
-                Text("\(Int(progress * 100))%")
-                    .font(PCorpFont.body(11, weight: .semibold))
-                    .foregroundStyle(theme.textPrimary)
-            }
+            // Real progress tracking doesn't exist yet -- a hardcoded 68%
+            // bar used to sit here with nothing behind it (removed
+            // 2026-08-20, Face-Lift brief's own "never fabricate metrics"
+            // rule). Just the real Focus line remains until there's an
+            // actual mission-progress source to show.
+            Text("Focus: \(focusClient.objective ?? "Nothing set yet")")
+                .font(PCorpFont.body(11))
+                .foregroundStyle(theme.textSecondary)
         }
         .task {
             await focusClient.fetch()

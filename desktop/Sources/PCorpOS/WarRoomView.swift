@@ -15,10 +15,18 @@ struct WarRoomView: View {
     @State private var attachedImagePreview: NSImage? = nil
     @Environment(\.appTheme) private var theme
     @FocusState private var isInputFocused: Bool
-    @StateObject private var backend = BackendClient()
+    // Injected from ContentView (2026-08-20) rather than owned here --
+    // SystemStatusHeader needs to read the same real connection/streaming/
+    // alert state across all 11 sections, not just while War Room is
+    // selected, so ContentView now owns the lifecycle (connect/poll) and
+    // this view just observes. Real side benefit: the connection now
+    // survives navigating away from and back to War Room, instead of
+    // tearing down and reconnecting every time `.id(selectedItem.id)`
+    // recreates this view.
+    @ObservedObject var backend: BackendClient
+    @ObservedObject var situationRoom: SituationRoomClient
     @StateObject private var voiceInput = VoiceInput()
     @StateObject private var voiceOutput = VoiceOutput()
-    @StateObject private var situationRoom = SituationRoomClient()
     /// Set true right when a push-to-talk transcript is sent, consumed
     /// once that turn's reply finishes streaming -- the mechanism for
     /// "only speak replies to voice input" (confirmed decision,
@@ -169,16 +177,9 @@ struct WarRoomView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
-        .onAppear { backend.connect() }
-        .task {
-            // Same 30s-poll reasoning as InsightsCard (RightRail.swift) --
-            // WarRoomView persists across the session, so a one-shot
-            // fetch would only ever reflect whatever was true at launch.
-            while !Task.isCancelled {
-                await situationRoom.fetch()
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
-            }
-        }
+        // connect()/situation-room polling now live in ContentView, which
+        // owns both clients' lifecycle (see WarRoomView's own property
+        // comments above) -- this view no longer starts either itself.
         .onChange(of: backend.isStreaming) { _, isStreaming in
             // isStreaming going true -> false is the real signal a turn
             // just completed (backend's own "\n[done]" sentinel) -- only
