@@ -23,6 +23,7 @@ struct RootView: View {
     @StateObject private var backend = BackendClient()
     @StateObject private var situationRoomClient = SituationRoomClient()
     @State private var situationRoomPollTask: Task<Void, Never>?
+    @State private var showTheBrief = false
     @Environment(\.scenePhase) private var scenePhase
     // Live drag delta, added on top of isDrawerOpen's base position while a
     // swipe is in progress -- see dragProgress/currentOffsetX below. Reset
@@ -206,7 +207,18 @@ struct RootView: View {
                 .foregroundStyle(theme.textPrimary)
                 .frame(width: 18, height: 22)
             Spacer()
-            Color.clear.frame(width: 36, height: 36)
+            Button {
+                showTheBrief = true
+            } label: {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .sheet(isPresented: $showTheBrief) {
+                TheBriefSheet()
+            }
         }
         .padding(.horizontal, 8)
         .padding(.top, 4)
