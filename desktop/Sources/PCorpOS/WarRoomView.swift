@@ -26,6 +26,12 @@ struct WarRoomView: View {
     // recreates this view.
     @ObservedObject var backend: BackendClient
     @ObservedObject var situationRoom: SituationRoomClient
+    // Own instance, separate from RightRail's InsightsCard one -- same
+    // "each view fetches its own copy" pattern already used elsewhere
+    // (AgentsView/FrankView each own their own client too), not shared
+    // state. Backs the proactive greeting below (2026-08-20, Face-Lift
+    // item 08), not a duplicate of the right rail's card.
+    @StateObject private var greetingInsightsClient = InsightsClient()
     @StateObject private var voiceInput = VoiceInput()
     @StateObject private var voiceOutput = VoiceOutput()
     /// Set true right when a push-to-talk transcript is sent, consumed
@@ -49,6 +55,27 @@ struct WarRoomView: View {
         case 12..<17: "Good afternoon"
         default: "Good evening"
         }
+    }
+
+    /// The greeting's "N things require your attention" list (2026-08-20,
+    /// Face-Lift item 08) -- real Situation Room alerts plus risk-category
+    /// Insights, the same two sources `app/brief.py`'s "What Matters"
+    /// section already combines, just fetched independently here rather
+    /// than through GET /brief (which has a real side effect -- it marks
+    /// the Brief as viewed -- that this greeting must never trigger).
+    /// Both sources carry a real `targetNavTitle`, used as the label here.
+    fileprivate struct AttentionItem: Identifiable {
+        let id = UUID()
+        let label: String
+        let detail: String
+    }
+
+    private var attentionItems: [AttentionItem] {
+        let urgent = situationRoom.alerts.map { AttentionItem(label: $0.targetNavTitle.uppercased(), detail: $0.detail) }
+        let risks = greetingInsightsClient.insights
+            .filter { $0.category == "risk" }
+            .map { AttentionItem(label: $0.targetNavTitle.uppercased(), detail: $0.detail) }
+        return urgent + risks
     }
 
     var body: some View {
@@ -144,9 +171,30 @@ struct WarRoomView: View {
                     Text("\(timeOfDayGreeting(at: currentDate)), Joshx.")
                         .font(PCorpFont.display(38, weight: .bold))
                         .foregroundStyle(theme.textPrimary)
-                    Text("I'm Frank. How can I help you today?")
-                        .font(PCorpFont.body(17))
-                        .foregroundStyle(theme.textSecondary)
+
+                    // Real, dynamic summary (2026-08-20, Face-Lift item 08)
+                    // -- replaces the old static "I'm Frank. How can I
+                    // help you today?" line. Only ever reflects
+                    // attentionItems (real Situation Room + risk Insights
+                    // data, above) -- an honest "day is clear" is a real,
+                    // expected state, not an error or something to hide.
+                    if attentionItems.isEmpty {
+                        Text("Nothing requires immediate attention. Your day is clear.")
+                            .font(PCorpFont.body(17))
+                            .foregroundStyle(theme.textSecondary)
+                    } else {
+                        Text("\(attentionItems.count) THING\(attentionItems.count == 1 ? "" : "S") REQUIRE\(attentionItems.count == 1 ? "S" : "") YOUR ATTENTION.")
+                            .font(PCorpFont.label(11))
+                            .trackedLabel(1.2)
+                            .foregroundStyle(theme.textSecondary)
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(Array(attentionItems.prefix(3).enumerated()), id: \.offset) { index, item in
+                                AttentionRow(number: index + 1, item: item)
+                            }
+                        }
+                        .padding(.top, 4)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 48)
@@ -190,6 +238,14 @@ struct WarRoomView: View {
         // connect()/situation-room polling now live in ContentView, which
         // owns both clients' lifecycle (see WarRoomView's own property
         // comments above) -- this view no longer starts either itself.
+        .task {
+            // Same 30s-poll reasoning as RightRail's InsightsCard --
+            // genuinely proactive shouldn't require a manual refresh.
+            while !Task.isCancelled {
+                await greetingInsightsClient.fetch()
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            }
+        }
         .onChange(of: backend.isStreaming) { _, isStreaming in
             // isStreaming going true -> false is the real signal a turn
             // just completed (backend's own "\n[done]" sentinel) -- only
@@ -789,6 +845,33 @@ private struct ChatBubble: View {
 /// no honest, distinct signal for either state without changing *when*
 /// this component appears — a War Room layout decision the brief's own
 /// item 18 explicitly defers, not something to fold in unilaterally here.
+/// One numbered row in the proactive greeting's attention list (2026-08-20,
+/// Face-Lift item 08) -- "01 / LABEL / detail," matching the brief's own
+/// example layout. `number` is a real 1-based position, not decoration.
+private struct AttentionRow: View {
+    let number: Int
+    let item: WarRoomView.AttentionItem
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(String(format: "%02d", number))
+                .font(PCorpFont.mono(12))
+                .foregroundStyle(theme.textTertiary)
+                .frame(width: 20, alignment: .leading)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.label)
+                    .font(PCorpFont.label(10))
+                    .trackedLabel(1.0)
+                    .foregroundStyle(theme.textPrimary)
+                Text(item.detail)
+                    .font(PCorpFont.body(13))
+                    .foregroundStyle(theme.textSecondary)
+            }
+        }
+    }
+}
+
 private struct FrankOrb: View {
     enum OrbState: Equatable {
         case idle

@@ -36,15 +36,19 @@ RECENT_CALLS_LIMIT = 50
 
 
 def _normalize_situation_alert(alert: dict) -> dict:
-    # Situation Room alerts (situation_room.py) only ever carry title/
-    # detail -- no icon/category/target_nav_title, unlike Insights items.
-    # Normalized into the same shape here so the frontend deals with one
-    # consistent item type across all four sections, not two different
-    # dict shapes silently mixed into one array.
+    # Situation Room alerts (situation_room.py) do carry a real
+    # target_nav_title (corrected 2026-08-20 -- an earlier version of this
+    # function incorrectly assumed they didn't and discarded it as None;
+    # caught while building the proactive greeting, which needed this same
+    # field and found the real data was there all along). No icon/category
+    # of their own, unlike Insights items -- normalized into the same
+    # shape here so the frontend deals with one consistent item type
+    # across all four sections, not two different dict shapes silently
+    # mixed into one array.
     return {
         "title": alert["title"],
         "detail": alert["detail"],
-        "target_nav_title": None,
+        "target_nav_title": alert["target_nav_title"],
         "icon": "exclamationmark.triangle.fill",
         "priority": 0,
         "category": "risk",
