@@ -7,12 +7,46 @@ import SwiftUI
 /// is a permanent fixed column; here it's an overlay toggled by RootView's
 /// hamburger button, so selecting a row also closes the drawer (there's no
 /// room for both the drawer and content on a phone at once).
+///
+/// Grouped into CORE/DIVISIONS/LIFE/INTELLIGENCE/SYSTEM (2026-08-20,
+/// Face-Lift item 05 iOS parity pass) -- same grouping desktop's own
+/// Sidebar.swift uses, same reasoning: a pure display-layer wrapper,
+/// `NavItem.items` itself untouched (RootView's Cmd... well, iOS has no
+/// keyboard shortcuts to break, but keeping this consistent with
+/// desktop's own "don't reorder the underlying list" discipline anyway).
+/// Scoped deliberately to just this one piece of desktop's multi-round
+/// Face-Lift work -- the system-status header, FrankOrb's per-state
+/// motion, the War Room stats row, and The Brief are all real, separate,
+/// still-undone parity items, not silently dropped.
+private struct NavGroup {
+    let label: String
+    let itemTitles: [String]
+}
+
+private let navGroups: [NavGroup] = [
+    NavGroup(label: "CORE", itemTitles: ["War Room", "Frank"]),
+    NavGroup(label: "DIVISIONS", itemTitles: ["Alpha Mode Media", "Trading Division", "Finance"]),
+    NavGroup(label: "LIFE", itemTitles: ["Personal", "Calendar"]),
+    NavGroup(label: "INTELLIGENCE", itemTitles: ["Knowledge", "Agents", "Automations"]),
+    NavGroup(label: "SYSTEM", itemTitles: ["Settings"]),
+]
+
 struct Sidebar: View {
     @Binding var selectedID: UUID?
     @Binding var isOpen: Bool
     @Environment(\.appTheme) private var theme
     @Namespace private var selectionNamespace
     @AppStorage(AppStorageKeys.showSystemStatus) private var showSystemStatus = true
+
+    init(selectedID: Binding<UUID?>, isOpen: Binding<Bool>) {
+        self._selectedID = selectedID
+        self._isOpen = isOpen
+        #if DEBUG
+        let grouped = Set(navGroups.flatMap(\.itemTitles))
+        let actual = Set(NavItem.items.map(\.title))
+        assert(grouped == actual, "Sidebar navGroups is out of sync with NavItem.items: missing \(actual.subtracting(grouped)), extra \(grouped.subtracting(actual))")
+        #endif
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -32,15 +66,27 @@ struct Sidebar: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(NavItem.items) { item in
-                        NavRow(item: item, isSelected: item.id == selectedID, namespace: selectionNamespace)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                withAnimation(.easeOut(duration: 0.22)) {
-                                    selectedID = item.id
-                                    isOpen = false
+                    ForEach(Array(navGroups.enumerated()), id: \.offset) { index, group in
+                        Text(group.label)
+                            .font(PCorpFont.label(9.5))
+                            .trackedLabel(1.6)
+                            .foregroundStyle(theme.textTertiary)
+                            .padding(.horizontal, Spacing.sm)
+                            .padding(.top, index == 0 ? 0 : Spacing.lg)
+                            .padding(.bottom, Spacing.xs)
+
+                        ForEach(group.itemTitles.compactMap { title in
+                            NavItem.items.first { $0.title == title }
+                        }) { item in
+                            NavRow(item: item, isSelected: item.id == selectedID, namespace: selectionNamespace)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    withAnimation(.easeOut(duration: AnimationTiming.standard)) {
+                                        selectedID = item.id
+                                        isOpen = false
+                                    }
                                 }
-                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 14)
