@@ -71,7 +71,7 @@ struct WarRoomView: View {
                 // for, replacing the synthetic shimmer with real mic level.
                 Spacer(minLength: 0)
 
-                FrankOrb(audioLevel: voiceInput.audioLevel)
+                FrankOrb(state: .listening(audioLevel: voiceInput.audioLevel))
                     .frame(width: 185, height: 185)
                     .frame(maxWidth: .infinity)
 
@@ -91,7 +91,7 @@ struct WarRoomView: View {
                 // lost, just shown once he's done saying it.
                 Spacer(minLength: 0)
 
-                FrankOrb(audioLevel: voiceOutput.audioLevel)
+                FrankOrb(state: .speaking(audioLevel: voiceOutput.audioLevel))
                     .frame(width: 185, height: 185)
                     .frame(maxWidth: .infinity)
 
@@ -105,18 +105,20 @@ struct WarRoomView: View {
                 // Same reasoning as the voiceInput.errorMessage branch
                 // below -- ElevenLabs not being configured, or a real
                 // network failure, would otherwise look identical to
-                // Frank just staying silent.
+                // Frank just staying silent. Uses the orb's own real
+                // .error state (2026-08-20) rather than an unrelated
+                // waveform-slash icon -- the "restrained warning state"
+                // the Face-Lift brief asks for, not a separate UI.
                 Spacer(minLength: 0)
-                VStack(spacing: 8) {
-                    Image(systemName: "waveform.slash")
-                        .font(.system(size: 24))
-                        .foregroundStyle(theme.textSecondary)
-                    Text(voiceOutputError)
-                        .font(PCorpFont.body(13))
-                        .foregroundStyle(theme.textSecondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 400)
-                }
+                FrankOrb(state: .error)
+                    .frame(width: 185, height: 185)
+                    .frame(maxWidth: .infinity)
+                Text(voiceOutputError)
+                    .font(PCorpFont.body(13))
+                    .foregroundStyle(theme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 400)
+                    .padding(.top, 8)
                 Spacer(minLength: 20)
             } else if let voiceError = voiceInput.errorMessage {
                 // Surfaced explicitly — this was previously tracked
@@ -124,16 +126,15 @@ struct WarRoomView: View {
                 // anywhere, so a real failure (permission denied, no
                 // recognizer available) looked identical to silence.
                 Spacer(minLength: 0)
-                VStack(spacing: 8) {
-                    Image(systemName: "waveform.slash")
-                        .font(.system(size: 24))
-                        .foregroundStyle(theme.textSecondary)
-                    Text(voiceError)
-                        .font(PCorpFont.body(13))
-                        .foregroundStyle(theme.textSecondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 400)
-                }
+                FrankOrb(state: .error)
+                    .frame(width: 185, height: 185)
+                    .frame(maxWidth: .infinity)
+                Text(voiceError)
+                    .font(PCorpFont.body(13))
+                    .foregroundStyle(theme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 400)
+                    .padding(.top, 8)
                 Spacer(minLength: 20)
             } else if backend.messages.isEmpty {
                 Spacer(minLength: 0)
@@ -155,7 +156,7 @@ struct WarRoomView: View {
                 // conversation is active the thread takes this space
                 // instead. The other case where the blob shows is actively
                 // listening (above), reactive to real audio.
-                FrankOrb()
+                FrankOrb(state: .idle)
                     .frame(width: 185, height: 185)
                     .frame(maxWidth: .infinity)
 
@@ -747,16 +748,65 @@ private struct ChatBubble: View {
 /// seeded random sequence, which is simple and reliable enough to trust
 /// without a visual preview (the risk there was in reading pixels back out
 /// of a rendered image; there's no such step here).
+/// Frank's particle "Intelligence Core" (2026-08-20, Face-Lift brief item
+/// 07) -- deliberately abstract, not a glowing AI-orb cliché. Four real
+/// states, each wired to a genuinely real signal, not decoration:
+/// - `.idle`: no signal, a slow, near-imperceptible synthetic shimmer.
+/// - `.listening`: real mic RMS (VoiceInput.swift) -- particles contract
+///   toward the centre, a "gathering" posture.
+/// - `.speaking`: real TTS playback amplitude (VoiceOutput.swift) --
+///   particles pulse outward with the actual sound.
+/// - `.error`: a real capture/playback failure -- a restrained muted-
+///   orange state, replacing what used to be a plain waveform-slash icon
+///   with no relation to the orb at all.
+///
+/// The brief's other two named states, Thinking and Executing, are
+/// deliberately NOT implemented here, not stubbed with dead code either.
+/// This component isn't shown at all once a chat thread exists (the
+/// thread + typing-dots take over instead — see this file's `content`
+/// property), and tool-use happens invisibly inside the same
+/// `isStreaming` window Frank's whole reply streams through, so there's
+/// no honest, distinct signal for either state without changing *when*
+/// this component appears — a War Room layout decision the brief's own
+/// item 18 explicitly defers, not something to fold in unilaterally here.
 private struct FrankOrb: View {
-    /// Real microphone RMS level (0...1) while actively listening via
-    /// push-to-talk (VoiceInput.swift) — the TODO flagged in this file's
-    /// own comments since the very first version, now real. nil (the
-    /// default) means "no live audio," falling back to the original
-    /// synthetic time-based shimmer for the idle/greeting state.
-    var audioLevel: Double? = nil
+    enum OrbState: Equatable {
+        case idle
+        case listening(audioLevel: Double)
+        case speaking(audioLevel: Double)
+        case error
+    }
+
+    var state: OrbState = .idle
 
     @State private var floatUp = false
     @Environment(\.appTheme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var audioLevel: Double? {
+        switch state {
+        case .idle, .error: nil
+        case .listening(let level), .speaking(let level): level
+        }
+    }
+
+    /// The real "gravitational" behavior change the brief asks for,
+    /// distinct from the shimmer/opacity pulsing that already existed --
+    /// listening pulls particles in toward the centre (a fixed, steady
+    /// contraction; audio level already drives per-particle shimmer, so
+    /// this shouldn't also jitter with every RMS tick), speaking pushes
+    /// them out scaled by how loud the real audio actually is.
+    private var radiusScale: Double {
+        switch state {
+        case .idle, .error: 1.0
+        case .listening: 0.78
+        case .speaking(let level): 1.0 + level * 0.22
+        }
+    }
+
+    private var particleColor: Color {
+        state == .error ? .orange : theme.textPrimary
+    }
 
     private struct Particle {
         let angle: Double
@@ -794,34 +844,47 @@ private struct FrankOrb: View {
                 .blur(radius: 8)
                 .offset(y: 74)
 
-            TimelineView(.animation) { timeline in
+            // Paused under Reduce Motion (2026-08-20) rather than removing
+            // the component entirely -- real state changes (a state
+            // transition, a real audio level jump) still redraw normally
+            // since those come from ordinary SwiftUI view updates, not
+            // from this schedule; only the continuous idle/decorative
+            // ticking stops.
+            TimelineView(.animation(paused: reduceMotion)) { timeline in
                 Canvas { context, size in
                     let center = CGPoint(x: size.width / 2, y: size.height / 2)
                     let maxRadius = min(size.width, size.height) / 2
                     let t = timeline.date.timeIntervalSinceReferenceDate
+                    let scale = radiusScale
+                    let color = particleColor
 
                     for particle in Self.particles {
-                        let r = maxRadius * particle.radiusFactor
+                        let r = maxRadius * particle.radiusFactor * scale
                         let x = center.x + r * cos(particle.angle)
                         let y = center.y + r * sin(particle.angle)
 
                         // Per-particle shimmer, out of phase with its
                         // neighbors, so the cluster reads as alive rather
-                        // than a static scatter of dots. Synthetic time-based
-                        // wave (0.9 rad/s) for the idle state; when
-                        // `audioLevel` is real (actively listening via
-                        // push-to-talk), it dominates instead — the blob
-                        // visibly pulses with actual mic input, not an
-                        // unrelated idle animation. A smaller synthetic
-                        // component stays blended in even then, so the
-                        // cluster still reads as organic per-particle motion
-                        // rather than a flat, uniform pulse.
-                        let syntheticShimmer = (sin(t * 0.9 + particle.phaseOffset) + 1) / 2 // 0...1
+                        // than a static scatter of dots. Idle: a slower,
+                        // lower-amplitude synthetic wave than before --
+                        // "almost imperceptibly" per the brief, now that
+                        // listening/speaking carry their own real motion
+                        // instead of leaning on this same shimmer. Error:
+                        // no shimmer at all, restrained per the brief, not
+                        // an alarm. Listening/speaking: real audio level
+                        // dominates, with a small synthetic component still
+                        // blended in so the cluster keeps reading as organic
+                        // per-particle motion rather than a flat pulse.
+                        let syntheticShimmer = (sin(t * 0.5 + particle.phaseOffset) + 1) / 2 // 0...1
                         let shimmer: Double
-                        if let audioLevel {
-                            shimmer = min(1.0, syntheticShimmer * 0.3 + audioLevel * 0.9)
-                        } else {
-                            shimmer = syntheticShimmer
+                        switch state {
+                        case .error:
+                            shimmer = 0.4
+                        case .idle:
+                            shimmer = reduceMotion ? 0.5 : 0.35 + syntheticShimmer * 0.3
+                        case .listening, .speaking:
+                            let level = audioLevel ?? 0
+                            shimmer = reduceMotion ? level : min(1.0, syntheticShimmer * 0.2 + level * 0.9)
                         }
                         // Higher floor and higher center value than before —
                         // this is the "bolder" lever: less see-through overall,
@@ -831,14 +894,15 @@ private struct FrankOrb: View {
                         let dotSize = particle.size * (0.85 + shimmer * 0.15)
 
                         let rect = CGRect(x: x - dotSize / 2, y: y - dotSize / 2, width: dotSize, height: dotSize)
-                        context.fill(Path(ellipseIn: rect), with: .color(theme.textPrimary.opacity(opacity)))
+                        context.fill(Path(ellipseIn: rect), with: .color(color.opacity(opacity)))
                     }
                 }
             }
-            .offset(y: floatUp ? -10 : 10)
+            .offset(y: (reduceMotion ? 0 : (floatUp ? -10 : 10)))
         }
-        .animation(.easeInOut(duration: 3.4).repeatForever(autoreverses: true), value: floatUp)
-        .onAppear { floatUp = true }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 3.4).repeatForever(autoreverses: true), value: floatUp)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.5), value: state)
+        .onAppear { if !reduceMotion { floatUp = true } }
     }
 }
 
