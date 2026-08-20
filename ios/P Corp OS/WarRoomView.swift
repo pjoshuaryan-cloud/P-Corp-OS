@@ -90,9 +90,39 @@ struct WarRoomView: View {
             if !situationRoomClient.alerts.isEmpty {
                 situationRoomBanner
             }
-            dashboardHeader
-            Divider().overlay(theme.divider)
-            ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming)
+            if voiceInput.isListening {
+                // Takes over this space the same way desktop's own
+                // listening state does -- real visual feedback (the orb,
+                // reacting to real mic level) replacing what used to be
+                // just the mic button turning red.
+                Spacer(minLength: 0)
+                FrankOrb(state: .listening(audioLevel: voiceInput.audioLevel))
+                    .frame(width: 160, height: 160)
+                    .frame(maxWidth: .infinity)
+                Text(voiceInput.transcript.isEmpty ? "Listening…" : voiceInput.transcript)
+                    .font(PCorpFont.body(14))
+                    .foregroundStyle(theme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+                    .padding(.top, 8)
+                Spacer(minLength: 0)
+            } else if let voiceError = voiceInput.errorMessage {
+                Spacer(minLength: 0)
+                FrankOrb(state: .error)
+                    .frame(width: 160, height: 160)
+                    .frame(maxWidth: .infinity)
+                Text(voiceError)
+                    .font(PCorpFont.body(13))
+                    .foregroundStyle(theme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+                    .padding(.top, 8)
+                Spacer(minLength: 0)
+            } else {
+                dashboardHeader
+                Divider().overlay(theme.divider)
+                ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming)
+            }
             if let preview = attachedImagePreview {
                 attachedImageChip(preview)
                     .padding(.horizontal, 16)
