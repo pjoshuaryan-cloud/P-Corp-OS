@@ -57,10 +57,17 @@ import PhotosUI
 /// opens a fresh one and reloads history so nothing sent while
 /// disconnected is lost from view).
 struct WarRoomView: View {
-    @StateObject private var backend = BackendClient()
+    // Injected from RootView (2026-08-20, SystemStatusHeader parity pass)
+    // rather than owned here -- same move already made on desktop's
+    // WarRoomView.swift, for the same reason: the header needs to read
+    // this same real state across every section, not just War Room, and
+    // the connection now survives navigating away from and back instead
+    // of tearing down and reconnecting every time `.id(selectedItem.id)`
+    // recreates this view.
+    @ObservedObject var backend: BackendClient
+    @ObservedObject var situationRoomClient: SituationRoomClient
     @StateObject private var focusClient = FocusClient()
     @StateObject private var insightsClient = InsightsClient()
-    @StateObject private var situationRoomClient = SituationRoomClient()
     @StateObject private var voiceInput = VoiceInput()
     @State private var inputText = ""
     @State private var photoPickerItem: PhotosPickerItem?
@@ -69,7 +76,6 @@ struct WarRoomView: View {
     @State private var attachedImagePreview: UIImage?
     @FocusState private var isInputFocused: Bool
     @Environment(\.appTheme) private var theme
-    @Environment(\.scenePhase) private var scenePhase
 
     private var greeting: String {
         switch Calendar.current.component(.hour, from: .now) {
@@ -97,16 +103,12 @@ struct WarRoomView: View {
                 .padding(.bottom, 12)
         }
         .background(theme.background)
+        // connect()/situation-room polling now live in RootView, which
+        // owns both clients' lifecycle (see WarRoomView's own property
+        // comments above) -- this view no longer starts either itself.
         .task {
-            backend.connect()
             await focusClient.fetch()
             await insightsClient.fetch()
-            await situationRoomClient.fetch()
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active else { return }
-            backend.disconnect()
-            backend.connect()
         }
         .onChange(of: photoPickerItem) { _, newItem in
             guard let newItem else { return }
@@ -418,5 +420,5 @@ private struct ChatBubble: View {
 }
 
 #Preview {
-    WarRoomView()
+    WarRoomView(backend: BackendClient(), situationRoomClient: SituationRoomClient())
 }

@@ -13,6 +13,17 @@ import SwiftUI
 struct RootView: View {
     @State private var selectedID: UUID? = NavItem.items.first?.id
     @State private var isDrawerOpen = false
+    // Lifted here from WarRoomView (2026-08-20, SystemStatusHeader parity
+    // pass) so the new status strip can read real connection/streaming/
+    // alert state across all sections, not just while War Room is
+    // selected -- same move already made on desktop's ContentView.swift.
+    // The scenePhase-based reconnect-on-foreground fix (2026-08-13's real
+    // "sent a message no response" bug) moves here too, since it's tied
+    // to who owns `backend`.
+    @StateObject private var backend = BackendClient()
+    @StateObject private var situationRoomClient = SituationRoomClient()
+    @State private var situationRoomPollTask: Task<Void, Never>?
+    @Environment(\.scenePhase) private var scenePhase
     // Live drag delta, added on top of isDrawerOpen's base position while a
     // swipe is in progress -- see dragProgress/currentOffsetX below. Reset
     // to 0 once the gesture ends and isDrawerOpen has settled.
@@ -49,10 +60,11 @@ struct RootView: View {
         ZStack(alignment: .leading) {
             VStack(spacing: 0) {
                 topBar
+                SystemStatusHeader(backend: backend, situationRoom: situationRoomClient)
                 Group {
                     switch selectedItem.title {
                     case "War Room":
-                        WarRoomView()
+                        WarRoomView(backend: backend, situationRoomClient: situationRoomClient)
                     case "Frank":
                         FrankView()
                     case "Settings":
@@ -112,6 +124,33 @@ struct RootView: View {
             }
         }
         .gesture(closeDragGesture)
+        .task {
+            backend.connect()
+            startSituationRoomPolling()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            backend.disconnect()
+            backend.connect()
+        }
+        .onDisappear {
+            situationRoomPollTask?.cancel()
+            situationRoomPollTask = nil
+        }
+    }
+
+    /// Moved here from WarRoomView's own `.task` (2026-08-20) -- same 30s-
+    /// poll reasoning as desktop's ContentView.swift: this view persists
+    /// across the whole session now, so a one-shot fetch would only ever
+    /// reflect whatever was true at launch.
+    private func startSituationRoomPolling() {
+        guard situationRoomPollTask == nil else { return }
+        situationRoomPollTask = Task {
+            while !Task.isCancelled {
+                await situationRoomClient.fetch()
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            }
+        }
     }
 
     private var edgeOpenGesture: some Gesture {
