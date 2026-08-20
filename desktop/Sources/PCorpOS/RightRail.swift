@@ -30,21 +30,25 @@ private struct CardContainer<Content: View>: View {
         VStack(alignment: .leading, spacing: 10) {
             content
         }
-        .padding(16)
+        .padding(Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 18)
+            RoundedRectangle(cornerRadius: Radius.xl)
                 .fill(.regularMaterial) // slightly more opaque than the rail behind it, so card text stays legible
         )
         .background(
-            RoundedRectangle(cornerRadius: 18)
+            RoundedRectangle(cornerRadius: Radius.xl)
                 .fill(theme.background.opacity(0.35))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 18)
+            RoundedRectangle(cornerRadius: Radius.xl)
                 .strokeBorder(theme.surfaceBorder)
         )
-        .shadow(color: theme.cardShadow, radius: 12, x: 0, y: 4)
+        // Shadow eased 12/y4 -> 8/y3 (2026-08-20, Face-Lift brief item 04:
+        // "avoid excessive drop shadows") -- still reads as elevated, just
+        // quieter, not a structural change to the material-based approach
+        // UI_GUIDELINES.md already deliberately committed to.
+        .shadow(color: theme.cardShadow, radius: 8, x: 0, y: 3)
     }
 }
 
@@ -135,9 +139,31 @@ private struct AgendaCard: View {
         CardContainer {
             SectionLabel(text: "TODAY'S AGENDA")
             if todayEvents.isEmpty {
-                Text("Nothing on the calendar today.")
-                    .font(PCorpFont.body(12))
-                    .foregroundStyle(theme.textSecondary)
+                // Smarter empty state (2026-08-20, Face-Lift brief item
+                // 11) -- "Open day detected" plus a generic Deep Work
+                // block, genuinely derived from the one real fact
+                // available (today's calendar is empty), not a fabricated
+                // per-context recommendation. Same fixed suggestion every
+                // open day, honestly labeled as a suggestion, not a
+                // second real calendar entry.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("No commitments. Open day detected.")
+                        .font(PCorpFont.body(12))
+                        .foregroundStyle(theme.textSecondary)
+                    HStack(spacing: 10) {
+                        Image(systemName: "bolt.circle")
+                            .font(.system(size: 13))
+                            .foregroundStyle(theme.accent)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Frank recommends: Deep Work")
+                                .font(PCorpFont.body(12, weight: .semibold))
+                                .foregroundStyle(theme.textPrimary)
+                            Text("09:00 – 12:00")
+                                .font(PCorpFont.mono(10.5))
+                                .foregroundStyle(theme.textSecondary)
+                        }
+                    }
+                }
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(todayEvents) { event in
@@ -221,6 +247,20 @@ private struct InsightsCard: View {
             }
         }
     }
+
+    /// Real category -> color mapping (2026-08-20) -- three of the brief's
+    /// five suggested indicator types actually come out of real data
+    /// today (risk/follow_up/opportunity, see InsightItem.category's own
+    /// doc comment); "decision"/generic "insight" aren't forced since
+    /// nothing currently generates them honestly.
+    fileprivate static func categoryColor(_ category: String, theme: AppTheme) -> Color {
+        switch category {
+        case "risk": .red
+        case "opportunity": .green
+        case "follow_up": theme.accent
+        default: theme.textSecondary
+        }
+    }
 }
 
 private struct InsightRow: View {
@@ -234,11 +274,24 @@ private struct InsightRow: View {
             navigate(to: insight.targetNavTitle, selectedID: $selectedID)
         } label: {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: insight.systemImage)
-                    .font(.system(size: 13))
-                    .foregroundStyle(theme.textPrimary)
-                    .frame(width: 22, height: 22)
-                    .background(Circle().fill(theme.textPrimary.opacity(0.06)))
+                ZStack {
+                    Circle().fill(theme.textPrimary.opacity(0.06))
+                    Image(systemName: insight.systemImage)
+                        .font(.system(size: 13))
+                        .foregroundStyle(theme.textPrimary)
+                }
+                .frame(width: 22, height: 22)
+                .overlay(alignment: .topTrailing) {
+                    // Small real category indicator (2026-08-20) -- risk/
+                    // opportunity/follow-up, derived from which backend
+                    // insights.py generator actually produced this row,
+                    // not decoration.
+                    Circle()
+                        .fill(InsightsCard.categoryColor(insight.category, theme: theme))
+                        .frame(width: 7, height: 7)
+                        .overlay(Circle().strokeBorder(theme.surface, lineWidth: 1.5))
+                        .offset(x: 2, y: -2)
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(insight.title)
                         .font(PCorpFont.body(12.5, weight: .semibold))
@@ -275,7 +328,7 @@ private struct QuickActionsCard: View {
     var body: some View {
         CardContainer {
             SectionLabel(text: "QUICK ACTIONS")
-            LazyVGrid(columns: columns, spacing: 10) {
+            LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(PlaceholderData.quickActions) { action in
                     Button {
                         // Honest navigation to a real (if not-yet-built)
@@ -294,9 +347,40 @@ private struct QuickActionsCard: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .buttonStyle(.pillTinted)
+                    // Swapped from .pillTinted (2026-08-20, Face-Lift brief
+                    // item 04: "avoid excessive pills") -- a quieter,
+                    // more architectural rectangular treatment specific
+                    // to Quick Actions, not a change to PillButtonStyle
+                    // itself, which is still used elsewhere (e.g. the
+                    // War Room "+ Mission" button) where a pill is right.
+                    .buttonStyle(QuickActionButtonStyle())
                 }
             }
         }
+    }
+}
+
+private struct QuickActionButtonStyle: ButtonStyle {
+    @Environment(\.appTheme) private var theme
+    @State private var isHovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(PCorpFont.body(12, weight: .semibold))
+            .foregroundStyle(theme.textPrimary)
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.sm)
+                    .fill(configuration.isPressed ? theme.textPrimary.opacity(0.09) : (isHovering ? theme.textPrimary.opacity(0.06) : theme.textPrimary.opacity(0.04)))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.sm)
+                    .strokeBorder(theme.surfaceBorder)
+            )
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: AnimationTiming.instant), value: configuration.isPressed)
+            .animation(.easeOut(duration: AnimationTiming.instant), value: isHovering)
+            .onHover { isHovering = $0 }
     }
 }

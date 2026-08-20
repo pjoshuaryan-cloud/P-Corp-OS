@@ -63,6 +63,7 @@ async def _overdue_and_upcoming_tasks(today: str, horizon: str) -> list[dict]:
                 "target_nav_title": "Agents",
                 "icon": "exclamationmark.circle" if is_overdue else "checklist",
                 "priority": 0 if is_overdue else 1,
+                "category": "risk" if is_overdue else "follow_up",
             }
         )
     return insights
@@ -93,6 +94,7 @@ async def _overdue_and_upcoming_invoices(today: str, horizon: str) -> list[dict]
                 "target_nav_title": "War Room",
                 "icon": "exclamationmark.circle" if is_overdue else "dollarsign.circle",
                 "priority": 0 if is_overdue else 1,
+                "category": "risk" if is_overdue else "follow_up",
             }
         )
     return insights
@@ -113,6 +115,7 @@ async def _clients_needing_outreach() -> list[dict]:
                 "target_nav_title": "War Room",
                 "icon": "person.crop.circle.badge.exclamationmark",
                 "priority": 1,
+                "category": "follow_up",
             }
         )
     return insights
@@ -135,6 +138,7 @@ async def _leads_needing_followup() -> list[dict]:
                 "target_nav_title": "War Room",
                 "icon": "flame",
                 "priority": 1,
+                "category": "opportunity",
             }
         )
     return insights
@@ -160,6 +164,7 @@ async def _quotes_needing_followup() -> list[dict]:
                 "target_nav_title": "War Room",
                 "icon": "hourglass",
                 "priority": 1,
+                "category": "opportunity",
             }
         )
     return insights

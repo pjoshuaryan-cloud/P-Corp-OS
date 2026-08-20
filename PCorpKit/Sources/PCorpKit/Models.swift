@@ -14,10 +14,16 @@ public struct InsightItem: Identifiable, Decodable {
     /// Which nav section this relates to — same honest-routing pattern as
     /// QuickAction, so clicking an insight isn't a dead end.
     public let targetNavTitle: String
+    /// "risk" / "follow_up" / "opportunity" (2026-08-20, Face-Lift brief's
+    /// insight-type indicators) — a real classification of which existing
+    /// backend.app.insights.py generator produced this row (overdue =
+    /// risk, due-soon/outreach = follow_up, leads/quotes = opportunity),
+    /// not an invented category layered on top of real data.
+    public let category: String
 
     enum CodingKeys: String, CodingKey {
         case systemImage = "icon"
-        case title, detail
+        case title, detail, category
         case targetNavTitle = "target_nav_title"
     }
 }
