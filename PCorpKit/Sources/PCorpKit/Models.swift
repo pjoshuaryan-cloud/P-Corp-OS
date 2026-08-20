@@ -28,6 +28,60 @@ public struct InsightItem: Identifiable, Decodable {
     }
 }
 
+/// "The Brief" (2026-08-20, Face-Lift item 09) -- GET /brief. Same shape
+/// as InsightItem in spirit, but a distinct type rather than reusing it:
+/// backend/app/brief.py normalizes Situation Room alerts into this same
+/// shape for "What Matters," and those don't carry a real target section
+/// (situation_room.py's own alerts never did), so targetNavTitle has to
+/// be optional here where InsightItem's isn't.
+public struct BriefItem: Identifiable, Decodable {
+    public let id = UUID()
+    public let systemImage: String
+    public let title: String
+    public let detail: String
+    public let targetNavTitle: String?
+    public let category: String
+
+    enum CodingKeys: String, CodingKey {
+        case systemImage = "icon"
+        case title, detail, category
+        case targetNavTitle = "target_nav_title"
+    }
+}
+
+/// A single real, already-logged tool call (backend/app/audit_db.py) --
+/// "What Changed" is literally this, not a separate invented activity
+/// feed. `result` is already the human-readable summary
+/// (record_tool_call's own callers write it that way, e.g. "Added goal:
+/// Read more books") -- the raw tool input JSON isn't decoded here since
+/// nothing in the UI needs to show it.
+public struct BriefActivity: Identifiable, Decodable {
+    public let id: Int
+    public let toolName: String
+    public let result: String
+    public let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, result
+        case toolName = "tool_name"
+        case createdAt = "created_at"
+    }
+}
+
+public struct Brief: Decodable {
+    public let whatMatters: [BriefItem]
+    public let whatChanged: [BriefActivity]
+    public let whatFrankRecommends: [BriefItem]
+    public let whatCanWait: [BriefItem]
+
+    enum CodingKeys: String, CodingKey {
+        case whatMatters = "what_matters"
+        case whatChanged = "what_changed"
+        case whatFrankRecommends = "what_frank_recommends"
+        case whatCanWait = "what_can_wait"
+    }
+}
+
 /// Backs GET /situation-room (app/situation_room.py) — a stricter tier
 /// than InsightItem above, deliberately no icon field since these render
 /// as a single banner, not individual iconed rows like the Insights card.

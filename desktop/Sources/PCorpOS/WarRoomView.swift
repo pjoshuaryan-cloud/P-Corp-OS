@@ -5,6 +5,7 @@ import SwiftUI
 struct WarRoomView: View {
     @State private var inputText: String = ""
     @State private var showConversationList = false
+    @State private var showTheBrief = false
     // Image upload (2026-08-05): held as raw Data + a real MIME type, not
     // just an NSImage -- the MIME type is what the backend needs to build
     // Claude's own image content block, and re-deriving it from an NSImage
@@ -295,6 +296,17 @@ struct WarRoomView: View {
                         voiceOutput.stop()
                         Task { await backend.switchToConversation(conversationID) }
                     }
+                }
+
+                Button {
+                    showTheBrief = true
+                } label: {
+                    Image(systemName: "sun.max")
+                }
+                .buttonStyle(.icon)
+                .help("The Brief — what matters, what changed, what Frank recommends")
+                .popover(isPresented: $showTheBrief) {
+                    TheBriefPopover()
                 }
 
                 Button {

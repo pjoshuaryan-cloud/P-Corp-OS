@@ -118,6 +118,13 @@ async def init_db() -> None:
             await db.execute("ALTER TABLE app_state ADD COLUMN current_objective TEXT")
             await db.execute("ALTER TABLE app_state ADD COLUMN objective_set_at TEXT")
 
+        # Migration path: app_state existed before "The Brief"'s (2026-08-20)
+        # last-viewed tracking did. Nullable -- never viewed is a real,
+        # honest state (app/brief.py treats it as "show everything," not
+        # an error), same reasoning as objective_set_at above.
+        if "last_brief_viewed_at" not in columns:
+            await db.execute("ALTER TABLE app_state ADD COLUMN last_brief_viewed_at TEXT")
+
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_records (
@@ -247,6 +254,19 @@ async def set_focus_objective(objective: str) -> None:
             "UPDATE app_state SET current_objective = ?, objective_set_at = datetime('now') WHERE id = 1",
             (objective,),
         )
+        await db.commit()
+
+
+async def get_brief_last_viewed_at() -> str | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT last_brief_viewed_at FROM app_state WHERE id = 1")
+        (last_viewed,) = await cursor.fetchone()
+        return last_viewed
+
+
+async def mark_brief_viewed() -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE app_state SET last_brief_viewed_at = datetime('now') WHERE id = 1")
         await db.commit()
 
 

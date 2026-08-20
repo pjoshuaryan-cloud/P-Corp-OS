@@ -94,6 +94,7 @@ from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES, LEGACY_VAULT_TOOLS, execut
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
 from app.research_agent import RESEARCH_AGENT_TOOL_NAMES, RESEARCH_AGENT_TOOLS, execute_research_agent_tool_call
+from app.brief import compute_brief
 from app.insights import compute_insights
 from app.situation_room import compute_situation_room_alerts
 from app.operations_db import init_operations_db, list_open_tasks
@@ -312,6 +313,16 @@ async def insights_endpoint(_: None = Depends(verify_token)) -> list[dict]:
     # Real data behind the right rail's "Frank's Insights" card -- was
     # literal placeholder text before (see app/insights.py's docstring).
     return await compute_insights()
+
+
+@app.get("/brief")
+async def brief_endpoint(_: None = Depends(verify_token)) -> dict:
+    # Backs "The Brief" (Face-Lift item 09) -- see app/brief.py's own
+    # docstring. Calling this marks the brief as viewed (updates
+    # app_state.last_brief_viewed_at), so this is a real state-changing
+    # read, not side-effect-free -- deliberate, since "what changed"
+    # always means "since you last actually looked."
+    return await compute_brief()
 
 
 @app.get("/alpha-mode/dashboard")
