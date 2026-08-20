@@ -344,6 +344,17 @@ private struct QuickActionsCard: View {
                             Image(systemName: action.systemImage)
                                 .font(.system(size: 11.5))
                             Text(action.title)
+                            Spacer(minLength: 4)
+                            // Real shortcut hints (2026-08-20), not
+                            // decoration -- each one actually works, wired
+                            // in ContentView.swift's own keyboard monitor.
+                            // Mono, per the brief's own "machine
+                            // information" typographic register.
+                            if let key = Self.shortcutKey(for: action.title) {
+                                Text("⌘\(key.uppercased())")
+                                    .font(PCorpFont.mono(9.5))
+                                    .opacity(0.5)
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -356,6 +367,20 @@ private struct QuickActionsCard: View {
                     .buttonStyle(QuickActionButtonStyle())
                 }
             }
+        }
+    }
+
+    /// Mirrors ContentView.swift's own quickActionForShortcut(_:) mapping,
+    /// in reverse (title -> key here, key -> title there) -- small enough
+    /// to keep as two local, independent lookups rather than introducing
+    /// shared infrastructure for a 4-entry mapping.
+    fileprivate static func shortcutKey(for title: String) -> String? {
+        switch title {
+        case "New Mission": "n"
+        case "Start Deep Work": "d"
+        case "Ask Frank": "k"
+        case "Run Report": "r"
+        default: nil
         }
     }
 }

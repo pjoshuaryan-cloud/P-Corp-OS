@@ -167,8 +167,39 @@ struct ContentView: View {
                 return nil
             }
 
+            // Quick Actions shortcuts (2026-08-20, Face-Lift item 13,
+            // resolved after being deferred twice). The brief's own
+            // suggested keys were ⌘M/⌘D/⌘F/⌘R -- two real conflicts found
+            // and swapped rather than taken as given: ⌘M is macOS's
+            // system-wide "Minimize Window," and ⌘F is both system-wide
+            // "Find" and this app's own reserved future-search icon
+            // (WarRoomView's topBar) -- claiming either now would fight a
+            // deeply ingrained OS convention or create rework later. ⌘N
+            // ("New Mission") matches the near-universal "New X" convention
+            // instead. ⌘K ("Ask Frank") matches the increasingly common
+            // "jump to input/quick action" key (Slack, Linear, VS Code),
+            // fitting since Ask Frank's real action is focusing the chat.
+            // ⌘D ("Start Deep Work") and ⌘R ("Run Report") are unchanged
+            // from the brief -- neither collides with anything in this app.
+            if let action = quickActionForShortcut(characters),
+               let target = PlaceholderData.navItems.first(where: { $0.title == action.targetNavTitle }) {
+                withAnimation(.easeOut(duration: 0.22)) { selectedID = target.id }
+                return nil
+            }
+
             return event
         }
+    }
+
+    private func quickActionForShortcut(_ characters: String) -> QuickAction? {
+        let titleForKey: [String: String] = [
+            "n": "New Mission",
+            "d": "Start Deep Work",
+            "k": "Ask Frank",
+            "r": "Run Report",
+        ]
+        guard let title = titleForKey[characters] else { return nil }
+        return PlaceholderData.quickActions.first { $0.title == title }
     }
 }
 
