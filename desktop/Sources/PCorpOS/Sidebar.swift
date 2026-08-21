@@ -15,7 +15,7 @@ private struct NavGroup {
 
 private let navGroups: [NavGroup] = [
     NavGroup(label: "CORE", itemTitles: ["War Room", "Frank"]),
-    NavGroup(label: "DIVISIONS", itemTitles: ["Alpha Mode Media", "Trading Division", "Finance"]),
+    NavGroup(label: "DIVISIONS", itemTitles: ["Alpha Mode Media", "Joshx", "Trading Division", "Finance"]),
     NavGroup(label: "LIFE", itemTitles: ["Personal", "Calendar"]),
     NavGroup(label: "INTELLIGENCE", itemTitles: ["Knowledge", "Agents", "Automations", "Triggers"]),
     NavGroup(label: "SYSTEM", itemTitles: ["Settings"]),
@@ -153,7 +153,16 @@ private struct NavRow: View {
                 Image(systemName: item.systemImage)
                     .font(.system(size: 15))
                     .frame(width: 20)
-                    .foregroundStyle((IconColors.forNavItem(item.title) ?? theme.textPrimary).opacity(isSelected ? 1.0 : 0.55))
+                    // Joshx (2026-08-21) gets theme.accent, not a fixed
+                    // IconColors entry -- the one deliberate visual
+                    // identity marker distinguishing it from Alpha Mode
+                    // Media without building the full bespoke "cinematic"
+                    // redesign the original brief asked for (deferred,
+                    // confirmed with Joshua).
+                    .foregroundStyle(
+                        (item.title == "Joshx" ? theme.accent : IconColors.forNavItem(item.title)) ?? theme.textPrimary
+                    )
+                    .opacity(isSelected ? 1.0 : 0.55)
             }
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title)

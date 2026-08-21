@@ -453,3 +453,90 @@ public struct TriggerRunResult: Decodable {
         case itemCount = "item_count"
     }
 }
+
+/// Joshx (2026-08-21) -- Josh's independent freelance creative business
+/// (video editing, videography, photography), completely separate from
+/// Alpha Mode Media. Phase 1 scope only: clients/leads/projects, backed
+/// by their own local joshx.db (backend/app/joshx_db.py). Amounts are
+/// rands, matching the currency fix applied across the app the same day.
+public struct JoshxClientRecord: Identifiable, Decodable {
+    public let id: Int
+    public let name: String
+    public let company: String?
+    public let status: String
+    public let lastContactDate: String?
+    public let nextFollowUpDate: String?
+    public let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, company, status
+        case lastContactDate = "last_contact_date"
+        case nextFollowUpDate = "next_follow_up_date"
+        case createdAt = "created_at"
+    }
+}
+
+public struct JoshxLead: Identifiable, Decodable {
+    public let id: Int
+    public let clientName: String
+    public let projectDescription: String?
+    public let service: String?
+    public let estimatedValue: Double?
+    public let stage: String
+    public let probability: Int?
+    public let followUpDate: String?
+    public let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, service, stage, probability
+        case clientName = "client_name"
+        case projectDescription = "project_description"
+        case estimatedValue = "estimated_value"
+        case followUpDate = "follow_up_date"
+        case createdAt = "created_at"
+    }
+}
+
+public struct JoshxProject: Identifiable, Decodable {
+    public let id: Int
+    public let clientName: String
+    public let projectName: String
+    public let projectType: String?
+    public let dueDate: String?
+    public let shootDate: String?
+    public let budget: Double?
+    public let priority: String?
+    public let status: String
+    public let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, budget, priority, status
+        case clientName = "client_name"
+        case projectName = "project_name"
+        case projectType = "project_type"
+        case dueDate = "due_date"
+        case shootDate = "shoot_date"
+        case createdAt = "created_at"
+    }
+}
+
+/// Fetched from GET /joshx/dashboard. Deliberately no revenue/outstanding/
+/// available-days fields -- Phase 1 has no invoices or availability data
+/// model, and this app never shows a stat without real data behind it
+/// (Mission Status's fake progress bar, removed 2026-08-20, is the
+/// standing example of what NOT to do).
+public struct JoshxDashboard: Decodable {
+    public let activeProjects: Int
+    public let openLeads: Int
+    public let upcomingShoots: Int
+    public let clients: [JoshxClientRecord]
+    public let leads: [JoshxLead]
+    public let projects: [JoshxProject]
+
+    enum CodingKeys: String, CodingKey {
+        case clients, leads, projects
+        case activeProjects = "active_projects"
+        case openLeads = "open_leads"
+        case upcomingShoots = "upcoming_shoots"
+    }
+}

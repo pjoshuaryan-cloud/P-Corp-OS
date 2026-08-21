@@ -84,6 +84,8 @@ from app.debate import DEBATE_TOOL_NAMES, DEBATE_TOOLS, execute_debate_tool_call
 from app.knowledge import list_docs as list_knowledge_docs, read_doc as read_knowledge_doc
 from app.personal_db import dashboard_snapshot as personal_dashboard_snapshot, init_personal_db
 from app.personal_tools import PERSONAL_TOOL_NAMES, PERSONAL_TOOLS, build_personal_block, execute_personal_tool_call
+from app.joshx_db import dashboard_snapshot as joshx_dashboard_snapshot, init_joshx_db
+from app.joshx_tools import JOSHX_TOOL_NAMES, JOSHX_TOOLS, build_joshx_block, execute_joshx_tool_call
 from app.trading_division import dashboard_snapshot as trading_division_dashboard_snapshot
 from app.trading_division_agent import (
     TRADING_DIVISION_AGENT_TOOL_NAMES,
@@ -208,6 +210,7 @@ async def lifespan(app: FastAPI):
     await init_alpha_mode_db()
     await init_operations_db()
     await init_personal_db()
+    await init_joshx_db()
     await init_automations_db()
     await init_audit_db()
     await init_triggers_db()
@@ -314,6 +317,15 @@ async def personal_dashboard(_: None = Depends(verify_token)) -> dict:
     # Backs the desktop "Personal" section -- goals/habits only, see
     # app/personal_db.py's own docstring for scope.
     return await personal_dashboard_snapshot()
+
+
+@app.get("/joshx/dashboard")
+async def joshx_dashboard(_: None = Depends(verify_token)) -> dict:
+    # Backs the desktop "Joshx" section -- Josh's independent freelance
+    # creative business, completely separate from Alpha Mode Media. Phase
+    # 1 scope only (clients/leads/projects) -- see app/joshx_db.py's own
+    # docstring.
+    return await joshx_dashboard_snapshot()
 
 
 @app.get("/focus")
@@ -564,6 +576,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 + await build_alpha_mode_block()
                 + await build_operations_block()
                 + await build_personal_block()
+                + await build_joshx_block()
             )
 
             try:
@@ -643,6 +656,7 @@ async def run_claude_turn(
                 *RESEARCH_AGENT_TOOLS,
                 *TRADING_DIVISION_AGENT_TOOLS,
                 *PERSONAL_TOOLS,
+                *JOSHX_TOOLS,
             ],
         ) as stream:
             async for text in stream.text_stream:
@@ -730,6 +744,8 @@ async def run_claude_turn(
                 assistant_text += result
             elif block.name in PERSONAL_TOOL_NAMES:
                 result = await execute_personal_tool_call(block.name, block.input)
+            elif block.name in JOSHX_TOOL_NAMES:
+                result = await execute_joshx_tool_call(block.name, block.input)
             else:
                 result = await execute_tool_call(block.name, block.input)
             # Real audit trail (2026-08-10, SECURITY.md's flagged gap) --
