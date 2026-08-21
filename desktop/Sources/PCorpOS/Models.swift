@@ -32,6 +32,7 @@ enum PlaceholderData {
         NavItem(title: "Knowledge", subtitle: "Files & Insights", systemImage: "books.vertical"),
         NavItem(title: "Agents", subtitle: "AI Team", systemImage: "person.3"),
         NavItem(title: "Automations", subtitle: "Workflows", systemImage: "bolt"),
+        NavItem(title: "Triggers", subtitle: "Proactive Alerts", systemImage: "bell.badge"),
         NavItem(title: "Calendar", subtitle: "Schedule & Events", systemImage: "calendar"),
         NavItem(title: "Settings", subtitle: "Preferences", systemImage: "gearshape"),
     ]

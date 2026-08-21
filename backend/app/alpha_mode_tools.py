@@ -225,7 +225,7 @@ async def execute_alpha_mode_tool_call(name: str, tool_input: dict) -> str:
         )
         if result is None:
             return f"No project found for \"{tool_input['client_name']}\" — add the project first."
-        return f"Added invoice in Alpha Mode Media Admin: ${result['amount']:,.2f} for {tool_input['client_name']} ({result['status']})."
+        return f"Added invoice in Alpha Mode Media Admin: R{result['amount']:,.2f} for {tool_input['client_name']} ({result['status']})."
     if name == "add_deliverable":
         result = await add_deliverable(
             tool_input["project_name"],

@@ -75,7 +75,7 @@ async def _severely_overdue_invoices(today: date) -> list[dict]:
         alerts.append(
             {
                 "title": "Invoice badly overdue",
-                "detail": f"${row['amount']:,.2f} from {row['client_name']} — {days_overdue} days overdue",
+                "detail": f"R{row['amount']:,.2f} from {row['client_name']} — {days_overdue} days overdue",
                 "target_nav_title": "War Room",
             }
         )

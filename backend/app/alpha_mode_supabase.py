@@ -219,7 +219,7 @@ async def summarize_block() -> str:
             proj = i.get("projects") or {}
             due = f", due {i['due_date']}" if i.get("due_date") else ""
             lines.append(
-                f"  - ${i['amount']:,.2f} for {proj.get('client', '?')} — {proj.get('project_name', '?')} "
+                f"  - R{i['amount']:,.2f} for {proj.get('client', '?')} — {proj.get('project_name', '?')} "
                 f"({i['status']}{due})"
             )
 

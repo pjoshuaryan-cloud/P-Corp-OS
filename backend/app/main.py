@@ -97,6 +97,8 @@ from app.research_agent import RESEARCH_AGENT_TOOL_NAMES, RESEARCH_AGENT_TOOLS, 
 from app.brief import compute_brief
 from app.insights import compute_insights
 from app.situation_room import compute_situation_room_alerts
+from app.triggers import compute_status as compute_trigger_status, maybe_run_daily_digest, run_daily_digest
+from app.triggers_db import init_triggers_db, list_rules as list_trigger_rules, set_rule_enabled
 from app.operations_db import init_operations_db, list_open_tasks
 from app.db import (
     create_new_conversation,
@@ -179,6 +181,27 @@ def verify_token(token: str) -> None:
         raise HTTPException(status_code=403, detail="invalid or missing token")
 
 
+# Proactive Triggers Layer's scheduler (2026-08-21) -- the first time-based
+# background loop in this backend (every prior "automation" is event-
+# driven, fired inline from tool-dispatch; see triggers_db.py's docstring).
+# A plain asyncio loop, not a new dependency like APScheduler -- one job,
+# checked a few times an hour, doesn't earn a scheduling library. 15
+# minutes is frequent enough that the digest fires within 15min of
+# send_hour without polling so tightly it'd matter if a tick's work took a
+# while; maybe_run_daily_digest() itself is a no-op past the first
+# successful run each day.
+TRIGGER_CHECK_INTERVAL_SECONDS = 900
+
+
+async def _trigger_scheduler_loop() -> None:
+    while True:
+        try:
+            await maybe_run_daily_digest()
+        except Exception as exc:
+            print(f"[triggers] scheduler tick failed: {exc}")
+        await asyncio.sleep(TRIGGER_CHECK_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
@@ -187,6 +210,7 @@ async def lifespan(app: FastAPI):
     await init_personal_db()
     await init_automations_db()
     await init_audit_db()
+    await init_triggers_db()
     # A single reused httpx client, not one per /speak call — real bug
     # found and fixed 2026-07-30: creating a fresh AsyncClient() per
     # request meant paying a full DNS+TLS handshake to ElevenLabs every
@@ -194,7 +218,9 @@ async def lifespan(app: FastAPI):
     # request taking 4.9s cold vs 1.1s with a warm connection). One
     # long-lived client with connection keep-alive removes that entirely.
     app.state.elevenlabs_client = httpx.AsyncClient(timeout=30.0)
+    trigger_scheduler_task = asyncio.create_task(_trigger_scheduler_loop())
     yield
+    trigger_scheduler_task.cancel()
     await app.state.elevenlabs_client.aclose()
 
 
@@ -323,6 +349,53 @@ async def brief_endpoint(_: None = Depends(verify_token)) -> dict:
     # read, not side-effect-free -- deliberate, since "what changed"
     # always means "since you last actually looked."
     return await compute_brief()
+
+
+@app.get("/triggers/rules")
+async def trigger_rules_endpoint(_: None = Depends(verify_token)) -> list[dict]:
+    # Read-only visibility into the Proactive Triggers Layer's rule rows
+    # (app/triggers_db.py) -- exists so the rule set can be inspected
+    # without opening a SQLite file by hand. GET /triggers/status (below)
+    # is the richer endpoint the actual Triggers UI uses; this one stays
+    # as the plain rule-only view it always was.
+    return await list_trigger_rules()
+
+
+class TriggerRuleUpdate(BaseModel):
+    enabled: bool
+
+
+@app.patch("/triggers/rules/{rule_type}")
+async def trigger_rule_update_endpoint(
+    rule_type: str, body: TriggerRuleUpdate, _: None = Depends(verify_token)
+) -> dict:
+    # Backs the Triggers UI's per-rule toggle (2026-08-21) -- the first UI
+    # control that mutates trigger_rules directly, rather than Frank being
+    # the only way state changes (unlike Personal/Alpha Mode's Frank-only
+    # writes, this is plain settings-style state with no reason to route
+    # through a conversation).
+    await set_rule_enabled(rule_type, body.enabled)
+    return {"rule_type": rule_type, "enabled": body.enabled}
+
+
+@app.get("/triggers/status")
+async def trigger_status_endpoint(_: None = Depends(verify_token)) -> dict:
+    # Backs the Triggers UI's main view -- every rule plus its currently
+    # live-matching items, each flagged with whether it'd actually be in
+    # *today's* digest per the decaying cadence (app/triggers.py's
+    # compute_status(), entirely read-only -- viewing this can't consume
+    # a cadence slot or alter what the next real digest sends).
+    return await compute_trigger_status()
+
+
+@app.post("/triggers/run-now")
+async def trigger_run_now_endpoint(_: None = Depends(verify_token)) -> dict:
+    # Manual escape hatch for testing the digest without waiting for the
+    # scheduler's send_hour gate (app/triggers.py's maybe_run_daily_digest)
+    # -- runs the real rule checks and, if anything's due, actually sends
+    # the email. Does not touch digest_schedule.last_sent_date, so it
+    # won't interfere with the once-a-day scheduled run.
+    return await run_daily_digest()
 
 
 @app.get("/alpha-mode/dashboard")

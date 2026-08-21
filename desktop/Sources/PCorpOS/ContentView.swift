@@ -57,6 +57,8 @@ struct ContentView: View {
                     AgentsView()
                 case "Automations":
                     AutomationsView()
+                case "Triggers":
+                    TriggersView()
                 case "Settings":
                     SettingsView()
                 default:

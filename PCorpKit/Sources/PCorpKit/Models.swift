@@ -386,3 +386,70 @@ public struct AutomationRun: Identifiable, Decodable {
         case createdAt = "created_at"
     }
 }
+
+/// Proactive Triggers Layer (2026-08-21, backend/app/triggers.py) -- one
+/// currently-matching item under a rule, e.g. one specific overdue
+/// invoice. `due` reflects the decaying-cadence check (day 1/3/7 then
+/// weekly) -- true means this item would actually be in *today's*
+/// digest, false means it's real and still open but already notified on
+/// recently, so it's suppressed rather than re-flagged. `id` is a local
+/// UUID for List/ForEach identity, not decoded — `itemKey` is the real
+/// stable identity from the backend.
+public struct TriggerItem: Identifiable, Decodable {
+    public let id = UUID()
+    public let itemKey: String
+    public let title: String
+    public let detail: String
+    public let due: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case title, detail, due
+        case itemKey = "item_key"
+    }
+}
+
+/// One rule (invoice_overdue / client_contact_gap / project_stage_stall /
+/// deliverable_overdue), its enabled/threshold data-row state
+/// (backend/app/triggers_db.py's trigger_rules table), and every item it's
+/// currently matching against live data — even when disabled, so the UI
+/// can show "this would still be flagging N things" rather than going
+/// blank the moment a rule's toggled off.
+public struct TriggerRuleSection: Identifiable, Decodable {
+    public var id: String { ruleType }
+    public let ruleType: String
+    public let label: String
+    public let enabled: Bool
+    public let thresholdDays: Int?
+    public let items: [TriggerItem]
+
+    enum CodingKeys: String, CodingKey {
+        case label, enabled, items
+        case ruleType = "rule_type"
+        case thresholdDays = "threshold_days"
+    }
+}
+
+/// Fetched from GET /triggers/status -- backs the whole Triggers UI.
+public struct TriggerStatus: Decodable {
+    public let rules: [TriggerRuleSection]
+    public let lastSentDate: String?
+    public let sendHour: Int
+
+    enum CodingKeys: String, CodingKey {
+        case rules
+        case lastSentDate = "last_sent_date"
+        case sendHour = "send_hour"
+    }
+}
+
+/// Result of POST /triggers/run-now -- a manual digest send outside the
+/// schedule, for testing/confirming the email path actually works.
+public struct TriggerRunResult: Decodable {
+    public let sent: Bool
+    public let itemCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case sent
+        case itemCount = "item_count"
+    }
+}

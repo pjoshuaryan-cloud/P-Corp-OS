@@ -90,7 +90,7 @@ async def _overdue_and_upcoming_invoices(today: str, horizon: str) -> list[dict]
         insights.append(
             {
                 "title": "Invoice overdue" if is_overdue else "Invoice due soon",
-                "detail": f"${row['amount']:,.2f} from {row['client_name']} — due {row['due_date']}",
+                "detail": f"R{row['amount']:,.2f} from {row['client_name']} — due {row['due_date']}",
                 "target_nav_title": "War Room",
                 "icon": "exclamationmark.circle" if is_overdue else "dollarsign.circle",
                 "priority": 0 if is_overdue else 1,
