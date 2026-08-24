@@ -36,15 +36,16 @@ import aiosqlite
 DB_PATH = Path(__file__).parent.parent / "data" / "finance.db"
 
 # Pre-seeded on init -- these are Josh's actual five tracked accounts,
-# named per his own words, not generic placeholders. is_automatic=1 only
-# for Luno (the one account with a real API); the other four are
-# manual-log-only.
+# named per his own words, not generic placeholders. is_automatic=1 for
+# Luno (real public API) and Nasdaq/Markets (Josh's real HF Markets
+# account, made automatic 2026-08-24 via a local MT5 file bridge --
+# see hf_markets_client.py); the other three are manual-log-only.
 _SEED_ACCOUNTS = [
     ("Liberty Stash", "tax_free_savings", 0),
     ("EasyEquities", "brokerage", 0),
     ("Luno", "crypto_exchange", 1),
     ("Ashburton Stable Income Fund", "unit_trust", 0),
-    ("Nasdaq / Markets", "stock_market", 0),
+    ("Nasdaq / Markets", "stock_market", 1),
 ]
 
 
@@ -88,11 +89,29 @@ async def init_finance_db() -> None:
         if count == 0:
             await db.execute("INSERT INTO luno_snapshot_schedule (id, last_snapshot_date) VALUES (1, NULL)")
 
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hf_markets_snapshot_schedule (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_snapshot_date TEXT
+            )
+            """
+        )
+        cursor = await db.execute("SELECT COUNT(*) FROM hf_markets_snapshot_schedule WHERE id = 1")
+        (count,) = await cursor.fetchone()
+        if count == 0:
+            await db.execute("INSERT INTO hf_markets_snapshot_schedule (id, last_snapshot_date) VALUES (1, NULL)")
+
         for name, account_type, is_automatic in _SEED_ACCOUNTS:
             await db.execute(
                 "INSERT OR IGNORE INTO accounts (name, account_type, is_automatic) VALUES (?, ?, ?)",
                 (name, account_type, is_automatic),
             )
+        # Migration (2026-08-24): Nasdaq/Markets existed before HF
+        # Markets automation was built, seeded manual (is_automatic=0) --
+        # flip it for installs that already have the row, since
+        # INSERT OR IGNORE above is a no-op once it exists.
+        await db.execute("UPDATE accounts SET is_automatic = 1 WHERE name = 'Nasdaq / Markets'")
         await db.commit()
 
 
@@ -134,6 +153,21 @@ async def mark_luno_snapshotted(snapshot_date: str) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE luno_snapshot_schedule SET last_snapshot_date = ? WHERE id = 1", (snapshot_date,)
+        )
+        await db.commit()
+
+
+async def get_hf_markets_schedule() -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT last_snapshot_date FROM hf_markets_snapshot_schedule WHERE id = 1")
+        row = await cursor.fetchone()
+        return {"last_snapshot_date": row[0]}
+
+
+async def mark_hf_markets_snapshotted(snapshot_date: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE hf_markets_snapshot_schedule SET last_snapshot_date = ? WHERE id = 1", (snapshot_date,)
         )
         await db.commit()
 

@@ -12,7 +12,14 @@ until real usage actually calls for it").
 from datetime import date
 
 from app.coingecko_client import fetch_xstock_zar_prices
-from app.finance_db import get_luno_schedule, log_balance, mark_luno_snapshotted
+from app.finance_db import (
+    get_hf_markets_schedule,
+    get_luno_schedule,
+    log_balance,
+    mark_hf_markets_snapshotted,
+    mark_luno_snapshotted,
+)
+from app.hf_markets_client import read_balance as read_hf_markets_balance
 from app.luno_client import fetch_balances, fetch_zar_prices
 
 
@@ -107,3 +114,33 @@ async def compute_luno_zar_value(holdings: list[dict]) -> dict:
         "priced_assets": priced_assets,
         "unpriced_assets": unpriced_assets,
     }
+
+
+async def maybe_snapshot_hf_markets() -> None:
+    """Runs at most once per calendar day, same cadence as Luno's own
+    snapshot. Reads hf_markets_client.py's local file (written by
+    PCorpBalanceExport.mq5 running inside Josh's real MT5 terminal) --
+    no network call, no credentials, nothing that can fail except the
+    file not existing yet (EA not attached/running), which this
+    silently no-ops on, same fail-soft posture as the rest of Finance's
+    automatic sources."""
+    schedule = await get_hf_markets_schedule()
+    today = date.today().isoformat()
+    if schedule["last_snapshot_date"] == today:
+        return
+
+    data = read_hf_markets_balance()
+    if data is None:
+        return
+
+    balance = data.get("balance")
+    currency = data.get("currency", "ZAR")
+    if balance is None:
+        return
+    try:
+        amount = float(balance)
+    except (TypeError, ValueError):
+        return
+
+    await log_balance("Nasdaq / Markets", amount, asset=currency, notes="auto")
+    await mark_hf_markets_snapshotted(today)

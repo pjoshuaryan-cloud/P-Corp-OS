@@ -89,7 +89,7 @@ from app.joshx_tools import JOSHX_TOOL_NAMES, JOSHX_TOOLS, build_joshx_block, ex
 from app.finance_db import dashboard_snapshot as finance_dashboard_snapshot, init_finance_db
 from app.calendar_tools import CALENDAR_TOOL_NAMES, CALENDAR_TOOLS, execute_calendar_tool_call
 from app.finance_tools import FINANCE_TOOL_NAMES, FINANCE_TOOLS, build_finance_block, execute_finance_tool_call
-from app.finance import compute_luno_zar_value, maybe_snapshot_luno
+from app.finance import compute_luno_zar_value, maybe_snapshot_hf_markets, maybe_snapshot_luno
 from app.trading_division import dashboard_snapshot as trading_division_dashboard_snapshot
 from app.trading_division_agent import (
     TRADING_DIVISION_AGENT_TOOL_NAMES,
@@ -212,6 +212,12 @@ async def _trigger_scheduler_loop() -> None:
             await maybe_snapshot_luno()
         except Exception as exc:
             print(f"[finance] Luno snapshot tick failed: {exc}")
+        try:
+            # HF Markets' daily balance snapshot (2026-08-24) -- same
+            # shared-tick reasoning as Luno's above.
+            await maybe_snapshot_hf_markets()
+        except Exception as exc:
+            print(f"[finance] HF Markets snapshot tick failed: {exc}")
         await asyncio.sleep(TRIGGER_CHECK_INTERVAL_SECONDS)
 
 
