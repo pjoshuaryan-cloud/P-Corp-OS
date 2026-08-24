@@ -115,6 +115,9 @@ private struct AccountCard: View {
                 if let lunoValue = account.lunoValue {
                     LunoValueSummary(value: lunoValue)
                 }
+                if let live = account.hfMarketsLive {
+                    HFMarketsLiveSummary(status: live)
+                }
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(account.holdings) { holding in
                         HoldingRow(holding: holding)
@@ -154,6 +157,42 @@ private struct LunoValueSummary: View {
                     .font(PCorpFont.body(10.5))
                     .foregroundStyle(theme.textTertiary)
             }
+        }
+        .padding(.bottom, 4)
+    }
+}
+
+/// Real-time HF Markets equity/floating P&L (2026-08-24), requested by
+/// Joshua after realizing the balance figure alone doesn't reflect open
+/// trades. Read live on every fetch, not stored -- see
+/// backend/app/finance.py's get_hf_markets_live_status() docstring.
+private struct HFMarketsLiveSummary: View {
+    let status: HFMarketsLiveStatus
+    @Environment(\.appTheme) private var theme
+
+    private var pnlColor: Color {
+        if status.floatingPnl > 0 { return .green }
+        if status.floatingPnl < 0 { return .red }
+        return theme.textTertiary
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("LIVE EQUITY")
+                .font(PCorpFont.label(9))
+                .trackedLabel(1.1)
+                .foregroundStyle(theme.textTertiary)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("R\(String(format: "%.2f", status.equity))")
+                    .font(PCorpFont.mono(22, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                Text("\(status.floatingPnl >= 0 ? "+" : "")R\(String(format: "%.2f", status.floatingPnl))")
+                    .font(PCorpFont.mono(13, weight: .semibold))
+                    .foregroundStyle(pnlColor)
+            }
+            Text("Balance R\(String(format: "%.2f", status.balance)) while trades are open" + (status.updatedAt.map { " — updated \($0)" } ?? ""))
+                .font(PCorpFont.body(10.5))
+                .foregroundStyle(theme.textTertiary)
         }
         .padding(.bottom, 4)
     }

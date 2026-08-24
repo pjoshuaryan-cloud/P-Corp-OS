@@ -89,7 +89,12 @@ from app.joshx_tools import JOSHX_TOOL_NAMES, JOSHX_TOOLS, build_joshx_block, ex
 from app.finance_db import dashboard_snapshot as finance_dashboard_snapshot, init_finance_db
 from app.calendar_tools import CALENDAR_TOOL_NAMES, CALENDAR_TOOLS, execute_calendar_tool_call
 from app.finance_tools import FINANCE_TOOL_NAMES, FINANCE_TOOLS, build_finance_block, execute_finance_tool_call
-from app.finance import compute_luno_zar_value, maybe_snapshot_hf_markets, maybe_snapshot_luno
+from app.finance import (
+    compute_luno_zar_value,
+    get_hf_markets_live_status,
+    maybe_snapshot_hf_markets,
+    maybe_snapshot_luno,
+)
 from app.trading_division import dashboard_snapshot as trading_division_dashboard_snapshot
 from app.trading_division_agent import (
     TRADING_DIVISION_AGENT_TOOL_NAMES,
@@ -378,6 +383,11 @@ async def finance_dashboard(_: None = Depends(verify_token)) -> dict:
     for account in snapshot["accounts"]:
         if account["name"] == "Luno" and account["holdings"]:
             account["luno_value"] = await compute_luno_zar_value(account["holdings"])
+        elif account["name"] == "Nasdaq / Markets":
+            # Real-time equity/floating P&L (2026-08-24) -- Josh wanted
+            # to see this live during open trades, not just once a day.
+            # See app/finance.py's get_hf_markets_live_status() docstring.
+            account["hf_markets_live"] = get_hf_markets_live_status()
     return snapshot
 
 

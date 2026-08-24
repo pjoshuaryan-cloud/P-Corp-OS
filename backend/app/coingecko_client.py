@@ -11,6 +11,8 @@ no API key needed, same "read-only, no credential to manage" shape as
 Luno's own public tickers endpoint.
 """
 
+import time
+
 import httpx
 
 COINGECKO_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
@@ -29,12 +31,26 @@ _ASSET_TO_COINGECKO_ID = {
     "VTIX": "vanguard-xstock",
 }
 
+# Real bug found live (2026-08-24): fetching fresh on every single
+# GET /finance/dashboard call meant one transient CoinGecko hiccup (a
+# free-tier rate limit brush, a slow response, anything) instantly made
+# 6 real assets vanish from Josh's Luno total for that entire page load
+# -- confirmed live (the exact same call succeeded on retry moments
+# later). A personal portfolio doesn't need sub-5-minute price
+# freshness, so a short cache absorbs normal fluctuation; more
+# importantly, on a failed refresh this falls back to the last known-
+# good prices instead of returning nothing, so a transient failure
+# degrades to "slightly stale" rather than "silently missing."
+_CACHE_TTL_SECONDS = 300
+_cache: dict[str, float] = {}
+_cache_time: float = 0.0
+
 
 async def fetch_xstock_zar_prices() -> dict[str, float]:
-    """Fails soft (empty dict) on any error -- same posture as
-    luno_client.py's external-call handling. A failure here just means
-    compute_luno_zar_value() reports those assets as unpriced rather
-    than the dashboard breaking."""
+    global _cache, _cache_time
+    if _cache and (time.monotonic() - _cache_time) < _CACHE_TTL_SECONDS:
+        return _cache
+
     ids = ",".join(_ASSET_TO_COINGECKO_ID.values())
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -42,10 +58,17 @@ async def fetch_xstock_zar_prices() -> dict[str, float]:
             resp.raise_for_status()
             data = resp.json()
     except Exception:
-        return {}
+        # Fall back to the last known-good prices, even if stale,
+        # rather than an empty dict -- see module comment above.
+        return _cache
+
     prices: dict[str, float] = {}
     for asset, coin_id in _ASSET_TO_COINGECKO_ID.items():
         zar = data.get(coin_id, {}).get("zar")
         if zar is not None:
             prices[asset] = float(zar)
-    return prices
+
+    if prices:
+        _cache = prices
+        _cache_time = time.monotonic()
+    return prices or _cache

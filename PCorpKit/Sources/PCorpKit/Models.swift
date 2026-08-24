@@ -557,6 +557,26 @@ public struct LunoZarValue: Decodable {
     }
 }
 
+/// Real-time HF Markets equity/floating P&L (2026-08-24), read live from
+/// the local MT5 file bridge on every fetch -- never stored/snapshotted,
+/// since a cached number would go stale the moment the market moves.
+/// `balance` is the settled figure the daily snapshot tracks; `equity`
+/// reflects open positions; `floatingPnl` is the difference -- positive
+/// means currently in profit, negative means currently in loss.
+public struct HFMarketsLiveStatus: Decodable {
+    public let balance: Double
+    public let equity: Double
+    public let floatingPnl: Double
+    public let currency: String
+    public let updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case balance, equity, currency
+        case floatingPnl = "floating_pnl"
+        case updatedAt = "updated_at"
+    }
+}
+
 public struct FinanceAccount: Identifiable, Decodable {
     public let id: Int
     public let name: String
@@ -564,12 +584,14 @@ public struct FinanceAccount: Identifiable, Decodable {
     public let isAutomatic: Bool
     public let holdings: [FinanceHolding]
     public let lunoValue: LunoZarValue?
+    public let hfMarketsLive: HFMarketsLiveStatus?
 
     enum CodingKeys: String, CodingKey {
         case id, name, holdings
         case accountType = "account_type"
         case isAutomatic = "is_automatic"
         case lunoValue = "luno_value"
+        case hfMarketsLive = "hf_markets_live"
     }
 }
 

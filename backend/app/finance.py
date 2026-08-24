@@ -144,3 +144,31 @@ async def maybe_snapshot_hf_markets() -> None:
 
     await log_balance("Nasdaq / Markets", amount, asset=currency, notes="auto")
     await mark_hf_markets_snapshotted(today)
+
+
+def get_hf_markets_live_status() -> dict | None:
+    """Real-time equity/floating-P&L for HF Markets, requested (2026-08-24)
+    after Josh wanted to see live balance during open trades rather than
+    only the once-a-day snapshot. Deliberately NOT stored/snapshotted --
+    reads hf_markets_client.py's file fresh on every call, same "compute
+    live, don't cache a number that goes stale the moment the market
+    moves" reasoning already applied to Luno's own rand-value total.
+    `balance` is the settled figure (what the daily snapshot tracks);
+    `equity` reflects open positions; `floating_pnl` is the difference --
+    positive means currently in profit, negative means currently in
+    loss. Returns None if the EA isn't running/hasn't written a file yet,
+    same fail-soft posture as everything else reading this file."""
+    data = read_hf_markets_balance()
+    if data is None:
+        return None
+    balance = data.get("balance")
+    equity = data.get("equity")
+    if balance is None or equity is None:
+        return None
+    return {
+        "balance": balance,
+        "equity": equity,
+        "floating_pnl": equity - balance,
+        "currency": data.get("currency", "ZAR"),
+        "updated_at": data.get("updated_at"),
+    }
