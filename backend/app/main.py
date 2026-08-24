@@ -87,6 +87,7 @@ from app.personal_tools import PERSONAL_TOOL_NAMES, PERSONAL_TOOLS, build_person
 from app.joshx_db import dashboard_snapshot as joshx_dashboard_snapshot, init_joshx_db
 from app.joshx_tools import JOSHX_TOOL_NAMES, JOSHX_TOOLS, build_joshx_block, execute_joshx_tool_call
 from app.finance_db import dashboard_snapshot as finance_dashboard_snapshot, init_finance_db
+from app.calendar_tools import CALENDAR_TOOL_NAMES, CALENDAR_TOOLS, execute_calendar_tool_call
 from app.finance_tools import FINANCE_TOOL_NAMES, FINANCE_TOOLS, build_finance_block, execute_finance_tool_call
 from app.finance import compute_luno_zar_value, maybe_snapshot_luno
 from app.trading_division import dashboard_snapshot as trading_division_dashboard_snapshot
@@ -705,6 +706,7 @@ async def run_claude_turn(
                 *PERSONAL_TOOLS,
                 *JOSHX_TOOLS,
                 *FINANCE_TOOLS,
+                *CALENDAR_TOOLS,
             ],
         ) as stream:
             async for text in stream.text_stream:
@@ -796,6 +798,8 @@ async def run_claude_turn(
                 result = await execute_joshx_tool_call(block.name, block.input)
             elif block.name in FINANCE_TOOL_NAMES:
                 result = await execute_finance_tool_call(block.name, block.input)
+            elif block.name in CALENDAR_TOOL_NAMES:
+                result = await execute_calendar_tool_call(block.name, block.input)
             else:
                 result = await execute_tool_call(block.name, block.input)
             # Real audit trail (2026-08-10, SECURITY.md's flagged gap) --
