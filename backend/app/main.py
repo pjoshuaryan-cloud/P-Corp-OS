@@ -86,6 +86,9 @@ from app.personal_db import dashboard_snapshot as personal_dashboard_snapshot, i
 from app.personal_tools import PERSONAL_TOOL_NAMES, PERSONAL_TOOLS, build_personal_block, execute_personal_tool_call
 from app.joshx_db import dashboard_snapshot as joshx_dashboard_snapshot, init_joshx_db
 from app.joshx_tools import JOSHX_TOOL_NAMES, JOSHX_TOOLS, build_joshx_block, execute_joshx_tool_call
+from app.finance_db import dashboard_snapshot as finance_dashboard_snapshot, init_finance_db
+from app.finance_tools import FINANCE_TOOL_NAMES, FINANCE_TOOLS, build_finance_block, execute_finance_tool_call
+from app.finance import maybe_snapshot_luno
 from app.trading_division import dashboard_snapshot as trading_division_dashboard_snapshot
 from app.trading_division_agent import (
     TRADING_DIVISION_AGENT_TOOL_NAMES,
@@ -201,6 +204,13 @@ async def _trigger_scheduler_loop() -> None:
             await maybe_run_daily_digest()
         except Exception as exc:
             print(f"[triggers] scheduler tick failed: {exc}")
+        try:
+            # Finance's daily Luno balance snapshot (2026-08-21) rides
+            # this same tick rather than starting a second background
+            # loop -- see app/finance.py's own docstring.
+            await maybe_snapshot_luno()
+        except Exception as exc:
+            print(f"[finance] Luno snapshot tick failed: {exc}")
         await asyncio.sleep(TRIGGER_CHECK_INTERVAL_SECONDS)
 
 
@@ -211,6 +221,7 @@ async def lifespan(app: FastAPI):
     await init_operations_db()
     await init_personal_db()
     await init_joshx_db()
+    await init_finance_db()
     await init_automations_db()
     await init_audit_db()
     await init_triggers_db()
@@ -326,6 +337,14 @@ async def joshx_dashboard(_: None = Depends(verify_token)) -> dict:
     # 1 scope only (clients/leads/projects) -- see app/joshx_db.py's own
     # docstring.
     return await joshx_dashboard_snapshot()
+
+
+@app.get("/finance/dashboard")
+async def finance_dashboard(_: None = Depends(verify_token)) -> dict:
+    # Backs the desktop "Finance" section -- Josh's personal investment
+    # tracking, Luno automatic + four manually-logged accounts. See
+    # app/finance_db.py's own docstring for scope.
+    return await finance_dashboard_snapshot()
 
 
 @app.get("/focus")
@@ -577,6 +596,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 + await build_operations_block()
                 + await build_personal_block()
                 + await build_joshx_block()
+                + await build_finance_block()
             )
 
             try:
@@ -657,6 +677,7 @@ async def run_claude_turn(
                 *TRADING_DIVISION_AGENT_TOOLS,
                 *PERSONAL_TOOLS,
                 *JOSHX_TOOLS,
+                *FINANCE_TOOLS,
             ],
         ) as stream:
             async for text in stream.text_stream:
@@ -746,6 +767,8 @@ async def run_claude_turn(
                 result = await execute_personal_tool_call(block.name, block.input)
             elif block.name in JOSHX_TOOL_NAMES:
                 result = await execute_joshx_tool_call(block.name, block.input)
+            elif block.name in FINANCE_TOOL_NAMES:
+                result = await execute_finance_tool_call(block.name, block.input)
             else:
                 result = await execute_tool_call(block.name, block.input)
             # Real audit trail (2026-08-10, SECURITY.md's flagged gap) --

@@ -47,6 +47,8 @@ struct ContentView: View {
                     AlphaModeDashboardView()
                 case "Joshx":
                     JoshxView()
+                case "Finance":
+                    FinanceView()
                 case "Trading Division":
                     TradingDivisionView()
                 case "Personal":

@@ -520,6 +520,45 @@ public struct JoshxProject: Identifiable, Decodable {
     }
 }
 
+/// Finance (2026-08-21) -- Josh's personal investment tracking, backed by
+/// backend/app/finance_db.py's own joshx.db-style local file. One holding
+/// per asset an account has ever held (Luno especially can carry ZAR cash
+/// *and* crypto assets at once) -- deliberately no blended cross-currency
+/// total, same "never fabricate" reasoning as everywhere else here.
+public struct FinanceHolding: Identifiable, Decodable {
+    public let id = UUID()
+    public let asset: String
+    public let balance: Double
+    public let recordedAt: String
+    public let trend: String
+    public let previousBalance: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case asset, balance, trend
+        case recordedAt = "recorded_at"
+        case previousBalance = "previous_balance"
+    }
+}
+
+public struct FinanceAccount: Identifiable, Decodable {
+    public let id: Int
+    public let name: String
+    public let accountType: String?
+    public let isAutomatic: Bool
+    public let holdings: [FinanceHolding]
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, holdings
+        case accountType = "account_type"
+        case isAutomatic = "is_automatic"
+    }
+}
+
+/// Fetched from GET /finance/dashboard.
+public struct FinanceDashboard: Decodable {
+    public let accounts: [FinanceAccount]
+}
+
 /// Fetched from GET /joshx/dashboard. Deliberately no revenue/outstanding/
 /// available-days fields -- Phase 1 has no invoices or availability data
 /// model, and this app never shows a stat without real data behind it
