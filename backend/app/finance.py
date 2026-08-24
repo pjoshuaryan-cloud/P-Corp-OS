@@ -17,11 +17,21 @@ from app.luno_client import fetch_balances
 
 async def maybe_snapshot_luno() -> None:
     """Runs at most once per calendar day. Records one balance_snapshots
-    row per non-zero asset Luno reports (ZAR cash, XBT, ETH, etc. --
-    however many accounts/assets are genuinely there), never a fabricated
-    single total. If LUNO_API_KEY_ID/SECRET aren't set, fetch_balances()
-    returns an empty list and this silently does nothing -- same
-    fail-soft posture as the rest of Finance's external-data handling."""
+    row per non-zero asset Luno reports (ZAR cash, XBT, ETH, etc.).
+
+    Real thing discovered live (2026-08-24, first real test against
+    Josh's actual account): Luno splits each asset across multiple
+    sub-accounts -- Transactional, Staking, Bundle, Earn, Prediction --
+    so one asset like ADA can appear as three separate balance entries
+    (e.g. 0, 0, 11.004303) in the same API response. Logging each one as
+    its own snapshot would corrupt the trend math in finance_db.py's
+    dashboard_snapshot() (which only looks at the two most recent rows
+    per asset) -- whichever sub-account happened to be inserted last
+    would silently become "the" balance, and the others would vanish
+    from the trend entirely. Summed by asset first so each asset gets
+    exactly one honest snapshot per day: the true total Josh holds in
+    that asset across every Luno sub-account, not an arbitrary one of
+    them."""
     schedule = await get_luno_schedule()
     today = date.today().isoformat()
     if schedule["last_snapshot_date"] == today:
@@ -31,6 +41,7 @@ async def maybe_snapshot_luno() -> None:
     if not balances:
         return
 
+    totals: dict[str, float] = {}
     for entry in balances:
         asset = entry.get("asset")
         balance = entry.get("balance")
@@ -40,6 +51,9 @@ async def maybe_snapshot_luno() -> None:
             amount = float(balance)
         except (TypeError, ValueError):
             continue
+        totals[asset] = totals.get(asset, 0.0) + amount
+
+    for asset, amount in totals.items():
         if amount == 0:
             continue
         await log_balance("Luno", amount, asset=asset, notes="auto")

@@ -231,11 +231,31 @@ async def lifespan(app: FastAPI):
     # single time, confirmed directly (curl timing showed the exact same
     # request taking 4.9s cold vs 1.1s with a warm connection). One
     # long-lived client with connection keep-alive removes that entirely.
-    app.state.elevenlabs_client = httpx.AsyncClient(timeout=30.0)
-    trigger_scheduler_task = asyncio.create_task(_trigger_scheduler_loop())
+    # Real bug found live (2026-08-24, via Finance's Luno snapshot
+    # writing every asset twice with identical timestamps): when
+    # TAILSCALE_IP is set, run() below starts TWO uvicorn.Server
+    # instances against this same `app` object (_run_dual -- one for
+    # 127.0.0.1, one for the Tailscale IP). Each server's ASGI lifecycle
+    # independently enters this lifespan on startup, so without a guard,
+    # both the ElevenLabs client and the scheduler task were being
+    # created twice -- two competing copies of _trigger_scheduler_loop
+    # racing in the same process, both hitting the same SQLite files.
+    # `app.state` is the one thing genuinely shared between both
+    # lifespan entries (same Python object underneath), so it's used
+    # here as the guard. This was pre-existing and affected the Triggers
+    # Layer's own digest scheduling too, not just Finance -- Finance's
+    # snapshot just made it visible first.
+    if not hasattr(app.state, "elevenlabs_client"):
+        app.state.elevenlabs_client = httpx.AsyncClient(timeout=30.0)
+    if not hasattr(app.state, "trigger_scheduler_task"):
+        app.state.trigger_scheduler_task = asyncio.create_task(_trigger_scheduler_loop())
     yield
-    trigger_scheduler_task.cancel()
-    await app.state.elevenlabs_client.aclose()
+    if hasattr(app.state, "trigger_scheduler_task"):
+        app.state.trigger_scheduler_task.cancel()
+        del app.state.trigger_scheduler_task
+    if hasattr(app.state, "elevenlabs_client"):
+        await app.state.elevenlabs_client.aclose()
+        del app.state.elevenlabs_client
 
 
 app = FastAPI(title="P Corp OS Backend", lifespan=lifespan)
