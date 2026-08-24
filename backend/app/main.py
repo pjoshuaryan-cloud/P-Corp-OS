@@ -95,6 +95,7 @@ from app.finance import (
     maybe_snapshot_hf_markets,
     maybe_snapshot_luno,
 )
+from app.market_movers import maybe_snapshot_market_prices
 from app.trading_division import dashboard_snapshot as trading_division_dashboard_snapshot
 from app.trading_division_agent import (
     TRADING_DIVISION_AGENT_TOOL_NAMES,
@@ -223,6 +224,12 @@ async def _trigger_scheduler_loop() -> None:
             await maybe_snapshot_hf_markets()
         except Exception as exc:
             print(f"[finance] HF Markets snapshot tick failed: {exc}")
+        try:
+            # Market movers' daily price-history snapshot (2026-08-25) --
+            # same shared-tick reasoning as Luno/HF Markets above.
+            await maybe_snapshot_market_prices()
+        except Exception as exc:
+            print(f"[triggers] market movers snapshot tick failed: {exc}")
         await asyncio.sleep(TRIGGER_CHECK_INTERVAL_SECONDS)
 
 

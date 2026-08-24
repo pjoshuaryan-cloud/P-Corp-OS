@@ -54,6 +54,10 @@ RULE_TYPES = {
     "client_contact_gap": 21,
     "project_stage_stall": None,
     "deliverable_overdue": None,
+    # No configurable threshold column here either -- market_movers.py
+    # hardcodes its "notable move" percentage in the checker itself,
+    # same pattern as every threshold_days=None rule above.
+    "market_mover": None,
 }
 
 
@@ -95,6 +99,34 @@ async def init_triggers_db() -> None:
         (count,) = await cursor.fetchone()
         if count == 0:
             await db.execute("INSERT INTO digest_schedule (id, last_sent_date, send_hour) VALUES (1, NULL, 7)")
+
+        # market_movers.py's price history -- a market price isn't tied
+        # to any one account/holding (unlike Finance's balance_snapshots),
+        # so it lives here as its own table rather than in finance_db.py.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS market_price_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset TEXT NOT NULL,
+                price_zar REAL NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS market_movers_snapshot_schedule (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_snapshot_date TEXT
+            )
+            """
+        )
+        cursor = await db.execute("SELECT COUNT(*) FROM market_movers_snapshot_schedule WHERE id = 1")
+        (count,) = await cursor.fetchone()
+        if count == 0:
+            await db.execute(
+                "INSERT INTO market_movers_snapshot_schedule (id, last_snapshot_date) VALUES (1, NULL)"
+            )
 
         for rule_type, threshold in RULE_TYPES.items():
             await db.execute(
@@ -227,3 +259,62 @@ async def mark_digest_sent(sent_date: date) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE digest_schedule SET last_sent_date = ? WHERE id = 1", (sent_date.isoformat(),))
         await db.commit()
+
+
+async def get_market_movers_schedule() -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT last_snapshot_date FROM market_movers_snapshot_schedule WHERE id = 1")
+        row = await cursor.fetchone()
+        return {"last_snapshot_date": row[0]}
+
+
+async def mark_market_movers_snapshotted(snapshot_date: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE market_movers_snapshot_schedule SET last_snapshot_date = ? WHERE id = 1", (snapshot_date,)
+        )
+        await db.commit()
+
+
+async def record_price_snapshots(prices: dict[str, float]) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        for asset, price in prices.items():
+            await db.execute(
+                "INSERT INTO market_price_snapshots (asset, price_zar) VALUES (?, ?)", (asset, price)
+            )
+        await db.commit()
+
+
+async def get_price_change(asset: str, lookback_days: int = 1) -> dict | None:
+    """The most recent price for `asset`, plus the closest snapshot at
+    least `lookback_days` old -- used to compute a real day-over-day (or
+    N-day) percent change. Returns None if there isn't yet a snapshot old
+    enough to compare against (e.g. the first day this asset was ever
+    tracked)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT price_zar, recorded_at FROM market_price_snapshots WHERE asset = ? "
+            "ORDER BY recorded_at DESC LIMIT 1",
+            (asset,),
+        )
+        latest = await cursor.fetchone()
+        if latest is None:
+            return None
+
+        cutoff = (datetime.now() - timedelta(days=lookback_days)).isoformat()
+        cursor = await db.execute(
+            "SELECT price_zar, recorded_at FROM market_price_snapshots WHERE asset = ? AND recorded_at <= ? "
+            "ORDER BY recorded_at DESC LIMIT 1",
+            (asset, cutoff),
+        )
+        previous = await cursor.fetchone()
+        if previous is None:
+            return None
+
+    return {
+        "current_price": latest["price_zar"],
+        "previous_price": previous["price_zar"],
+        "current_at": latest["recorded_at"],
+        "previous_at": previous["recorded_at"],
+    }

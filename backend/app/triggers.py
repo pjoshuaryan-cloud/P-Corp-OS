@@ -30,6 +30,7 @@ import aiosqlite
 from app.alpha_mode_db import DB_PATH as ALPHA_MODE_DB_PATH
 from app.alpha_mode_supabase import PROJECT_STAGES
 from app.email_digest import send_digest_email
+from app.market_movers import check_market_movers
 from app.supabase_client import select_rows
 from app.triggers_db import (
     clear_resolved,
@@ -155,6 +156,7 @@ RULE_CHECKERS = {
     "client_contact_gap": lambda threshold: _check_client_contact_gap(threshold or 21),
     "project_stage_stall": lambda threshold: _check_project_stage_stall(),
     "deliverable_overdue": lambda threshold: _check_deliverable_overdue(),
+    "market_mover": check_market_movers,
 }
 
 SECTION_TITLES = {
@@ -162,6 +164,10 @@ SECTION_TITLES = {
     "client_contact_gap": "CLIENTS NEEDING CONTACT",
     "project_stage_stall": "PROJECTS STALLED",
     "deliverable_overdue": "DELIVERABLES OVERDUE",
+    # Deliberately "MARKET MOVERS," not "OPPORTUNITIES" -- see
+    # market_movers.py's own docstring for why the framing stays
+    # strictly factual (price moved X%), never a recommendation.
+    "market_mover": "MARKET MOVERS",
 }
 
 
