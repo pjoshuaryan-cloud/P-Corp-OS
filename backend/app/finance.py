@@ -11,8 +11,9 @@ until real usage actually calls for it").
 
 from datetime import date
 
+from app.coingecko_client import fetch_xstock_zar_prices
 from app.finance_db import get_luno_schedule, log_balance, mark_luno_snapshotted
-from app.luno_client import fetch_balances
+from app.luno_client import fetch_balances, fetch_zar_prices
 
 
 async def maybe_snapshot_luno() -> None:
@@ -59,3 +60,50 @@ async def maybe_snapshot_luno() -> None:
         await log_balance("Luno", amount, asset=asset, notes="auto")
 
     await mark_luno_snapshotted(today)
+
+
+async def compute_luno_zar_value(holdings: list[dict]) -> dict:
+    """Real overall Luno value in rand, requested live (2026-08-24) after
+    Josh noticed the Finance tab only showed per-asset lines. `holdings`
+    is the Luno account's own `holdings` list from finance_db.py's
+    dashboard_snapshot(). Priced live against Luno's own public price
+    feed (luno_client.fetch_zar_prices()) at request time, not stored --
+    a snapshotted value would go stale the moment the market moves,
+    unlike the balance itself which only needs a daily refresh.
+
+    Combines two real price sources: Luno's own feed (direct ZAR pairs
+    plus a USDT cross-rate for BNB/PAXG) and CoinGecko's public pricing
+    for Luno's tokenized xStock products (AAPLx, SPYx, QQQx, TQQQx,
+    VTIx, GLDx), which have no price anywhere on Luno itself -- found
+    live (2026-08-24) after Josh asked why 8 of his 17 assets were
+    excluded from the first version of this total. Luno's own price
+    wins if an asset were ever quoted by both (never happens today, but
+    the real venue's price is more authoritative than an index's).
+    Still reports `unpriced_assets` rather than silently excluding
+    anything a price genuinely can't be found for -- the same "never
+    fabricate, never silently omit" discipline as everywhere else in
+    this app."""
+    xstock_prices = await fetch_xstock_zar_prices()
+    luno_prices = await fetch_zar_prices()
+    prices = {**xstock_prices, **luno_prices}
+    total = 0.0
+    priced_assets: list[str] = []
+    unpriced_assets: list[str] = []
+    for holding in holdings:
+        asset = holding["asset"]
+        balance = holding["balance"]
+        if asset == "ZAR":
+            total += balance
+            priced_assets.append(asset)
+            continue
+        price = prices.get(asset)
+        if price is None:
+            unpriced_assets.append(asset)
+            continue
+        total += balance * price
+        priced_assets.append(asset)
+    return {
+        "estimated_zar_value": total,
+        "priced_assets": priced_assets,
+        "unpriced_assets": unpriced_assets,
+    }

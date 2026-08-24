@@ -88,7 +88,7 @@ from app.joshx_db import dashboard_snapshot as joshx_dashboard_snapshot, init_jo
 from app.joshx_tools import JOSHX_TOOL_NAMES, JOSHX_TOOLS, build_joshx_block, execute_joshx_tool_call
 from app.finance_db import dashboard_snapshot as finance_dashboard_snapshot, init_finance_db
 from app.finance_tools import FINANCE_TOOL_NAMES, FINANCE_TOOLS, build_finance_block, execute_finance_tool_call
-from app.finance import maybe_snapshot_luno
+from app.finance import compute_luno_zar_value, maybe_snapshot_luno
 from app.trading_division import dashboard_snapshot as trading_division_dashboard_snapshot
 from app.trading_division_agent import (
     TRADING_DIVISION_AGENT_TOOL_NAMES,
@@ -364,7 +364,14 @@ async def finance_dashboard(_: None = Depends(verify_token)) -> dict:
     # Backs the desktop "Finance" section -- Josh's personal investment
     # tracking, Luno automatic + four manually-logged accounts. See
     # app/finance_db.py's own docstring for scope.
-    return await finance_dashboard_snapshot()
+    snapshot = await finance_dashboard_snapshot()
+    # Real overall Luno value, computed live against Luno's own price
+    # feed (2026-08-24) -- see app/finance.py's compute_luno_zar_value()
+    # docstring for why this can't just be a naive sum of raw balances.
+    for account in snapshot["accounts"]:
+        if account["name"] == "Luno" and account["holdings"]:
+            account["luno_value"] = await compute_luno_zar_value(account["holdings"])
+    return snapshot
 
 
 @app.get("/focus")

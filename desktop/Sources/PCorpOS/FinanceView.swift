@@ -112,6 +112,9 @@ private struct AccountCard: View {
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
             } else {
+                if let lunoValue = account.lunoValue {
+                    LunoValueSummary(value: lunoValue)
+                }
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(account.holdings) { holding in
                         HoldingRow(holding: holding)
@@ -123,6 +126,36 @@ private struct AccountCard: View {
         .background(RoundedRectangle(cornerRadius: 14).fill(.regularMaterial))
         .background(RoundedRectangle(cornerRadius: 14).fill(theme.background.opacity(0.35)))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(theme.surfaceBorder))
+    }
+}
+
+/// Real overall Luno value in rand (2026-08-24), computed live against
+/// Luno's own price feed -- requested by Joshua after noticing the
+/// Finance tab only showed per-asset lines, no total. Honestly notes
+/// what isn't included rather than silently understating the real
+/// portfolio -- Luno has no direct ZAR price for its tokenized-stock
+/// products or a couple of other assets, so those stay excluded from the
+/// number and named explicitly instead of hidden.
+private struct LunoValueSummary: View {
+    let value: LunoZarValue
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("ESTIMATED VALUE")
+                .font(PCorpFont.label(9))
+                .trackedLabel(1.1)
+                .foregroundStyle(theme.textTertiary)
+            Text("R\(String(format: "%.2f", value.estimatedZarValue))")
+                .font(PCorpFont.mono(22, weight: .semibold))
+                .foregroundStyle(theme.textPrimary)
+            if !value.unpricedAssets.isEmpty {
+                Text("Excludes \(value.unpricedAssets.joined(separator: ", ")) — no live ZAR price available for these on Luno.")
+                    .font(PCorpFont.body(10.5))
+                    .foregroundStyle(theme.textTertiary)
+            }
+        }
+        .padding(.bottom, 4)
     }
 }
 

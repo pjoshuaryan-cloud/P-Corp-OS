@@ -540,17 +540,36 @@ public struct FinanceHolding: Identifiable, Decodable {
     }
 }
 
+/// Luno's real overall rand value (2026-08-24), computed live against
+/// Luno's own price feed -- see backend/app/finance.py's
+/// compute_luno_zar_value() docstring for why some holdings can't be
+/// priced (Luno's tokenized-stock products and a couple of assets have
+/// no direct ZAR pair) and are reported rather than silently dropped.
+public struct LunoZarValue: Decodable {
+    public let estimatedZarValue: Double
+    public let pricedAssets: [String]
+    public let unpricedAssets: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case estimatedZarValue = "estimated_zar_value"
+        case pricedAssets = "priced_assets"
+        case unpricedAssets = "unpriced_assets"
+    }
+}
+
 public struct FinanceAccount: Identifiable, Decodable {
     public let id: Int
     public let name: String
     public let accountType: String?
     public let isAutomatic: Bool
     public let holdings: [FinanceHolding]
+    public let lunoValue: LunoZarValue?
 
     enum CodingKeys: String, CodingKey {
         case id, name, holdings
         case accountType = "account_type"
         case isAutomatic = "is_automatic"
+        case lunoValue = "luno_value"
     }
 }
 
