@@ -78,6 +78,12 @@ struct RootView: View {
                         KnowledgeView()
                     case "Alpha Mode Media":
                         AlphaModeDashboardView()
+                    case "Joshx":
+                        JoshxView()
+                    case "Finance":
+                        FinanceView()
+                    case "Triggers":
+                        TriggersView()
                     case "Calendar":
                         CalendarView()
                     default:
@@ -86,6 +92,26 @@ struct RootView: View {
                 }
                 .id(selectedItem.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Real bug found live (2026-08-26): the edge-swipe hot
+                // zone below used to be a ZStack-level sibling spanning
+                // the FULL screen height, which put its leading 32pt
+                // strip directly on top of topBar's hamburger button (also
+                // in that same leading area) -- silently swallowing every
+                // tap on the button itself, not just swipes on the
+                // content. Scoping it to an overlay on just this Group
+                // (the switched content, below topBar/SystemStatusHeader)
+                // keeps the edge-swipe-to-open gesture working exactly as
+                // before while leaving the hamburger button's own tap
+                // target untouched.
+                .overlay(alignment: .leading) {
+                    if !isDrawerOpen {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .frame(width: edgeSwipeActivationWidth)
+                            .frame(maxHeight: .infinity)
+                            .gesture(edgeOpenGesture)
+                    }
+                }
             }
             .background(theme.background)
             .allowsHitTesting(!isDrawerOpen)
@@ -100,29 +126,14 @@ struct RootView: View {
                 .ignoresSafeArea()
                 .offset(x: drawerOffsetX)
 
-            // Real bug found live (2026-08-13): closing worked, opening
-            // didn't. Root cause -- both directions shared one DragGesture
-            // attached to the whole ZStack, but WarRoomView's chat is a
-            // ScrollView, and SwiftUI/UIKit gesture arbitration generally
-            // lets a child view's own gesture recognizer (the ScrollView's
-            // pan) win over a plain .gesture() on a parent, for touches
-            // that start inside it. Closing was never affected by this --
-            // once open, the main content's hit-testing is off (below),
-            // so there's no ScrollView underneath to compete with. Opening
-            // was, since the closed-state content (and its ScrollView) is
-            // still fully interactive. Fixed by giving the open-swipe its
-            // own dedicated hot zone: a thin, otherwise-invisible strip
-            // hugging the true left bezel with no ScrollView inside it to
-            // lose the arbitration to -- same ~20-32pt edge convention
-            // Mail/Gmail/Slack all use, not an arbitrary choice.
-            if !isDrawerOpen {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .frame(width: edgeSwipeActivationWidth)
-                    .frame(maxHeight: .infinity)
-                    .ignoresSafeArea()
-                    .gesture(edgeOpenGesture)
-            }
+            // Edge-swipe-to-open's hot zone (2026-08-13's real fix for
+            // "closing worked, opening didn't" -- ScrollView content wins
+            // gesture arbitration over a plain parent .gesture() for
+            // touches starting inside it) now lives as an overlay on the
+            // content Group above, not here -- see the real bug fixed
+            // live 2026-08-26: a full-ZStack-height zone at this level
+            // covered topBar's hamburger button too, silently swallowing
+            // taps on it.
         }
         .gesture(closeDragGesture)
         .task {

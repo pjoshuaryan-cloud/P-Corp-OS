@@ -25,9 +25,9 @@ private struct NavGroup {
 
 private let navGroups: [NavGroup] = [
     NavGroup(label: "CORE", itemTitles: ["War Room", "Frank"]),
-    NavGroup(label: "DIVISIONS", itemTitles: ["Alpha Mode Media", "Trading Division", "Finance"]),
+    NavGroup(label: "DIVISIONS", itemTitles: ["Alpha Mode Media", "Joshx", "Trading Division", "Finance"]),
     NavGroup(label: "LIFE", itemTitles: ["Personal", "Calendar"]),
-    NavGroup(label: "INTELLIGENCE", itemTitles: ["Knowledge", "Agents", "Automations"]),
+    NavGroup(label: "INTELLIGENCE", itemTitles: ["Knowledge", "Agents", "Automations", "Triggers"]),
     NavGroup(label: "SYSTEM", itemTitles: ["Settings"]),
 ]
 
@@ -139,7 +139,13 @@ private struct NavRow: View {
                 Image(systemName: item.systemImage)
                     .font(.system(size: 15))
                     .frame(width: 20)
-                    .foregroundStyle((IconColors.forNavItem(item.title) ?? theme.textPrimary).opacity(isSelected ? 1.0 : 0.55))
+                    // Joshx gets theme.accent, matching desktop's own
+                    // Sidebar.swift special-case -- its one deliberate
+                    // visual identity marker (2026-08-25 iOS parity).
+                    .foregroundStyle(
+                        (item.title == "Joshx" ? theme.accent : IconColors.forNavItem(item.title)) ?? theme.textPrimary
+                    )
+                    .opacity(isSelected ? 1.0 : 0.55)
             }
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title)

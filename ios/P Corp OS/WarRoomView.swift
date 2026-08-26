@@ -85,6 +85,29 @@ struct WarRoomView: View {
         }
     }
 
+    /// Proactive greeting summary (2026-08-25 iOS parity pass, porting
+    /// desktop's own Face-Lift item 08) -- real Situation Room alerts
+    /// plus risk-category Insights, same two sources app/brief.py's
+    /// "What Matters" section combines. Unlike desktop, this reuses the
+    /// same `insightsClient` already feeding this view's own "FRANK'S
+    /// INSIGHTS" card below rather than a second separate client --
+    /// desktop needs its own copy because the greeting and the right-
+    /// rail Insights card are two different views there; here they're
+    /// the same view, so one fetch already covers both.
+    fileprivate struct AttentionItem: Identifiable {
+        let id = UUID()
+        let label: String
+        let detail: String
+    }
+
+    private var attentionItems: [AttentionItem] {
+        let urgent = situationRoomClient.alerts.map { AttentionItem(label: $0.targetNavTitle.uppercased(), detail: $0.detail) }
+        let risks = insightsClient.insights
+            .filter { $0.category == "risk" }
+            .map { AttentionItem(label: $0.targetNavTitle.uppercased(), detail: $0.detail) }
+        return urgent + risks
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if !situationRoomClient.alerts.isEmpty {
@@ -186,9 +209,31 @@ struct WarRoomView: View {
 
     private var dashboardHeader: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("\(greeting), Joshx.")
-                .font(PCorpFont.body(13, weight: .semibold))
-                .foregroundStyle(theme.textPrimary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("\(greeting), Joshx.")
+                    .font(PCorpFont.body(13, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                // Real, dynamic summary (2026-08-25 iOS parity pass) --
+                // replaces the old static line with the same honest
+                // "day is clear" vs "N things require attention" logic
+                // desktop's own War Room greeting already has.
+                if attentionItems.isEmpty {
+                    Text("Nothing requires immediate attention. Your day is clear.")
+                        .font(PCorpFont.body(11.5))
+                        .foregroundStyle(theme.textSecondary)
+                } else {
+                    Text("\(attentionItems.count) THING\(attentionItems.count == 1 ? "" : "S") REQUIRE\(attentionItems.count == 1 ? "S" : "") YOUR ATTENTION.")
+                        .font(PCorpFont.label(9))
+                        .tracking(1.0)
+                        .foregroundStyle(theme.textSecondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(attentionItems.prefix(3).enumerated()), id: \.offset) { index, item in
+                            AttentionRow(number: index + 1, item: item)
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+            }
             // Ported from desktop's own WarRoomCommandMap.swift
             // (2026-08-20, Face-Lift iOS parity pass) -- desktop places
             // this below Frank's orb, which iOS's dashboard-cards-always-
@@ -349,6 +394,33 @@ struct WarRoomView: View {
             .font(PCorpFont.label(9.5))
             .tracking(1.6)
             .foregroundStyle(theme.textSecondary)
+    }
+}
+
+/// One numbered row in the proactive greeting's attention list, matching
+/// desktop's own AttentionRow (WarRoomView.swift there) -- "01 / LABEL /
+/// detail." `number` is a real 1-based position, not decoration.
+private struct AttentionRow: View {
+    let number: Int
+    let item: WarRoomView.AttentionItem
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(String(format: "%02d", number))
+                .font(PCorpFont.mono(10))
+                .foregroundStyle(theme.textTertiary)
+                .frame(width: 16, alignment: .leading)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.label)
+                    .font(PCorpFont.label(9))
+                    .tracking(0.8)
+                    .foregroundStyle(theme.textPrimary)
+                Text(item.detail)
+                    .font(PCorpFont.body(11.5))
+                    .foregroundStyle(theme.textSecondary)
+            }
+        }
     }
 }
 
