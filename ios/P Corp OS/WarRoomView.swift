@@ -142,9 +142,19 @@ struct WarRoomView: View {
                     .padding(.top, 8)
                 Spacer(minLength: 0)
             } else {
-                dashboardHeader
-                Divider().overlay(theme.divider)
-                ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming)
+                // Real bug found live (2026-08-27): dashboardHeader used to
+                // sit outside this scroll region as a fixed-height sibling.
+                // With the keyboard up eating screen space, that fixed
+                // header didn't shrink -- it squeezed ChatThreadView's own
+                // ScrollView down (sometimes to near-zero height), leaving
+                // no real room to drag through message history while
+                // typing. Folding the header into the same ScrollView as
+                // the messages makes the whole thing one continuous
+                // scrollable region -- the header just scrolls out of the
+                // way instead of permanently reserving space.
+                ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming) {
+                    dashboardHeader
+                }
             }
             if let preview = attachedImagePreview {
                 attachedImageChip(preview)
@@ -447,21 +457,26 @@ private struct CardContainer<Content: View>: View {
 /// while a reply is still streaming in -- same proven pattern as
 /// desktop's own ChatThreadView, and the same chat bubble styling
 /// (ChatBubble there) copied here rather than approximated.
-private struct ChatThreadView: View {
+private struct ChatThreadView<Header: View>: View {
     let messages: [ChatMessage]
     let isStreaming: Bool
+    @ViewBuilder var header: () -> Header
     @Environment(\.appTheme) private var theme
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(messages) { message in
-                        ChatBubble(message: message).id(message.id)
+                VStack(spacing: 0) {
+                    header()
+                    Divider().overlay(theme.divider)
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(messages) { message in
+                            ChatBubble(message: message).id(message.id)
+                        }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
             }
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: messages.count) { _, _ in scrollToEnd(proxy) }
