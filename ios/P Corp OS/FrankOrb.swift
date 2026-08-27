@@ -7,14 +7,11 @@ import SwiftUI
 /// per-state motion (listening contracts inward, error mutes to orange),
 /// same Reduce Motion support.
 ///
-/// One real state NOT ported: `.speaking`. Desktop has it because desktop
-/// has real text-to-speech (VoiceOutput.swift) -- iOS never got that (see
-/// this repo's own history: voice INPUT was ported to iOS, voice OUTPUT
-/// wasn't), so there's no real audio signal for a speaking state to react
-/// to on iOS today. Not fabricated with a fake/silent placeholder --
-/// simply not built until iOS gets real TTS, the same "no honest signal,
-/// don't build it" discipline already applied to desktop's own Thinking/
-/// Executing states.
+/// Update (2026-08-27): `.speaking` ported too, now that iOS has real
+/// text-to-speech (VoiceOutput.swift, iOS parity port of desktop's own).
+/// Same real audio-reactive behavior as desktop's -- speaking pushes
+/// particles outward scaled by actual playback amplitude, rather than a
+/// fabricated/silent placeholder.
 ///
 /// Also, unlike desktop (where this only ever appears during an idle/
 /// empty-thread moment or push-to-talk), iOS's WarRoomView has a
@@ -31,6 +28,7 @@ struct FrankOrb: View {
     enum OrbState: Equatable {
         case idle
         case listening(audioLevel: Double)
+        case speaking(audioLevel: Double)
         case error
     }
 
@@ -43,14 +41,18 @@ struct FrankOrb: View {
     private var audioLevel: Double? {
         switch state {
         case .idle, .error: nil
-        case .listening(let level): level
+        case .listening(let level), .speaking(let level): level
         }
     }
 
+    /// Listening pulls particles inward (a fixed, steady contraction);
+    /// speaking pushes them out scaled by how loud the real audio actually
+    /// is -- exact match for desktop's own radiusScale.
     private var radiusScale: Double {
         switch state {
         case .idle, .error: 1.0
         case .listening: 0.78
+        case .speaking(let level): 1.0 + level * 0.22
         }
     }
 
@@ -112,7 +114,7 @@ struct FrankOrb: View {
                             shimmer = 0.4
                         case .idle:
                             shimmer = reduceMotion ? 0.5 : 0.35 + syntheticShimmer * 0.3
-                        case .listening:
+                        case .listening, .speaking:
                             let level = audioLevel ?? 0
                             shimmer = reduceMotion ? level : min(1.0, syntheticShimmer * 0.2 + level * 0.9)
                         }
@@ -128,6 +130,7 @@ struct FrankOrb: View {
             .offset(y: (floatUp && !reduceMotion) ? -10 : (reduceMotion ? 0 : 10))
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 3.4).repeatForever(autoreverses: true), value: floatUp)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.5), value: state)
         .onAppear { if !reduceMotion { floatUp = true } }
     }
 }

@@ -56,6 +56,13 @@ import PhotosUI
 /// force-reconnects (disconnect() clears the stale task, then connect()
 /// opens a fresh one and reloads history so nothing sent while
 /// disconnected is lost from view).
+///
+/// Update (2026-08-27): voice OUTPUT ported too, closing the loop on
+/// "talking to Frank" -- VoiceOutput.swift (iOS parity port of desktop's
+/// own) speaks the reply after a voice-triggered turn finishes streaming,
+/// same pendingVoiceReply mechanism and same interrupt-on-new-recording
+/// behavior as desktop. FrankOrb's `.speaking` state, previously withheld
+/// on iOS for having no real TTS signal to react to, is wired in here too.
 struct WarRoomView: View {
     // Injected from RootView (2026-08-20, SystemStatusHeader parity pass)
     // rather than owned here -- same move already made on desktop's
@@ -69,6 +76,14 @@ struct WarRoomView: View {
     @StateObject private var focusClient = FocusClient()
     @StateObject private var insightsClient = InsightsClient()
     @StateObject private var voiceInput = VoiceInput()
+    // iOS parity port (2026-08-27) of desktop's own VoiceOutput -- the
+    // output half of "talking to Frank" that iOS never had. Same "only
+    // speak replies to voice-triggered turns" rule as desktop, tracked the
+    // same way: pendingVoiceReply is set true right when a push-to-talk
+    // transcript is sent, consumed once that turn's reply finishes
+    // streaming (see the onChange(of: backend.isStreaming) handler below).
+    @StateObject private var voiceOutput = VoiceOutput()
+    @State private var pendingVoiceReply = false
     @State private var inputText = ""
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var attachedImageData: Data?
@@ -129,6 +144,39 @@ struct WarRoomView: View {
                     .padding(.horizontal, 32)
                     .padding(.top, 8)
                 Spacer(minLength: 0)
+            } else if voiceOutput.isSpeaking {
+                // Mirrors the isListening case above -- the orb takes over
+                // regardless of the chat thread underneath while Frank is
+                // actually talking, reactive to real playback amplitude
+                // rather than a synthetic shimmer. Falls through to the
+                // normal thread view the instant playback ends, so the
+                // full reply text is never lost, just shown once he's done
+                // saying it.
+                Spacer(minLength: 0)
+                FrankOrb(state: .speaking(audioLevel: voiceOutput.audioLevel))
+                    .frame(width: 160, height: 160)
+                    .frame(maxWidth: .infinity)
+                Text("Speaking…")
+                    .font(PCorpFont.body(14))
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(.top, 8)
+                Spacer(minLength: 0)
+            } else if let voiceOutputError = voiceOutput.errorMessage {
+                // Same reasoning as the voiceInput.errorMessage branch
+                // below -- ElevenLabs not being configured, or a real
+                // network failure, would otherwise look identical to Frank
+                // just staying silent.
+                Spacer(minLength: 0)
+                FrankOrb(state: .error)
+                    .frame(width: 160, height: 160)
+                    .frame(maxWidth: .infinity)
+                Text(voiceOutputError)
+                    .font(PCorpFont.body(13))
+                    .foregroundStyle(theme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+                    .padding(.top, 8)
+                Spacer(minLength: 0)
             } else if let voiceError = voiceInput.errorMessage {
                 Spacer(minLength: 0)
                 FrankOrb(state: .error)
@@ -172,6 +220,18 @@ struct WarRoomView: View {
         .task {
             await focusClient.fetch()
             await insightsClient.fetch()
+        }
+        .onChange(of: backend.isStreaming) { _, isStreaming in
+            // isStreaming going true -> false is the real signal a turn
+            // just completed (backend's own "\n[done]" sentinel) -- only
+            // then is the assistant's reply actually complete text, safe
+            // to hand to VoiceOutput. Speaking it mid-stream would mean
+            // synthesizing broken sentence fragments as they arrive.
+            guard !isStreaming, pendingVoiceReply else { return }
+            pendingVoiceReply = false
+            if let reply = backend.messages.last(where: { $0.role == "assistant" })?.content {
+                voiceOutput.speak(reply)
+            }
         }
         .onChange(of: photoPickerItem) { _, newItem in
             guard let newItem else { return }
@@ -331,8 +391,17 @@ struct WarRoomView: View {
     private var inputBar: some View {
         HStack(spacing: 12) {
             Button {
+                if !voiceInput.isListening {
+                    // About to start a new push-to-talk recording --
+                    // confirmed decision (matches desktop): that interrupts
+                    // any reply Frank is still speaking, same as cutting
+                    // off a person mid-sentence, rather than talking over
+                    // him or waiting him out.
+                    voiceOutput.stop()
+                }
                 voiceInput.toggle { transcript in
                     guard let transcript else { return }
+                    pendingVoiceReply = true
                     backend.send(transcript)
                 }
             } label: {

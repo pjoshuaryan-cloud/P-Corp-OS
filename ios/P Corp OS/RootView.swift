@@ -80,6 +80,10 @@ struct RootView: View {
                         AlphaModeDashboardView()
                     case "Joshx":
                         JoshxView()
+                    case "Trading Division":
+                        TradingDivisionView()
+                    case "Personal":
+                        PersonalView()
                     case "Finance":
                         FinanceView()
                     case "Triggers":
