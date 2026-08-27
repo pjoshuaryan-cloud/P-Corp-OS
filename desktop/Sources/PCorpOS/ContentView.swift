@@ -40,7 +40,7 @@ struct ContentView: View {
             Group {
                 switch selectedItem.title {
                 case "War Room":
-                    WarRoomView(backend: backend, situationRoom: situationRoom)
+                    WarRoomView(backend: backend, situationRoom: situationRoom, selectedID: $selectedID)
                 case "Frank":
                     FrankView()
                 case "Alpha Mode Media":

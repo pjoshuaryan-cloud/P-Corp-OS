@@ -114,6 +114,7 @@ from app.engineering_agent import (
 from app.brief import compute_brief
 from app.insights import compute_insights
 from app.situation_room import compute_situation_room_alerts
+from app.search import search_all
 from app.triggers import compute_status as compute_trigger_status, maybe_run_daily_digest, run_daily_digest
 from app.triggers_db import init_triggers_db, list_rules as list_trigger_rules, set_rule_enabled
 from app.operations_db import init_operations_db, list_open_tasks
@@ -401,6 +402,15 @@ async def finance_dashboard(_: None = Depends(verify_token)) -> dict:
             # See app/finance.py's get_hf_markets_live_status() docstring.
             account["hf_markets_live"] = get_hf_markets_live_status()
     return snapshot
+
+
+@app.get("/search")
+async def search_endpoint(q: str, _: None = Depends(verify_token)) -> list[dict]:
+    # The magnifying-glass button's real destination on both platforms --
+    # see app/search.py's own docstring for scope (which domains, which
+    # fields, the per-domain result cap) and why Memory/Operations/
+    # Triggers/Trading Division/Calendar are deliberately excluded.
+    return await search_all(q)
 
 
 @app.get("/focus")

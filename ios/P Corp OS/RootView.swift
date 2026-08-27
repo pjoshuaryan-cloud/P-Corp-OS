@@ -25,6 +25,7 @@ struct RootView: View {
     @State private var situationRoomPollTask: Task<Void, Never>?
     @State private var showTheBrief = false
     @State private var showConversationHistory = false
+    @State private var showUniversalSearch = false
     @Environment(\.scenePhase) private var scenePhase
     // Live drag delta, added on top of isDrawerOpen's base position while a
     // swipe is in progress -- see dragProgress/currentOffsetX below. Reset
@@ -276,14 +277,23 @@ struct RootView: View {
             }
 
             Button {
-                // no-op: shell only, not wired up yet -- matches
-                // desktop's own current state for this same button.
+                showUniversalSearch = true
             } label: {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(theme.textPrimary)
                     .frame(width: 32, height: 36)
                     .contentShape(Rectangle())
+            }
+            .sheet(isPresented: $showUniversalSearch) {
+                UniversalSearchSheet { result in
+                    if let conversationID = result.conversationID {
+                        Task { await backend.switchToConversation(conversationID) }
+                    } else if let targetNavTitle = result.targetNavTitle,
+                              let target = NavItem.items.first(where: { $0.title == targetNavTitle }) {
+                        selectedID = target.id
+                    }
+                }
             }
 
             Button {

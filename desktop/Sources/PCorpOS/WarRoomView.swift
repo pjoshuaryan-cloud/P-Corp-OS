@@ -5,6 +5,7 @@ import SwiftUI
 struct WarRoomView: View {
     @State private var inputText: String = ""
     @State private var showConversationList = false
+    @State private var showUniversalSearch = false
     @State private var showTheBrief = false
     // Image upload (2026-08-05): held as raw Data + a real MIME type, not
     // just an NSImage -- the MIME type is what the backend needs to build
@@ -26,6 +27,11 @@ struct WarRoomView: View {
     // recreates this view.
     @ObservedObject var backend: BackendClient
     @ObservedObject var situationRoom: SituationRoomClient
+    // New (2026-08-27, universal search) -- same @Binding pattern RightRail
+    // already uses to jump the sidebar to a given section from outside
+    // ContentView itself. WarRoomView never needed selectedID before this,
+    // since it never had a reason to navigate away from itself.
+    @Binding var selectedID: UUID?
     // Own instance, separate from RightRail's InsightsCard one -- same
     // "each view fetches its own copy" pattern already used elsewhere
     // (AgentsView/FrankView each own their own client too), not shared
@@ -377,11 +383,24 @@ struct WarRoomView: View {
                 }
 
                 Button {
-                    // no-op: shell only, not wired up yet
+                    showUniversalSearch = true
                 } label: {
                     Image(systemName: "magnifyingglass")
                 }
                 .buttonStyle(.icon)
+                .help("Search everything — Spotlight for P Corp OS")
+                .popover(isPresented: $showUniversalSearch) {
+                    UniversalSearchPopover { result in
+                        showUniversalSearch = false
+                        if let conversationID = result.conversationID {
+                            voiceOutput.stop()
+                            Task { await backend.switchToConversation(conversationID) }
+                        } else if let targetNavTitle = result.targetNavTitle,
+                                  let target = PlaceholderData.navItems.first(where: { $0.title == targetNavTitle }) {
+                            withAnimation(.easeOut(duration: 0.22)) { selectedID = target.id }
+                        }
+                    }
+                }
 
                 Button {
                     // no-op: shell only, not wired up yet
@@ -763,6 +782,121 @@ private struct ConversationListPopover: View {
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+    }
+}
+
+/// The magnifying-glass button's real destination (2026-08-27) -- was a
+/// documented no-op "reserved for future search" since first built. Genuinely
+/// cross-domain, backed by GET /search -- distinct from
+/// ConversationListPopover just above, which searches real message CONTENT
+/// within chat history only. Same manual TextField + magnifying-glass row /
+/// LazyVStack layout as that popover, grouped by domain instead of by day.
+private struct UniversalSearchPopover: View {
+    let onSelect: (SearchResult) -> Void
+
+    @StateObject private var searchClient = SearchClient()
+    @State private var searchText = ""
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Search")
+                .font(PCorpFont.label(10))
+                .trackedLabel(1.2)
+                .foregroundStyle(theme.textSecondary)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 10)
+
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.textSecondary)
+                TextField("Search everything…", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(PCorpFont.body(12.5))
+                    .onChange(of: searchText) { _, newValue in
+                        searchClient.scheduleSearch(newValue)
+                    }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8).fill(theme.textPrimary.opacity(0.05)))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+
+            Divider().overlay(theme.divider)
+
+            if searchText.isEmpty {
+                Text("Search projects, clients, goals, docs, and more")
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
+            } else if searchClient.isLoading && searchClient.results.isEmpty {
+                ProgressView()
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
+            } else if searchClient.results.isEmpty {
+                Text("No matches for \"\(searchText)\"")
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(groupedByDomain, id: \.0) { domain, domainResults in
+                            Text(domain)
+                                .font(PCorpFont.label(9))
+                                .trackedLabel(1.1)
+                                .foregroundStyle(theme.textSecondary)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 10)
+                                .padding(.bottom, 2)
+                            ForEach(domainResults) { result in
+                                Button { onSelect(result) } label: {
+                                    row(result)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(maxHeight: 420)
+            }
+        }
+        .frame(width: 360)
+        .padding(.bottom, 8)
+    }
+
+    private var groupedByDomain: [(String, [SearchResult])] {
+        var order: [String] = []
+        var buckets: [String: [SearchResult]] = [:]
+        for result in searchClient.results {
+            if buckets[result.domain] == nil {
+                order.append(result.domain)
+                buckets[result.domain] = []
+            }
+            buckets[result.domain]?.append(result)
+        }
+        return order.map { ($0, buckets[$0] ?? []) }
+    }
+
+    private func row(_ result: SearchResult) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(result.title)
+                .font(PCorpFont.body(13))
+                .foregroundStyle(theme.textPrimary)
+                .lineLimit(1)
+            Text(result.subtitle)
+                .font(PCorpFont.body(11))
+                .foregroundStyle(theme.textSecondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
     }
 }
 

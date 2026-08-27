@@ -120,6 +120,29 @@ public struct ConversationSummary: Identifiable, Decodable {
     }
 }
 
+/// A single universal-search hit -- backs GET /search, the magnifying-
+/// glass button's real destination on both platforms (2026-08-27),
+/// distinct from ConversationSummary above (which backs the separate
+/// clock-icon conversation-content search). `targetNavTitle` is nil only
+/// for Conversation-domain results, same "optional target" reasoning as
+/// BriefItem's own targetNavTitle -- picking one of those calls
+/// BackendClient.switchToConversation(conversationID) instead of
+/// navigating to a nav section.
+public struct SearchResult: Identifiable, Decodable {
+    public let id = UUID()
+    public let domain: String
+    public let title: String
+    public let subtitle: String
+    public let targetNavTitle: String?
+    public let conversationID: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case domain, title, subtitle
+        case targetNavTitle = "target_nav_title"
+        case conversationID = "conversation_id"
+    }
+}
+
 /// Mirrors backend/app/db.py's `memory_records` table — durable facts Frank
 /// has saved via the `save_memory` tool, distinct from raw conversation
 /// history. Fetched read-only from GET /memory.
