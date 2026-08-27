@@ -134,6 +134,8 @@ Responsibilities:
 
 Eventually it becomes the lead engineer of P Corp.
 
+**Update (2026-08-27):** built, in a first, deliberately narrow version. The original deferral (this document's own opening scope note) worried specifically about *silently* undoing `SECURITY.md`'s permission model by shipping open-ended file/shell/git access with no sandboxing behind it. That's not what this is: `SECURITY.md`'s 2026-08-27 entry adds a real tier classification for this exact tool category, plus the one genuinely new piece of infrastructure the project needed — a live, blocking, mid-turn approval flow — before any write happens. Engineering Agent can read real files and git history freely (Regular tier), but the only tool that can ever touch disk, `propose_file_edit`, never writes without Joshua explicitly approving a real diff first. Shell execution and git write operations (`commit`/`push`) remain hard-prohibited — no tool for either exists — so the original concern doesn't apply to this scoped version. Design/Operations/Communications Agents are not wired into this same mechanism yet, on purpose.
+
 ### Research Agent
 
 One of the most powerful agents.

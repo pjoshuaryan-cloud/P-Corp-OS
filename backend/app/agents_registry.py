@@ -106,6 +106,18 @@ AGENTS = [
         ),
         "status": "active",
     },
+    {
+        "id": "engineering",
+        "name": "Engineering Agent",
+        "icon": "hammer",
+        "tagline": "Code review, architecture, refactoring, docs, testing, git",
+        "detail": (
+            "Ask Frank to review code, explain part of the codebase, check git history, or propose a specific "
+            "file edit -- it reads real files and git history directly, and any proposed edit needs your explicit "
+            "approval before it's ever written to disk. It can't run shell commands, commit/push, or touch secrets."
+        ),
+        "status": "active",
+    },
 ]
 
 

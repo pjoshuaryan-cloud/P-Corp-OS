@@ -44,6 +44,20 @@ public struct ChatMessage: Identifiable {
     }
 }
 
+/// A pending Engineering Agent file-edit proposal, sent by the backend via
+/// a "\n[approval_request]" sentinel (see backend/app/engineering_agent.py's
+/// propose_file_edit tool) -- Joshua must approve or reject before anything
+/// is written to disk. `id` is the backend-generated request id, round-
+/// tripped verbatim in respondToApproval so the backend can match the
+/// answer to the right pending request.
+public struct ApprovalRequest: Decodable, Identifiable {
+    public let id: String
+    public let tool: String
+    public let path: String
+    public let summary: String
+    public let diff: String
+}
+
 /// The connection from the shell to the Python backend, and the owner of
 /// the live conversation state — real Claude reasoning streamed back
 /// token-by-token (see backend/app/main.py), using native
@@ -56,6 +70,11 @@ public final class BackendClient: ObservableObject {
     @Published public private(set) var messages: [ChatMessage] = []
     @Published public private(set) var isConnected: Bool = false
     @Published public private(set) var isStreaming: Bool = false
+    /// Non-nil while the Engineering Agent is blocked waiting on a
+    /// propose_file_edit decision (see engineering_agent.py) -- the UI
+    /// shows an approval card and disables normal chat input while this
+    /// is set. Cleared by respondToApproval() or on disconnect.
+    @Published public private(set) var pendingApproval: ApprovalRequest? = nil
 
     public init() {}
 
@@ -267,6 +286,30 @@ public final class BackendClient: ObservableObject {
         }
     }
 
+    /// Sends Joshua's decision on a pending Engineering Agent file-edit
+    /// proposal back over this same live socket -- the backend's
+    /// propose_file_edit executor is blocked in a single `await
+    /// websocket.receive_text()` call waiting for exactly this shape (see
+    /// backend/app/engineering_agent.py). Deliberately doesn't reuse
+    /// send(_:imageData:mediaType:) above, since that's coupled to
+    /// starting a new chat turn (appends ChatMessages, sets isStreaming).
+    /// Clears pendingApproval immediately so the UI can't double-send for
+    /// the same request; a no-op if the socket already died while the
+    /// card was showing.
+    public func respondToApproval(approved: Bool) {
+        guard let request = pendingApproval, let task else { return }
+        pendingApproval = nil
+        let response = ApprovalResponseWire(
+            approval_response: ApprovalResponseInner(id: request.id, approved: approved)
+        )
+        guard let json = try? JSONEncoder().encode(response),
+              let jsonString = String(data: json, encoding: .utf8) else { return }
+        task.send(.string(jsonString)) { _ in }
+    }
+
+    private struct ApprovalResponseInner: Encodable { let id: String; let approved: Bool }
+    private struct ApprovalResponseWire: Encodable { let approval_response: ApprovalResponseInner }
+
     /// Wire format for a sent chat turn (2026-08-05, image upload support)
     /// -- was a bare string before; now a small JSON envelope so an
     /// optional image can ride alongside the text. See backend/app/
@@ -300,6 +343,7 @@ public final class BackendClient: ObservableObject {
 
     private struct NotificationPayload: Decodable { let title: String; let body: String }
     private static let notifyPrefix = "\n[notify]"
+    private static let approvalRequestPrefix = "\n[approval_request]"
 
     private func listen() {
         task?.receive { [weak self] result in
@@ -321,6 +365,12 @@ public final class BackendClient: ObservableObject {
                                let payload = try? JSONDecoder().decode(NotificationPayload.self, from: data) {
                                 SystemNotification.post(title: payload.title, body: payload.body)
                             }
+                        } else if text.hasPrefix(Self.approvalRequestPrefix) {
+                            let payloadText = String(text.dropFirst(Self.approvalRequestPrefix.count))
+                            if let data = payloadText.data(using: .utf8),
+                               let request = try? JSONDecoder().decode(ApprovalRequest.self, from: data) {
+                                self.pendingApproval = request
+                            }
                         } else {
                             self.appendToLastAssistantMessage(text)
                         }
@@ -329,6 +379,7 @@ public final class BackendClient: ObservableObject {
                 case .failure:
                     self.isConnected = false
                     self.isStreaming = false
+                    self.pendingApproval = nil
                     self.task = nil
                 }
             }

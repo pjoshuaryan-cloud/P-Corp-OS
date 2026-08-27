@@ -106,6 +106,11 @@ from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES, LEGACY_VAULT_TOOLS, execut
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
 from app.research_agent import RESEARCH_AGENT_TOOL_NAMES, RESEARCH_AGENT_TOOLS, execute_research_agent_tool_call
+from app.engineering_agent import (
+    ENGINEERING_AGENT_TOOL_NAMES,
+    ENGINEERING_AGENT_TOOLS,
+    execute_engineering_agent_tool_call,
+)
 from app.brief import compute_brief
 from app.insights import compute_insights
 from app.situation_room import compute_situation_room_alerts
@@ -654,6 +659,24 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 assistant_reply = await run_claude_turn(
                     client, system_prompt, history, websocket, image=image
                 )
+            except WebSocketDisconnect:
+                # Real bug found live (2026-08-27): the socket can now die
+                # while run_claude_turn is blocked somewhere deeper than
+                # this loop's own receive_text() -- specifically,
+                # Engineering Agent's propose_file_edit awaiting an
+                # approval decision that never arrives (app backgrounded/
+                # quit while a card was showing). Re-raise rather than
+                # falling into the generic `except Exception` below: that
+                # branch's own `continue` would loop back to this
+                # function's `receive_text()` a second time on an already-
+                # disconnected socket, and Starlette doesn't raise a
+                # second WebSocketDisconnect for that -- it raises a bare
+                # RuntimeError instead (confirmed live), which would
+                # surface as an ugly uncaught traceback instead of the
+                # same clean shutdown every other disconnect gets via the
+                # outer `except WebSocketDisconnect: pass` below.
+                history.pop()
+                raise
             except Exception as error:
                 # A client-initiated stop (BackendClient.stopGenerating())
                 # closes the socket mid-stream, which is exactly what
@@ -725,6 +748,7 @@ async def run_claude_turn(
                 *COMMUNICATIONS_AGENT_TOOLS,
                 *MEMORY_AGENT_TOOLS,
                 *RESEARCH_AGENT_TOOLS,
+                *ENGINEERING_AGENT_TOOLS,
                 *TRADING_DIVISION_AGENT_TOOLS,
                 *PERSONAL_TOOLS,
                 *JOSHX_TOOLS,
@@ -805,6 +829,12 @@ async def run_claude_turn(
                 assistant_text += result
             elif block.name in RESEARCH_AGENT_TOOL_NAMES:
                 result = await execute_research_agent_tool_call(block.name, block.input, client, websocket)
+                # Same reasoning as consult_operations_agent above --
+                # already streamed live, needs to land in the persisted
+                # transcript too.
+                assistant_text += result
+            elif block.name in ENGINEERING_AGENT_TOOL_NAMES:
+                result = await execute_engineering_agent_tool_call(block.name, block.input, client, websocket)
                 # Same reasoning as consult_operations_agent above --
                 # already streamed live, needs to land in the persisted
                 # transcript too.

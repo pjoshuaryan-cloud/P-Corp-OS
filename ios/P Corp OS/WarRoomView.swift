@@ -209,7 +209,17 @@ struct WarRoomView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
             }
+            if let approval = backend.pendingApproval {
+                ApprovalRequestCard(
+                    request: approval,
+                    onApprove: { backend.respondToApproval(approved: true) },
+                    onReject: { backend.respondToApproval(approved: false) }
+                )
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
             inputBar
+                .disabled(backend.pendingApproval != nil)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 12)
         }
@@ -519,6 +529,66 @@ private struct CardContainer<Content: View>: View {
         .background(RoundedRectangle(cornerRadius: 18).fill(theme.background.opacity(0.35)))
         .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(theme.surfaceBorder))
         .shadow(color: theme.cardShadow, radius: 12, x: 0, y: 4)
+    }
+}
+
+/// Engineering Agent's file-edit approval card (2026-08-27, iOS parity
+/// port of desktop's own) -- shown whenever BackendClient.pendingApproval
+/// is non-nil, blocking normal chat input until Joshua explicitly
+/// approves or rejects (see backend/app/engineering_agent.py's
+/// propose_file_edit tool). Styled as a neutral bordered card, reusing
+/// attachedImageChip's own surface/border treatment -- deliberately NOT
+/// situationRoomBanner's red alert styling above, since that's already
+/// this app's specific signal for a real risk alert, and reusing it here
+/// would blur that meaning. This is a decision request, not a risk alert.
+private struct ApprovalRequestCard: View {
+    let request: ApprovalRequest
+    let onApprove: () -> Void
+    let onReject: () -> Void
+    @Environment(\.appTheme) private var theme
+    @State private var isDiffExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "pencil.and.outline")
+                    .foregroundStyle(theme.accentText)
+                Text("ENGINEERING AGENT WANTS TO EDIT A FILE")
+                    .font(PCorpFont.label(10))
+                    .tracking(1.2)
+                    .foregroundStyle(theme.textSecondary)
+            }
+
+            Text(request.path)
+                .font(PCorpFont.body(13, weight: .semibold))
+                .foregroundStyle(theme.textPrimary)
+
+            Text(request.summary)
+                .font(PCorpFont.body(13))
+                .foregroundStyle(theme.textSecondary)
+
+            DisclosureGroup("Show diff", isExpanded: $isDiffExpanded) {
+                ScrollView {
+                    Text(request.diff)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 240)
+            }
+            .font(PCorpFont.body(12))
+
+            HStack(spacing: 10) {
+                Button("Reject", role: .destructive, action: onReject)
+                    .buttonStyle(.bordered)
+                Button("Approve", action: onApprove)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(theme.surface.opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.accentFill, lineWidth: 1.5))
     }
 }
 
