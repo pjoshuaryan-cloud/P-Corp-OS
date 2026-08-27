@@ -54,6 +54,10 @@ RULE_TYPES = {
     "client_contact_gap": 21,
     "project_stage_stall": None,
     "deliverable_overdue": None,
+    # No global threshold -- overdue-ness is per-person via
+    # people_db.py's own follow_up_cadence_days column, not one cutoff
+    # shared across everyone the way client_contact_gap's 21 days is.
+    "relationship_follow_up_overdue": None,
     # No configurable threshold column here either -- market_movers.py
     # hardcodes its "notable move" percentage in the checker itself,
     # same pattern as every threshold_days=None rule above.

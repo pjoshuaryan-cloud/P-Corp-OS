@@ -176,6 +176,12 @@ private struct ProjectRow: View {
                 Text(subtitle)
                     .font(PCorpFont.body(11.5))
                     .foregroundStyle(theme.textSecondary)
+                if let detailLine {
+                    Text(detailLine)
+                        .font(PCorpFont.body(10.5))
+                        .foregroundStyle(theme.textTertiary)
+                        .lineLimit(2)
+                }
             }
             Spacer()
             Text(project.status)
@@ -199,6 +205,18 @@ private struct ProjectRow: View {
         if let due = project.dueDate { parts.append("due \(due)") }
         return parts.joined(separator: " — ")
     }
+
+    // Real bug found live (2026-08-27): brief/deliverables were already
+    // stored (add_joshx_project writes both) but never shown anywhere on
+    // either platform -- the gap was in the backend's own dashboard
+    // SELECT, not here; this line just renders what's now actually
+    // returned.
+    private var detailLine: String? {
+        var parts: [String] = []
+        if let brief = project.brief, !brief.isEmpty { parts.append(brief) }
+        if let deliverables = project.deliverables, !deliverables.isEmpty { parts.append("Deliverables: \(deliverables)") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 }
 
 private struct LeadRow: View {
@@ -214,6 +232,12 @@ private struct LeadRow: View {
                 Text(subtitle)
                     .font(PCorpFont.body(11.5))
                     .foregroundStyle(theme.textSecondary)
+                if let notes = lead.notes, !notes.isEmpty {
+                    Text(notes)
+                        .font(PCorpFont.body(10.5))
+                        .foregroundStyle(theme.textTertiary)
+                        .lineLimit(2)
+                }
             }
             Spacer()
             Text(lead.stage)
@@ -235,6 +259,11 @@ private struct LeadRow: View {
         var parts: [String] = []
         if let service = lead.service { parts.append(service) }
         if let value = lead.estimatedValue { parts.append("est. R\(String(format: "%.2f", value))") }
+        // Real bug found live (2026-08-27): budget/lead_source were
+        // already stored but never shown -- see joshx_db.py's own
+        // dashboard_snapshot() SELECT for where the gap actually was.
+        if let budget = lead.budget { parts.append("budget R\(String(format: "%.2f", budget))") }
+        if let source = lead.leadSource { parts.append("via \(source)") }
         return parts.isEmpty ? "No details yet" : parts.joined(separator: " — ")
     }
 }
@@ -252,6 +281,12 @@ private struct ClientRow: View {
                 Text(record.company ?? "No company on file")
                     .font(PCorpFont.body(11.5))
                     .foregroundStyle(theme.textSecondary)
+                if let contactLine {
+                    Text(contactLine)
+                        .font(PCorpFont.body(10.5))
+                        .foregroundStyle(theme.textTertiary)
+                        .lineLimit(1)
+                }
             }
             Spacer()
             Text(record.status)
@@ -267,5 +302,17 @@ private struct ClientRow: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
         .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+    }
+
+    // Real bug found live (2026-08-27): email/phone/instagram were
+    // already stored (add_joshx_client writes all three) but never shown
+    // -- see joshx_db.py's own dashboard_snapshot() SELECT for where the
+    // gap actually was.
+    private var contactLine: String? {
+        var parts: [String] = []
+        if let email = record.email, !email.isEmpty { parts.append(email) }
+        if let phone = record.phone, !phone.isEmpty { parts.append(phone) }
+        if let instagram = record.instagram, !instagram.isEmpty { parts.append("@\(instagram)") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }

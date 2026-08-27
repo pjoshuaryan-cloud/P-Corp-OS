@@ -486,13 +486,33 @@ public struct JoshxClientRecord: Identifiable, Decodable {
     public let id: Int
     public let name: String
     public let company: String?
+    // Real bug found live (2026-08-27): these six fields were already
+    // stored (add_joshx_client can write all of them) but never reached
+    // this model, so they never reached the dashboard on either
+    // platform -- the gap was in joshx_db.py's own SELECT, not here, but
+    // this model has to carry them now that it selects them.
+    public let contactName: String?
+    public let email: String?
+    public let phone: String?
+    public let instagram: String?
+    public let website: String?
+    public let industry: String?
+    public let clientType: String?
+    public let leadSource: String?
+    public let relationshipStrength: String?
+    public let notes: String?
     public let status: String
     public let lastContactDate: String?
     public let nextFollowUpDate: String?
     public let createdAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, name, company, status
+        case id, name, company, status, notes, industry
+        case contactName = "contact_name"
+        case email, phone, instagram, website
+        case clientType = "client_type"
+        case leadSource = "lead_source"
+        case relationshipStrength = "relationship_strength"
         case lastContactDate = "last_contact_date"
         case nextFollowUpDate = "next_follow_up_date"
         case createdAt = "created_at"
@@ -505,16 +525,20 @@ public struct JoshxLead: Identifiable, Decodable {
     public let projectDescription: String?
     public let service: String?
     public let estimatedValue: Double?
+    public let budget: Double?
+    public let leadSource: String?
     public let stage: String
     public let probability: Int?
     public let followUpDate: String?
+    public let notes: String?
     public let createdAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, service, stage, probability
+        case id, service, stage, probability, budget, notes
         case clientName = "client_name"
         case projectDescription = "project_description"
         case estimatedValue = "estimated_value"
+        case leadSource = "lead_source"
         case followUpDate = "follow_up_date"
         case createdAt = "created_at"
     }
@@ -525,18 +549,23 @@ public struct JoshxProject: Identifiable, Decodable {
     public let clientName: String
     public let projectName: String
     public let projectType: String?
+    public let brief: String?
+    public let startDate: String?
     public let dueDate: String?
     public let shootDate: String?
     public let budget: Double?
     public let priority: String?
     public let status: String
+    public let deliverables: String?
+    public let notes: String?
     public let createdAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, budget, priority, status
+        case id, budget, priority, status, brief, deliverables, notes
         case clientName = "client_name"
         case projectName = "project_name"
         case projectType = "project_type"
+        case startDate = "start_date"
         case dueDate = "due_date"
         case shootDate = "shoot_date"
         case createdAt = "created_at"
@@ -642,4 +671,37 @@ public struct JoshxDashboard: Decodable {
         case openLeads = "open_leads"
         case upcomingShoots = "upcoming_shoots"
     }
+}
+
+/// Mirrors backend/app/people_db.py's `people` table -- People/
+/// Relationships, deliberately separate from Joshx/Alpha Mode Media
+/// clients (see that file's own docstring). `linkedClientName` is a
+/// plain-text cross-reference only, never a real join across databases.
+public struct Person: Identifiable, Decodable {
+    public let id: Int
+    public let name: String
+    public let relationshipType: String?
+    public let company: String?
+    public let email: String?
+    public let phone: String?
+    public let linkedClientName: String?
+    public let lastContactDate: String?
+    public let nextFollowUpDate: String?
+    public let followUpCadenceDays: Int?
+    public let notes: String?
+    public let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, company, email, phone, notes
+        case relationshipType = "relationship_type"
+        case linkedClientName = "linked_client_name"
+        case lastContactDate = "last_contact_date"
+        case nextFollowUpDate = "next_follow_up_date"
+        case followUpCadenceDays = "follow_up_cadence_days"
+        case createdAt = "created_at"
+    }
+}
+
+public struct PeopleDashboard: Decodable {
+    public let people: [Person]
 }

@@ -86,6 +86,8 @@ from app.personal_db import dashboard_snapshot as personal_dashboard_snapshot, i
 from app.personal_tools import PERSONAL_TOOL_NAMES, PERSONAL_TOOLS, build_personal_block, execute_personal_tool_call
 from app.joshx_db import dashboard_snapshot as joshx_dashboard_snapshot, init_joshx_db
 from app.joshx_tools import JOSHX_TOOL_NAMES, JOSHX_TOOLS, build_joshx_block, execute_joshx_tool_call
+from app.people_db import dashboard_snapshot as people_dashboard_snapshot, init_people_db
+from app.people_tools import PEOPLE_TOOL_NAMES, PEOPLE_TOOLS, build_people_block, execute_people_tool_call
 from app.finance_db import dashboard_snapshot as finance_dashboard_snapshot, init_finance_db
 from app.calendar_tools import CALENDAR_TOOL_NAMES, CALENDAR_TOOLS, execute_calendar_tool_call
 from app.finance_tools import FINANCE_TOOL_NAMES, FINANCE_TOOLS, build_finance_block, execute_finance_tool_call
@@ -246,6 +248,7 @@ async def lifespan(app: FastAPI):
     await init_operations_db()
     await init_personal_db()
     await init_joshx_db()
+    await init_people_db()
     await init_finance_db()
     await init_automations_db()
     await init_audit_db()
@@ -382,6 +385,14 @@ async def joshx_dashboard(_: None = Depends(verify_token)) -> dict:
     # 1 scope only (clients/leads/projects) -- see app/joshx_db.py's own
     # docstring.
     return await joshx_dashboard_snapshot()
+
+
+@app.get("/people/dashboard")
+async def people_dashboard(_: None = Depends(verify_token)) -> dict:
+    # Backs the "PEOPLE" section inside Personal -- Josh's real personal/
+    # professional relationship network, deliberately separate from
+    # Joshx/Alpha Mode Media clients. See app/people_db.py's own docstring.
+    return await people_dashboard_snapshot()
 
 
 @app.get("/finance/dashboard")
@@ -662,6 +673,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 + await build_operations_block()
                 + await build_personal_block()
                 + await build_joshx_block()
+                + await build_people_block()
                 + await build_finance_block()
             )
 
@@ -762,6 +774,7 @@ async def run_claude_turn(
                 *TRADING_DIVISION_AGENT_TOOLS,
                 *PERSONAL_TOOLS,
                 *JOSHX_TOOLS,
+                *PEOPLE_TOOLS,
                 *FINANCE_TOOLS,
                 *CALENDAR_TOOLS,
             ],
@@ -859,6 +872,8 @@ async def run_claude_turn(
                 result = await execute_personal_tool_call(block.name, block.input)
             elif block.name in JOSHX_TOOL_NAMES:
                 result = await execute_joshx_tool_call(block.name, block.input)
+            elif block.name in PEOPLE_TOOL_NAMES:
+                result = await execute_people_tool_call(block.name, block.input)
             elif block.name in FINANCE_TOOL_NAMES:
                 result = await execute_finance_tool_call(block.name, block.input)
             elif block.name in CALENDAR_TOOL_NAMES:

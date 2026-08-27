@@ -33,6 +33,7 @@ from app.alpha_mode_db import DB_PATH as ALPHA_MODE_DB_PATH
 from app.alpha_mode_db import clients_needing_outreach
 from app.alpha_mode_supabase import leads_needing_followup, quotes_needing_followup
 from app.operations_db import DB_PATH as OPERATIONS_DB_PATH
+from app.people_db import get_overdue_follow_ups
 
 HORIZON_DAYS = 7
 # Added 2026-08-01 for outreach-reminder insights (Alpha Mode Agent's
@@ -170,6 +171,28 @@ async def _quotes_needing_followup() -> list[dict]:
     return insights
 
 
+async def _relationship_follow_up_needed() -> list[dict]:
+    # People/Relationships layer (2026-08-27, people_db.py) -- same
+    # "relationship going stale" semantic as _clients_needing_outreach
+    # above, same category, but over Josh's real personal/professional
+    # network rather than Alpha Mode Media clients.
+    overdue = await get_overdue_follow_ups()
+    insights = []
+    for person in overdue:
+        last = person["last_contact_date"] or "never"
+        insights.append(
+            {
+                "title": "Follow-up due",
+                "detail": f"{person['name']} — last contact {last}",
+                "target_nav_title": "Personal",
+                "icon": "person.crop.circle.badge.clock",
+                "priority": 1,
+                "category": "follow_up",
+            }
+        )
+    return insights
+
+
 async def compute_insights(limit: int = 5) -> list[dict]:
     today = date.today().isoformat()
     horizon = (date.today() + timedelta(days=HORIZON_DAYS)).isoformat()
@@ -179,7 +202,8 @@ async def compute_insights(limit: int = 5) -> list[dict]:
     outreach = await _clients_needing_outreach()
     leads = await _leads_needing_followup()
     quotes = await _quotes_needing_followup()
+    relationships = await _relationship_follow_up_needed()
 
-    combined = tasks + invoices + outreach + leads + quotes
+    combined = tasks + invoices + outreach + leads + quotes + relationships
     combined.sort(key=lambda item: (item["priority"], item["detail"]))
     return combined[:limit]

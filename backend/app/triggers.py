@@ -31,6 +31,7 @@ from app.alpha_mode_db import DB_PATH as ALPHA_MODE_DB_PATH
 from app.alpha_mode_supabase import PROJECT_STAGES
 from app.email_digest import send_digest_email
 from app.market_movers import check_market_movers
+from app.people_db import get_overdue_follow_ups
 from app.supabase_client import select_rows
 from app.triggers_db import (
     clear_resolved,
@@ -151,11 +152,31 @@ async def _check_deliverable_overdue() -> list[dict]:
     return items
 
 
+async def _check_relationship_follow_up_overdue(threshold: int | None) -> list[dict]:
+    """Reads people.db, not alpha_mode.db -- the People/Relationships
+    layer (people_db.py) is a deliberately separate domain from Alpha
+    Mode Media/Joshx clients. Threshold is ignored here: overdue-ness is
+    per-person (an explicit next_follow_up_date, or that person's own
+    follow_up_cadence_days), not one global cutoff like client_contact_gap's
+    21 days -- get_overdue_follow_ups() already encodes that logic, this
+    just maps its real rows into the shape this layer expects."""
+    rows = await get_overdue_follow_ups()
+    return [
+        {
+            "item_key": f"relationship_follow_up_overdue:{row['id']}",
+            "title": row["name"],
+            "detail": f"last contact {row['last_contact_date'] or 'never'}",
+        }
+        for row in rows
+    ]
+
+
 RULE_CHECKERS = {
     "invoice_overdue": lambda threshold: _check_invoice_overdue(),
     "client_contact_gap": lambda threshold: _check_client_contact_gap(threshold or 21),
     "project_stage_stall": lambda threshold: _check_project_stage_stall(),
     "deliverable_overdue": lambda threshold: _check_deliverable_overdue(),
+    "relationship_follow_up_overdue": _check_relationship_follow_up_overdue,
     "market_mover": check_market_movers,
 }
 
@@ -164,6 +185,7 @@ SECTION_TITLES = {
     "client_contact_gap": "CLIENTS NEEDING CONTACT",
     "project_stage_stall": "PROJECTS STALLED",
     "deliverable_overdue": "DELIVERABLES OVERDUE",
+    "relationship_follow_up_overdue": "RELATIONSHIPS NEEDING FOLLOW-UP",
     # Deliberately "MARKET MOVERS," not "OPPORTUNITIES" -- see
     # market_movers.py's own docstring for why the framing stays
     # strictly factual (price moved X%), never a recommendation.
