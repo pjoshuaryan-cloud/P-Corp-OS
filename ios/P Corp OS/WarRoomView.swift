@@ -573,6 +573,7 @@ private struct ApprovalRequestCard: View {
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(theme.textPrimary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
                 }
                 .frame(maxHeight: 240)
             }
@@ -667,6 +668,10 @@ private struct ChatBubble: View {
                 if !message.content.isEmpty || (message.image == nil && !message.hasStoredImage) {
                     Text(message.content.isEmpty ? "…" : message.content)
                         .font(PCorpFont.body(14))
+                        // Real bug found live (2026-08-27): Joshua
+                        // couldn't copy chat text to paste elsewhere --
+                        // plain SwiftUI Text isn't selectable by default.
+                        .textSelection(.enabled)
                 }
             }
             .foregroundStyle(isUser ? theme.accentText : theme.textPrimary)

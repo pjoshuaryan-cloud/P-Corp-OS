@@ -24,6 +24,7 @@ struct RootView: View {
     @StateObject private var situationRoomClient = SituationRoomClient()
     @State private var situationRoomPollTask: Task<Void, Never>?
     @State private var showTheBrief = false
+    @State private var showConversationHistory = false
     @Environment(\.scenePhase) private var scenePhase
     // Live drag delta, added on top of isDrawerOpen's base position while a
     // swipe is in progress -- see dragProgress/currentOffsetX below. Reset
@@ -203,8 +204,20 @@ struct RootView: View {
         }
     }
 
+    // iOS parity port (2026-08-27) of desktop's own topBar toolbar
+    // cluster (WarRoomView.swift there) -- New Chat, Chat History, The
+    // Brief, Search, and Mission were desktop-only until now. Search and
+    // Mission are ported as-is including their current state: both are
+    // no-op shells on desktop too ("not wired up yet"), not a regression
+    // introduced here -- real search already exists, just inside Chat
+    // History's own conversation-content search, not this standalone
+    // icon. Mission renders as an icon-only button here rather than
+    // desktop's text+icon pill -- the top bar has six buttons plus the
+    // hamburger and logo already competing for a phone-width row, and a
+    // labeled pill would crowd it more than the icon-only treatment
+    // every other button here already uses.
     private var topBar: some View {
-        HStack {
+        HStack(spacing: 2) {
             Button {
                 setDrawer(open: true)
             } label: {
@@ -222,17 +235,66 @@ struct RootView: View {
                 .foregroundStyle(theme.textPrimary)
                 .frame(width: 18, height: 22)
             Spacer()
+
+            Button {
+                Task { await backend.startNewConversation() }
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                    .frame(width: 32, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .disabled(backend.messages.isEmpty)
+
+            Button {
+                showConversationHistory = true
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                    .frame(width: 32, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .sheet(isPresented: $showConversationHistory) {
+                ConversationHistorySheet(backend: backend) { conversationID in
+                    Task { await backend.switchToConversation(conversationID) }
+                }
+            }
+
             Button {
                 showTheBrief = true
             } label: {
                 Image(systemName: "doc.text")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(theme.textPrimary)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 32, height: 36)
                     .contentShape(Rectangle())
             }
             .sheet(isPresented: $showTheBrief) {
                 TheBriefSheet()
+            }
+
+            Button {
+                // no-op: shell only, not wired up yet -- matches
+                // desktop's own current state for this same button.
+            } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                    .frame(width: 32, height: 36)
+                    .contentShape(Rectangle())
+            }
+
+            Button {
+                // no-op: shell only, not wired up yet -- matches
+                // desktop's own current state for this same button.
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                    .frame(width: 32, height: 36)
+                    .contentShape(Rectangle())
             }
         }
         .padding(.horizontal, 8)

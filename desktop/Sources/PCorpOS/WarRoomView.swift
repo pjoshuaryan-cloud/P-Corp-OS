@@ -564,6 +564,7 @@ private struct ApprovalRequestCard: View {
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(theme.textPrimary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
                 }
                 .frame(maxHeight: 240)
             }
@@ -823,6 +824,13 @@ private struct ChatBubble: View {
             if isUser { Spacer(minLength: 60) }
 
             content
+                // Real bug found live (2026-08-27): Joshua couldn't copy
+                // chat text to paste elsewhere -- plain SwiftUI Text
+                // isn't selectable by default. Assistant replies go
+                // through SimpleMarkdownView (fixed at its own
+                // definition), but user messages here are plain Text, so
+                // this container-level fix is still needed for those.
+                .textSelection(.enabled)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(
