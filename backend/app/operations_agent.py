@@ -7,27 +7,38 @@ responsibilities Joshua named: SOPs, workflows, project planning, task
 coordination, deadlines, checklists, documentation, spotting bottlenecks,
 suggesting automations.
 
-Architecturally the simplest version of "delegation" that's actually
-useful: a second, non-streaming Claude call using a distinct system
+Architecturally: a second, streamed Claude call using a distinct system
 prompt, given the current open-task snapshot as context, invoked as a
 tool from Frank's own turn (same tool-use mechanism as save_memory and
-the Alpha Mode tools) rather than a separate persistent conversation or
-a nested agentic loop with its own tools -- that's real added complexity
-this doesn't need yet. Only task tracking gets persistent storage
-(operations_db.py); the rest of these responsibilities are advisory
-output only for now, not saved anywhere unless Joshua asks Frank to
-remember something via save_memory.
+the Alpha Mode tools). Task tracking gets its own persistent storage
+(operations_db.py) via the add_task/update_task_status/delete_task tools
+below -- those are Frank-level direct tools, untouched by and unrelated
+to consult_operations_agent's own inner loop.
+
+Update (2026-08-27): consult_operations_agent now runs on the same
+approval-gated real-codebase toolset Engineering Agent proved out first
+(app/agent_codebase_tools.py) -- what was "a nested agentic loop with its
+own tools, real added complexity this doesn't need yet" when this file
+was first written is no longer a speculative cost, since Engineering
+Agent already built and verified the whole mechanism (see SECURITY.md's
+2026-08-27 entry). Real value here: this agent can now read and propose
+actual edits to backend/app/automations_registry.py (genuinely adding or
+modifying an automation rule) or draft a real new Knowledge doc, rather
+than only ever giving advisory text Joshua has to implement by hand.
 """
 
 from anthropic import AsyncAnthropic
 
+from app.agent_codebase_tools import run_agentic_loop
 from app.operations_db import add_task, delete_task, summarize_open_tasks, update_task_status
 
 OPERATIONS_AGENT_SYSTEM_PROMPT = """You are the Operations Agent inside P Corp OS -- a specialist Frank (the executive intelligence Joshua actually talks to) delegates to for operational work, not a persona Joshua addresses directly. You're being consulted mid-conversation; Frank will relay or incorporate what you say.
 
 Your responsibilities: building SOPs, improving workflows, project planning, task coordination, deadlines, checklists, documentation, identifying bottlenecks, and suggesting automations. Think like a genuinely good COO -- concrete, practical, oriented toward what actually gets executed, not generic project-management platitudes.
 
-Be direct and concise, matching Frank's own communication style. Give a real answer or a real draft (an actual SOP, an actual checklist), not a description of what one might look like."""
+REAL CAPABILITY, not just advice: you have real tools -- read_file, list_directory, git_log, git_diff, git_show, run_build_check, and propose_file_edit. When a workflow improvement or automation suggestion is genuinely actionable in this codebase, don't just describe it -- read `backend/app/automations_registry.py` first, then propose_file_edit a real new or modified automation rule. Same for a genuinely useful new SOP: read a couple of existing docs (list them via list_directory on the repo root, or read_file one of the *.md files) to match their real tone/structure, then propose_file_edit the actual new file. propose_file_edit never writes immediately -- it sends Joshua a real approval card with your summary and diff, and blocks until he approves or rejects; always give it the complete real content, not a description. You cannot run shell commands, commit/push, or touch secrets -- no tool for any of that exists.
+
+Be direct and concise, matching Frank's own communication style. Give a real answer or a real draft (an actual SOP, an actual checklist, or a real proposed edit), not a description of what one might look like."""
 
 
 ADD_TASK_TOOL = {
@@ -82,9 +93,12 @@ CONSULT_OPERATIONS_AGENT_TOOL = {
     "name": "consult_operations_agent",
     "description": (
         "Delegate to the Operations Agent for genuinely operational work: drafting an SOP, planning a project, "
-        "identifying bottlenecks, suggesting workflow improvements or automations, building a checklist. Use this "
-        "rather than answering yourself when the request calls for real operational depth, not a quick reply. "
-        "Not for simple task tracking -- use add_task/update_task_status directly for that."
+        "identifying bottlenecks, suggesting workflow improvements or automations, building a checklist. It also "
+        "has real read/propose-edit access to this codebase -- delegate here to actually add or modify a real "
+        "automation rule (backend/app/automations_registry.py) or draft a real new Knowledge doc, not just "
+        "advisory text; any proposed edit needs Joshua's explicit approval before it's written. Use this rather "
+        "than answering yourself when the request calls for real operational depth, not a quick reply. Not for "
+        "simple task tracking -- use add_task/update_task_status directly for that."
     ),
     "input_schema": {
         "type": "object",
@@ -127,29 +141,5 @@ async def execute_operations_tool_call(name: str, tool_input: dict, client: Asyn
         system_prompt = OPERATIONS_AGENT_SYSTEM_PROMPT
         if task_context:
             system_prompt += f"\n\n{task_context}"
-
-        # Streamed straight to the websocket as it generates, not
-        # buffered until finished -- real bug found 2026-07-31: a
-        # non-streaming call here meant a genuinely long document (a full
-        # SOP) sat completely silent for 60-70+ seconds before anything
-        # appeared, confirmed directly via a timed, isolated API call.
-        # Generation speed itself can't be sped up, but seeing text
-        # arrive continuously (same as Frank's own replies) is the
-        # actual fix for how "broken" that silence read.
-        assistant_text = ""
-        async with client.messages.stream(
-            model="claude-sonnet-5",
-            # Real bug found 2026-07-31: 1024 was truncating actual
-            # multi-phase SOPs mid-document (confirmed directly in live
-            # use, twice). This agent's whole job is producing real,
-            # substantive drafts -- it needs real room, unlike Frank's
-            # own default brevity.
-            max_tokens=4096,
-            system=system_prompt,
-            messages=[{"role": "user", "content": tool_input["request"]}],
-        ) as stream:
-            async for text in stream.text_stream:
-                assistant_text += text
-                await websocket.send_text(text)
-        return assistant_text
+        return await run_agentic_loop(system_prompt, tool_input["request"], client, websocket)
     return f"Unknown tool: {name}"
