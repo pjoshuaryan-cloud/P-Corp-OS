@@ -88,6 +88,35 @@ async def compute_connected_apps_status() -> list[dict]:
     ]
 
 
+_cached_status: list[dict] | None = None
+
+
+async def refresh_connected_apps_cache() -> None:
+    """Feeds the Situation Room's disconnection alert (reliability pass,
+    2026-09-07) without adding compute_connected_apps_status()'s real
+    network cost to Situation Room's own 30s poll cadence -- see
+    situation_room.py's _connected_apps_alerts(), which reads this cache
+    and never calls compute_connected_apps_status() directly. Rides
+    main.py's existing 15-minute _trigger_scheduler_loop() tick, same
+    reasoning as Luno/HF Markets/market-movers riding it already.
+
+    Deliberately not named maybe_*() like this backend's other
+    scheduler-tick jobs -- every existing maybe_* function means "gated to
+    once per day"; this one re-checks unconditionally on every tick, no
+    gating, so it doesn't earn that prefix.
+
+    GET /connected-apps (Settings' own on-demand endpoint) is untouched by
+    this cache -- it still always calls compute_connected_apps_status()
+    directly, since that's a deliberate user action that should always see
+    fresh truth, not the last cached tick."""
+    global _cached_status
+    _cached_status = await compute_connected_apps_status()
+
+
+def get_cached_connected_apps_status() -> list[dict] | None:
+    return _cached_status
+
+
 async def summarize() -> str:
     """Plain-text snapshot, same style as trading_division.py's own
     summarize() -- for a Frank-facing tool, not the /connected-apps REST

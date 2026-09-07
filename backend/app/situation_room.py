@@ -24,6 +24,8 @@ import aiosqlite
 
 from app.alpha_mode_db import DB_PATH as ALPHA_MODE_DB_PATH
 from app.alpha_mode_db import clients_needing_outreach
+from app.connected_apps import get_cached_connected_apps_status
+from app.db import get_credits_exhausted_since
 from app.operations_db import DB_PATH as OPERATIONS_DB_PATH
 
 INVOICE_OVERDUE_DAYS = 30
@@ -101,9 +103,55 @@ async def _severely_stale_outreach() -> list[dict]:
     return alerts
 
 
+async def _credit_exhausted_alert() -> list[dict]:
+    """Reliability pass (2026-09-07): main.py's websocket_chat sets
+    app_state.credits_exhausted_since the moment a real Anthropic billing
+    error is caught, and clears it the moment a turn next succeeds -- see
+    db.py's get/set/clear_credits_exhausted(). Surfaced here rather than
+    only as the one in-chat error message so it stays visible across both
+    apps for as long as it's actually true, not just in the one chat
+    bubble that happened to trigger it."""
+    exhausted_since = await get_credits_exhausted_since()
+    if exhausted_since is None:
+        return []
+    return [
+        {
+            "title": "Anthropic credits exhausted",
+            "detail": f"Since {exhausted_since} UTC — add credits at console.anthropic.com/settings/billing",
+            "target_nav_title": "Frank",
+        }
+    ]
+
+
+async def _connected_apps_alerts() -> list[dict]:
+    """Reliability pass (2026-09-07): reads connected_apps.py's cache
+    (refreshed every 15 minutes by main.py's existing scheduler tick),
+    never the live compute_connected_apps_status() directly -- that call
+    makes a real network round-trip, and this function is itself called on
+    Situation Room's 30s poll cadence, so calling it live here would pay
+    that cost every 30 seconds instead of every 15 minutes. Empty cache
+    (a fresh restart, first tick hasn't fired yet) reads as "nothing to
+    report" rather than blocking on a live check just to cover a brief
+    startup gap."""
+    cached_status = get_cached_connected_apps_status()
+    if cached_status is None:
+        return []
+    return [
+        {
+            "title": f"{row['name']} disconnected",
+            "detail": "Hasn't been reachable on the last check — reconnect via Settings.",
+            "target_nav_title": "Settings",
+        }
+        for row in cached_status
+        if not row["connected"]
+    ]
+
+
 async def compute_situation_room_alerts() -> list[dict]:
     today = date.today()
+    credits = await _credit_exhausted_alert()
+    connected_apps = await _connected_apps_alerts()
     tasks = await _severely_overdue_tasks(today)
     invoices = await _severely_overdue_invoices(today)
     outreach = await _severely_stale_outreach()
-    return tasks + invoices + outreach
+    return credits + connected_apps + tasks + invoices + outreach

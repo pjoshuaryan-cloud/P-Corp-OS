@@ -44,10 +44,14 @@ import base64
 import json
 import os
 import secrets
+import threading
+import urllib.error
+import urllib.request
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import anthropic
 import httpx
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
@@ -150,12 +154,14 @@ from app.connected_apps import (
     CONNECTED_APPS_TOOLS,
     compute_connected_apps_status,
     execute_connected_apps_tool_call,
+    refresh_connected_apps_cache,
 )
 from app.search import search_all
 from app.triggers import compute_status as compute_trigger_status, maybe_run_daily_digest, run_daily_digest
 from app.triggers_db import init_triggers_db, list_rules as list_trigger_rules, set_rule_enabled
 from app.operations_db import init_operations_db, list_open_tasks
 from app.db import (
+    clear_credits_exhausted,
     create_new_conversation,
     forget_memory_by_id,
     get_active_conversation_id,
@@ -167,6 +173,7 @@ from app.db import (
     log_activity,
     save_message,
     set_active_conversation,
+    set_credits_exhausted,
 )
 from app.memory import FORGET_MEMORY_TOOL, SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
 from app.focus import FOCUS_TOOL_NAMES, FOCUS_TOOLS, execute_focus_tool_call
@@ -193,6 +200,11 @@ from app.data_analysis import DATA_ANALYSIS_TOOL_NAMES, DATA_ANALYSIS_TOOLS, exe
 # comfortably above MAX_TOTAL_ATTACHMENT_BYTES's own worst-case inflation
 # so the application-level cap is what actually governs, not this one.
 WS_MAX_SIZE = 64 * 1024 * 1024
+
+# Reliability pass (2026-09-07): one shared constant, reused by every real
+# uvicorn bind below and by the hang-watchdog's own health check, so they
+# can't silently drift apart the way three independent literal 8731s could.
+BACKEND_PORT = 8731
 from app.decision_journal import (
     DECISION_JOURNAL_TOOL_NAMES,
     DECISION_JOURNAL_TOOLS,
@@ -290,6 +302,14 @@ async def _trigger_scheduler_loop() -> None:
             await maybe_snapshot_market_prices()
         except Exception as exc:
             print(f"[triggers] market movers snapshot tick failed: {exc}")
+        try:
+            # Reliability pass (2026-09-07): Connected Apps' cache, feeding
+            # situation_room.py's disconnection alert. Not gated to once a
+            # day like the three jobs above -- it re-checks unconditionally
+            # every tick, see connected_apps.py's own docstring.
+            await refresh_connected_apps_cache()
+        except Exception as exc:
+            print(f"[connected_apps] cache refresh tick failed: {exc}")
         await asyncio.sleep(TRIGGER_CHECK_INTERVAL_SECONDS)
 
 
@@ -315,19 +335,39 @@ async def _calendar_sync_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
-    await init_alpha_mode_db()
-    await init_operations_db()
-    await init_personal_db()
-    await init_joshx_db()
-    await init_people_db()
-    await init_finance_db()
-    await init_automations_db()
-    await init_automation_rules_db()
-    await init_audit_db()
-    await init_triggers_db()
-    await init_email_db()
-    await init_calendar_db()
+    # Real bug found live during the reliability pass (2026-09-07): adding
+    # a nullable app_state column (db.py's credits_exhausted_since)
+    # crashed startup with "sqlite3.OperationalError: duplicate column
+    # name" -- _run_dual's two concurrent lifespan entries (see the
+    # elevenlabs_client/scheduler-task guards below) both ran init_db()'s
+    # check-then-ALTER migration at the same time, so both saw the column
+    # missing before either had committed adding it. CREATE TABLE IF NOT
+    # EXISTS tolerates a concurrent double-run fine, which is presumably
+    # why this block was never guarded before -- but a plain ALTER TABLE
+    # migration doesn't, and every init_*_db() function has at least one.
+    # Same app.state guard as the block below, just covering this whole
+    # sequence instead of one task/client each. Critically, the flag is
+    # set BEFORE any of the awaits below, not after: both lifespan
+    # entries run on the same single-threaded event loop, so a plain
+    # synchronous check-then-set with no `await` between them can't be
+    # interleaved by the other coroutine -- setting it only after all the
+    # awaits finished would reopen the exact same race, since the second
+    # entry could reach this check during any one of those await points.
+    if not hasattr(app.state, "db_initialized"):
+        app.state.db_initialized = True
+        await init_db()
+        await init_alpha_mode_db()
+        await init_operations_db()
+        await init_personal_db()
+        await init_joshx_db()
+        await init_people_db()
+        await init_finance_db()
+        await init_automations_db()
+        await init_automation_rules_db()
+        await init_audit_db()
+        await init_triggers_db()
+        await init_email_db()
+        await init_calendar_db()
     # A single reused httpx client, not one per /speak call — real bug
     # found and fixed 2026-07-30: creating a fresh AsyncClient() per
     # request meant paying a full DNS+TLS handshake to ElevenLabs every
@@ -994,6 +1034,34 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 # outer `except WebSocketDisconnect: pass` below.
                 history.pop()
                 raise
+            except anthropic.APIStatusError as error:
+                # Reliability pass (2026-09-07): a real Anthropic billing
+                # failure (out of credits) used to fall straight into the
+                # generic branch below and show as one confusing raw SDK
+                # error string in the chat transcript, with zero
+                # persistent signal anywhere else in the app -- the status
+                # header stayed "SYSTEM NOMINAL" throughout. error.type is
+                # the SDK's own structured field (immune to message-
+                # wording changes, unlike substring-matching str(error));
+                # "billing_error" is the real value Anthropic sends for
+                # this exact case. Must be caught before the generic
+                # `except Exception` below, since APIStatusError is a
+                # subclass of it.
+                if getattr(error, "type", None) == "billing_error":
+                    await set_credits_exhausted()
+                    message = (
+                        "Frank is temporarily unavailable — the Anthropic account has run "
+                        "out of credits. Add credits at console.anthropic.com/settings/billing, "
+                        "then try again."
+                    )
+                else:
+                    message = f"\n[backend error: {error}]"
+                try:
+                    await websocket.send_text(message)
+                except Exception:
+                    pass
+                history.pop()
+                continue
             except Exception as error:
                 # A client-initiated stop (BackendClient.stopGenerating())
                 # closes the socket mid-stream, which is exactly what
@@ -1011,6 +1079,10 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 history.pop()
                 continue
 
+            # Reliability pass (2026-09-07): clears any earlier billing
+            # alert the moment a turn actually succeeds again -- cheap
+            # single-row UPDATE, correct as a no-op when nothing was set.
+            await clear_credits_exhausted()
             history.append({"role": "assistant", "content": assistant_reply})
             await save_message(conversation_id, "assistant", assistant_reply)
             await websocket.send_text("\n[done]")
@@ -1281,9 +1353,11 @@ def run() -> None:
     # the regular Wi-Fi/Ethernet interface, reachable by anyone else on the
     # same network). TAILSCALE_IP is optional in .env — if unset, this
     # behaves exactly as before, single listener, no behavior change.
+    _start_hang_watchdog()
+
     tailscale_ip = os.environ.get("TAILSCALE_IP")
     if not tailscale_ip:
-        uvicorn.run(app, host="127.0.0.1", port=8731, ws_max_size=WS_MAX_SIZE)
+        uvicorn.run(app, host="127.0.0.1", port=BACKEND_PORT, ws_max_size=WS_MAX_SIZE)
         return
 
     asyncio.run(_run_dual(tailscale_ip))
@@ -1292,9 +1366,79 @@ def run() -> None:
 async def _run_dual(tailscale_ip: str) -> None:
     import uvicorn
 
-    local_server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8731, ws_max_size=WS_MAX_SIZE))
-    tailscale_server = uvicorn.Server(uvicorn.Config(app, host=tailscale_ip, port=8731, ws_max_size=WS_MAX_SIZE))
+    local_server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=BACKEND_PORT, ws_max_size=WS_MAX_SIZE))
+    tailscale_server = uvicorn.Server(
+        uvicorn.Config(app, host=tailscale_ip, port=BACKEND_PORT, ws_max_size=WS_MAX_SIZE)
+    )
     await asyncio.gather(local_server.serve(), tailscale_server.serve())
+
+
+_WATCHDOG_GRACE_SECONDS = 30
+_WATCHDOG_CHECK_INTERVAL_SECONDS = 30
+_WATCHDOG_MAX_CONSECUTIVE_FAILURES = 3
+
+
+def _start_hang_watchdog() -> None:
+    """Reliability pass (2026-09-07): a real incident this week saw the
+    launchd-managed backend start and sit at 0% CPU indefinitely, never
+    binding this port -- alive, not crashed, so launchd's own
+    KeepAlive: true (which only restarts on actual process exit) never
+    caught it. Confirmed via uvicorn's own source that the full FastAPI
+    lifespan (every init_*_db() call, the shared httpx.AsyncClient(), both
+    existing background loops) runs entirely before the port is ever
+    bound -- a hang anywhere in there matches that incident exactly.
+
+    Runs as a real OS thread, not an asyncio task, specifically so it
+    keeps making progress even if the main asyncio event loop itself is
+    what's deadlocked -- urllib's blocking call releases the GIL during
+    the actual network wait, so this thread isn't starved by a stuck main
+    thread. Checks a real GET /health round trip (accept -> ASGI dispatch
+    -> route handler -> response), not just a raw TCP connect -- a bare
+    connect only proves the kernel completed a handshake, which a process
+    that bound the port fine and wedged afterward would still pass
+    forever.
+
+    Timing: first check at t=30s after this thread starts, then every 30s
+    -- 3 consecutive failures means the kill fires at t=90s total. Calls
+    os._exit(1), not sys.exit(): sys.exit() only raises SystemExit in
+    this thread and would do nothing to a hung main thread; os._exit()
+    terminates the whole process immediately regardless of which thread
+    calls it. No zombie-port risk -- the kernel closes every file
+    descriptor on process exit, and uvicorn's listening socket uses
+    SO_REUSEADDR, so launchd's KeepAlive-triggered restart binds cleanly.
+    Only self-heals when actually running under launchd (the packaged
+    desktop app's managed backend); a bare dev process with no supervisor
+    would just get hard-killed with nothing to restart it -- accepted,
+    since dev mode isn't this fix's target."""
+
+    def _watchdog() -> None:
+        import time
+
+        time.sleep(_WATCHDOG_GRACE_SECONDS)
+        consecutive_failures = 0
+        health_url = f"http://127.0.0.1:{BACKEND_PORT}/health?token={AUTH_TOKEN}"
+        while True:
+            try:
+                with urllib.request.urlopen(health_url, timeout=2) as response:
+                    healthy = response.status == 200
+            except (urllib.error.URLError, OSError, ValueError):
+                healthy = False
+
+            if healthy:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= _WATCHDOG_MAX_CONSECUTIVE_FAILURES:
+                    print(
+                        f"[watchdog] backend unresponsive for "
+                        f"{_WATCHDOG_MAX_CONSECUTIVE_FAILURES} consecutive checks -- forcing exit "
+                        f"so launchd's KeepAlive restarts a fresh process"
+                    )
+                    os._exit(1)
+
+            time.sleep(_WATCHDOG_CHECK_INTERVAL_SECONDS)
+
+    threading.Thread(target=_watchdog, daemon=True, name="hang-watchdog").start()
 
 
 if __name__ == "__main__":

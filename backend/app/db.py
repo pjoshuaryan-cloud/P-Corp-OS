@@ -145,6 +145,17 @@ async def init_db() -> None:
         if "last_gmail_sync_at" not in columns:
             await db.execute("ALTER TABLE app_state ADD COLUMN last_gmail_sync_at TEXT")
 
+        # Migration path: app_state existed before the reliability pass's
+        # credit-exhaustion tracking did (2026-09-07). Nullable -- NULL means
+        # credits are fine (the real, common state), a timestamp means
+        # Frank's last Anthropic call failed with a real billing error and
+        # hasn't succeeded since. Persisted (not in-memory) deliberately: it
+        # must survive a process restart -- including the reliability pass's
+        # own hang-watchdog restart -- so the Situation Room alert doesn't go
+        # silent mid-outage exactly when nobody's watching.
+        if "credits_exhausted_since" not in columns:
+            await db.execute("ALTER TABLE app_state ADD COLUMN credits_exhausted_since TEXT")
+
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_records (
@@ -300,6 +311,27 @@ async def get_last_gmail_sync_at() -> str | None:
 async def mark_gmail_synced() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE app_state SET last_gmail_sync_at = datetime('now') WHERE id = 1")
+        await db.commit()
+
+
+async def get_credits_exhausted_since() -> str | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT credits_exhausted_since FROM app_state WHERE id = 1")
+        (exhausted_since,) = await cursor.fetchone()
+        return exhausted_since
+
+
+async def set_credits_exhausted() -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE app_state SET credits_exhausted_since = COALESCE(credits_exhausted_since, datetime('now')) WHERE id = 1"
+        )
+        await db.commit()
+
+
+async def clear_credits_exhausted() -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE app_state SET credits_exhausted_since = NULL WHERE id = 1")
         await db.commit()
 
 
