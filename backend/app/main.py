@@ -43,6 +43,7 @@ import asyncio
 import base64
 import json
 import os
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -50,8 +51,8 @@ from pathlib import Path
 import httpx
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -68,7 +69,13 @@ from app.agents_registry import list_agents
 from app.audit_db import init_audit_db, record_tool_call
 from app.automations import check_and_fire as check_and_fire_automation
 from app.automations_db import init_automations_db, list_runs as list_automation_runs
-from app.automations_registry import AUTOMATIONS
+from app.automation_rules_db import (
+    init_automation_rules_db,
+    list_rules as list_automation_rules,
+    set_rule_enabled as set_automation_rule_enabled,
+    delete_rule as delete_automation_rule,
+)
+from app.automation_tools import AUTOMATION_TOOL_NAMES, AUTOMATION_TOOLS, execute_automation_tool_call
 from app.communications_agent import (
     COMMUNICATIONS_AGENT_TOOL_NAMES,
     COMMUNICATIONS_AGENT_TOOLS,
@@ -84,21 +91,42 @@ from app.debate import DEBATE_TOOL_NAMES, DEBATE_TOOLS, execute_debate_tool_call
 from app.knowledge import list_docs as list_knowledge_docs, read_doc as read_knowledge_doc
 from app.personal_db import dashboard_snapshot as personal_dashboard_snapshot, init_personal_db
 from app.personal_tools import PERSONAL_TOOL_NAMES, PERSONAL_TOOLS, build_personal_block, execute_personal_tool_call
-from app.joshx_db import dashboard_snapshot as joshx_dashboard_snapshot, init_joshx_db
+from app.joshx_db import (
+    PROJECT_PAYMENT_STATUS_VALUES,
+    PROJECT_STATUS_VALUES,
+    compute_performance_metrics as joshx_performance_metrics,
+    dashboard_snapshot as joshx_dashboard_snapshot,
+    delete_client_by_id,
+    delete_lead_by_id,
+    delete_project_by_id,
+    init_joshx_db,
+    set_project_payment_status_by_id,
+    set_project_status_by_id,
+)
 from app.joshx_tools import JOSHX_TOOL_NAMES, JOSHX_TOOLS, build_joshx_block, execute_joshx_tool_call
 from app.people_db import dashboard_snapshot as people_dashboard_snapshot, init_people_db
 from app.people_tools import PEOPLE_TOOL_NAMES, PEOPLE_TOOLS, build_people_block, execute_people_tool_call
-from app.finance_db import dashboard_snapshot as finance_dashboard_snapshot, init_finance_db
+from app.finance_db import (
+    dashboard_snapshot as finance_dashboard_snapshot,
+    get_balance_history,
+    init_finance_db,
+)
 from app.calendar_tools import CALENDAR_TOOL_NAMES, CALENDAR_TOOLS, execute_calendar_tool_call
+from app.calendar_db import init_calendar_db, sync_calendar_cache
+from app.email_db import init_email_db
+from app.email_tools import EMAIL_TOOL_NAMES, EMAIL_TOOLS, execute_email_tool_call
+from app import google_oauth
 from app.finance_tools import FINANCE_TOOL_NAMES, FINANCE_TOOLS, build_finance_block, execute_finance_tool_call
+from app.documents import DOCUMENTS_TOOL_NAMES, DOCUMENTS_TOOLS, execute_documents_tool_call
 from app.finance import (
+    compute_concentration_metrics,
     compute_luno_zar_value,
     get_hf_markets_live_status,
     maybe_snapshot_hf_markets,
     maybe_snapshot_luno,
 )
 from app.market_movers import maybe_snapshot_market_prices
-from app.trading_division import dashboard_snapshot as trading_division_dashboard_snapshot
+from app.trading_division import build_trading_division_block, dashboard_snapshot as trading_division_dashboard_snapshot
 from app.trading_division_agent import (
     TRADING_DIVISION_AGENT_TOOL_NAMES,
     TRADING_DIVISION_AGENT_TOOLS,
@@ -108,6 +136,7 @@ from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES, LEGACY_VAULT_TOOLS, execut
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
 from app.research_agent import RESEARCH_AGENT_TOOL_NAMES, RESEARCH_AGENT_TOOLS, execute_research_agent_tool_call
+from app.web_tools import SERVER_TOOL_LABELS, WEB_TOOLS
 from app.engineering_agent import (
     ENGINEERING_AGENT_TOOL_NAMES,
     ENGINEERING_AGENT_TOOLS,
@@ -116,6 +145,12 @@ from app.engineering_agent import (
 from app.brief import compute_brief
 from app.insights import compute_insights
 from app.situation_room import compute_situation_room_alerts
+from app.connected_apps import (
+    CONNECTED_APPS_TOOL_NAMES,
+    CONNECTED_APPS_TOOLS,
+    compute_connected_apps_status,
+    execute_connected_apps_tool_call,
+)
 from app.search import search_all
 from app.triggers import compute_status as compute_trigger_status, maybe_run_daily_digest, run_daily_digest
 from app.triggers_db import init_triggers_db, list_rules as list_trigger_rules, set_rule_enabled
@@ -135,6 +170,29 @@ from app.db import (
 )
 from app.memory import FORGET_MEMORY_TOOL, SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
 from app.focus import FOCUS_TOOL_NAMES, FOCUS_TOOLS, execute_focus_tool_call
+from app.tool_labels import label_for_tool
+from app.document_attachments import (
+    ATTACHMENT_CAPABILITY_NOTE,
+    ATTACHMENTS_DIR,
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENTS_PER_MESSAGE,
+    MAX_TOTAL_ATTACHMENT_BYTES,
+    build_content_block,
+)
+from app.data_analysis import DATA_ANALYSIS_TOOL_NAMES, DATA_ANALYSIS_TOOLS, execute_data_analysis_tool_call
+
+# Real bug found live (2026-09-05): uvicorn/websockets defaults to a 16MB
+# max frame size -- MAX_TOTAL_ATTACHMENT_BYTES (40MB raw) inflates to
+# ~55MB once base64-encoded plus JSON structure, well past that default.
+# Without raising this, an oversized message never reaches the graceful,
+# in-band "[Attached file ... too large]" text block at all -- the
+# websocket connection itself gets killed first with a raw protocol error
+# (confirmed live: `ConnectionClosedError: ... message too big ... exceeds
+# limit of 16777216 bytes`), exactly the "confusing raw error deep in the
+# stack" outcome this whole size-cap design was supposed to prevent. Set
+# comfortably above MAX_TOTAL_ATTACHMENT_BYTES's own worst-case inflation
+# so the application-level cap is what actually governs, not this one.
+WS_MAX_SIZE = 64 * 1024 * 1024
 from app.decision_journal import (
     DECISION_JOURNAL_TOOL_NAMES,
     DECISION_JOURNAL_TOOLS,
@@ -164,12 +222,6 @@ MODEL = "claude-sonnet-5"
 # drafted document, etc.) that need more room.
 MAX_TOKENS = 4096
 AUTH_TOKEN = get_or_create_token()
-
-# Uploaded chat images land here (2026-08-05) -- filenames only in
-# messages.image_path, not the bytes themselves, keeps that column cheap
-# regardless of image size. Not synced/backed up anywhere yet, same as
-# every other local SQLite data in this project so far.
-ATTACHMENTS_DIR = Path(__file__).parent.parent / "data" / "attachments"
 
 # Optional — cloud text-to-speech (see .env.example). Confirmed decision
 # (2026-07-29): tried free-tier ElevenLabs first, which turned out to
@@ -241,6 +293,26 @@ async def _trigger_scheduler_loop() -> None:
         await asyncio.sleep(TRIGGER_CHECK_INTERVAL_SECONDS)
 
 
+# Google Calendar sync (2026-08-27) -- a second periodic loop rather than
+# folding into _trigger_scheduler_loop above, since this one needs its own
+# cadence (calendar events change often enough that 15 minutes is worth
+# keeping tight, independent of the Triggers/Finance ticks living on the
+# same 900s interval already). Keeps the cache in calendar_db.py warm so
+# list_calendar_events reads it instantly rather than paying Google API
+# latency on every Frank turn. A no-op (fails soft, returns immediately)
+# until Google is actually connected via /auth/google/start.
+CALENDAR_SYNC_INTERVAL_SECONDS = 900
+
+
+async def _calendar_sync_loop() -> None:
+    while True:
+        try:
+            await sync_calendar_cache()
+        except Exception as exc:
+            print(f"[calendar] sync tick failed: {exc}")
+        await asyncio.sleep(CALENDAR_SYNC_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
@@ -251,8 +323,11 @@ async def lifespan(app: FastAPI):
     await init_people_db()
     await init_finance_db()
     await init_automations_db()
+    await init_automation_rules_db()
     await init_audit_db()
     await init_triggers_db()
+    await init_email_db()
+    await init_calendar_db()
     # A single reused httpx client, not one per /speak call — real bug
     # found and fixed 2026-07-30: creating a fresh AsyncClient() per
     # request meant paying a full DNS+TLS handshake to ElevenLabs every
@@ -277,10 +352,15 @@ async def lifespan(app: FastAPI):
         app.state.elevenlabs_client = httpx.AsyncClient(timeout=30.0)
     if not hasattr(app.state, "trigger_scheduler_task"):
         app.state.trigger_scheduler_task = asyncio.create_task(_trigger_scheduler_loop())
+    if not hasattr(app.state, "calendar_sync_task"):
+        app.state.calendar_sync_task = asyncio.create_task(_calendar_sync_loop())
     yield
     if hasattr(app.state, "trigger_scheduler_task"):
         app.state.trigger_scheduler_task.cancel()
         del app.state.trigger_scheduler_task
+    if hasattr(app.state, "calendar_sync_task"):
+        app.state.calendar_sync_task.cancel()
+        del app.state.calendar_sync_task
     if hasattr(app.state, "elevenlabs_client"):
         await app.state.elevenlabs_client.aclose()
         del app.state.elevenlabs_client
@@ -310,6 +390,58 @@ async def mobile() -> Response:
     return Response(content=html, media_type="text/html")
 
 
+# In-memory only, single-user, single-Mac -- this backend never has more
+# than one in-flight OAuth attempt at a time, so a plain module-level
+# variable is enough state for the CSRF check between /start and
+# /callback. Not persisted, so a restart mid-flow just means the state
+# check fails and Josh re-starts the flow, which is a fine failure mode.
+_google_oauth_state: str | None = None
+
+
+@app.get("/auth/google/start")
+async def auth_google_start() -> RedirectResponse:
+    # Deliberately unauthenticated at the route level, same reasoning as
+    # /mobile above: this backend is only reachable via Tailscale/
+    # localhost by design, and this flow's real security boundary is
+    # Google's own login screen, not this app's local token.
+    global _google_oauth_state
+    _google_oauth_state = secrets.token_urlsafe(16)
+    return RedirectResponse(google_oauth.get_authorization_url(_google_oauth_state))
+
+
+@app.get("/auth/google/callback")
+async def auth_google_callback(code: str | None = None, state: str | None = None, error: str | None = None) -> Response:
+    global _google_oauth_state
+    if error:
+        body = f"<html><body><h3>Google sign-in was cancelled or failed: {error}</h3></body></html>"
+    elif not code or not state or state != _google_oauth_state:
+        body = "<html><body><h3>This sign-in link is invalid or expired -- start again from P Corp OS.</h3></body></html>"
+    else:
+        ok = await google_oauth.exchange_code_for_tokens(code)
+        _google_oauth_state = None
+        if ok:
+            body = "<html><body><h3>Connected. You can close this tab -- P Corp OS is now connected to Google.</h3></body></html>"
+        else:
+            body = "<html><body><h3>Something went wrong exchanging the authorization code. Try again.</h3></body></html>"
+    return Response(content=body, media_type="text/html")
+
+
+@app.get("/auth/google/status")
+async def auth_google_status(_: None = Depends(verify_token)) -> dict[str, bool]:
+    return {"connected": google_oauth.is_connected()}
+
+
+@app.get("/connected-apps")
+async def connected_apps_endpoint(_: None = Depends(verify_token)) -> list[dict]:
+    # First real UI surface for connection health on Gmail/Calendar/
+    # Supabase -- see app/connected_apps.py's docstring for why each
+    # row's "connected"/"last synced" means something different per
+    # service. Supersedes GET /auth/google/status for UI purposes (that
+    # endpoint has had zero Swift call sites since it shipped 2026-08-27);
+    # left in place since nothing else calls it either.
+    return await compute_connected_apps_status()
+
+
 @app.get("/memory")
 async def memory(_: None = Depends(verify_token)) -> list[dict]:
     # View of what Frank has saved via the save_memory tool, excluding
@@ -337,8 +469,9 @@ async def agents_endpoint(_: None = Depends(verify_token)) -> list[dict]:
 @app.get("/automations/rules")
 async def automations_rules(_: None = Depends(verify_token)) -> list[dict]:
     # Backs the "Automations" section's list of configured rules --
-    # same hand-kept-registry reasoning as GET /agents.
-    return AUTOMATIONS
+    # real, persisted, user-creatable rules (automation_rules_db.py) as
+    # of 2026-09-06, not a hardcoded Python list.
+    return await list_automation_rules()
 
 
 @app.get("/automations/runs")
@@ -346,6 +479,31 @@ async def automations_runs(_: None = Depends(verify_token)) -> list[dict]:
     # Backs the "Automations" section's real firing history -- makes
     # automations visible when they happen, not something silent.
     return await list_automation_runs()
+
+
+class AutomationRuleUpdate(BaseModel):
+    enabled: bool
+
+
+@app.patch("/automations/rules/{rule_id}")
+async def automation_rule_update(
+    rule_id: str, body: AutomationRuleUpdate, _: None = Depends(verify_token)
+) -> dict:
+    # UI-driven pause/resume -- id-based, not fuzzy, same reasoning as
+    # Joshx's own UI-driven PATCH endpoints (the UI already knows the
+    # exact row it's showing).
+    await set_automation_rule_enabled(rule_id, body.enabled)
+    await record_tool_call("update_automation_rule_ui", {"rule_id": rule_id, "enabled": body.enabled}, "ok")
+    return {"rule_id": rule_id, "enabled": body.enabled}
+
+
+@app.delete("/automations/rules/{rule_id}")
+async def automation_rule_delete(rule_id: str, _: None = Depends(verify_token)) -> dict:
+    deleted = await delete_automation_rule(rule_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"No automation rule with id {rule_id}")
+    await record_tool_call("delete_automation_rule_ui", {"rule_id": rule_id}, "ok")
+    return {"rule_id": rule_id, "deleted": True}
 
 
 @app.get("/knowledge")
@@ -387,6 +545,95 @@ async def joshx_dashboard(_: None = Depends(verify_token)) -> dict:
     return await joshx_dashboard_snapshot()
 
 
+@app.get("/joshx/analytics")
+async def joshx_analytics(_: None = Depends(verify_token)) -> dict:
+    # Backs the new performance-metrics tiles (2026-09-06, systems audit
+    # §3) -- deliberately a separate endpoint from /joshx/dashboard, not
+    # new keys on it, matching compute_performance_metrics()'s own
+    # docstring on why that boundary matters.
+    return await joshx_performance_metrics()
+
+
+class JoshxProjectStatusUpdate(BaseModel):
+    status: str
+
+
+class JoshxProjectPaymentStatusUpdate(BaseModel):
+    payment_status: str
+
+
+@app.patch("/joshx/projects/{project_id}/status")
+async def joshx_project_status_update(
+    project_id: int, body: JoshxProjectStatusUpdate, _: None = Depends(verify_token)
+) -> dict:
+    # Backs the Joshx detail view's status picker (2026-08-31) -- the
+    # first UI-driven write in Joshx; every other Joshx write happens via
+    # a Frank chat tool (see joshx_tools.py's update_joshx_project_status,
+    # which stays fuzzy-name-matched and untouched by this). This one is
+    # id-based (set_project_status_by_id, not the fuzzy _find_row_id
+    # path) since the UI already knows the exact row id it's displaying,
+    # and validated server-side against the known vocabulary -- the
+    # chat-tool path trusts Frank's own judgment, this one can't.
+    if body.status not in PROJECT_STATUS_VALUES:
+        raise HTTPException(status_code=400, detail=f"Invalid status: {body.status!r}")
+    updated = await set_project_status_by_id(project_id, body.status)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"No project with id {project_id}")
+    await record_tool_call("update_joshx_project_status_ui", {"project_id": project_id, "status": body.status}, "ok")
+    return {"project_id": project_id, "status": body.status}
+
+
+@app.patch("/joshx/projects/{project_id}/payment-status")
+async def joshx_project_payment_status_update(
+    project_id: int, body: JoshxProjectPaymentStatusUpdate, _: None = Depends(verify_token)
+) -> dict:
+    if body.payment_status not in PROJECT_PAYMENT_STATUS_VALUES:
+        raise HTTPException(status_code=400, detail=f"Invalid payment_status: {body.payment_status!r}")
+    updated = await set_project_payment_status_by_id(project_id, body.payment_status)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"No project with id {project_id}")
+    await record_tool_call(
+        "update_joshx_project_payment_status_ui",
+        {"project_id": project_id, "payment_status": body.payment_status},
+        "ok",
+    )
+    return {"project_id": project_id, "payment_status": body.payment_status}
+
+
+@app.delete("/joshx/leads/{lead_id}")
+async def joshx_lead_delete(lead_id: int, _: None = Depends(verify_token)) -> dict:
+    # Backs the LEADS section's delete action (2026-08-31) -- soft
+    # delete (leads.deleted_at), same reasoning as operations_db.py's
+    # delete_task: a lead becoming a real project isn't tracked as a
+    # link anywhere, so nothing auto-hides it once it's booked; this is
+    # the explicit "get it off my list" action for a dormant one.
+    deleted = await delete_lead_by_id(lead_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"No lead with id {lead_id}")
+    await record_tool_call("delete_joshx_lead_ui", {"lead_id": lead_id}, "ok")
+    return {"lead_id": lead_id, "deleted": True}
+
+
+@app.delete("/joshx/clients/{client_id}")
+async def joshx_client_delete(client_id: int, _: None = Depends(verify_token)) -> dict:
+    # "Everything must be deletable if needed" (2026-08-31) -- same
+    # soft-delete shape as the lead/project delete routes.
+    deleted = await delete_client_by_id(client_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"No client with id {client_id}")
+    await record_tool_call("delete_joshx_client_ui", {"client_id": client_id}, "ok")
+    return {"client_id": client_id, "deleted": True}
+
+
+@app.delete("/joshx/projects/{project_id}")
+async def joshx_project_delete(project_id: int, _: None = Depends(verify_token)) -> dict:
+    deleted = await delete_project_by_id(project_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"No project with id {project_id}")
+    await record_tool_call("delete_joshx_project_ui", {"project_id": project_id}, "ok")
+    return {"project_id": project_id, "deleted": True}
+
+
 @app.get("/people/dashboard")
 async def people_dashboard(_: None = Depends(verify_token)) -> dict:
     # Backs the "PEOPLE" section inside Personal -- Josh's real personal/
@@ -413,6 +660,28 @@ async def finance_dashboard(_: None = Depends(verify_token)) -> dict:
             # See app/finance.py's get_hf_markets_live_status() docstring.
             account["hf_markets_live"] = get_hf_markets_live_status()
     return snapshot
+
+
+@app.get("/finance/concentration")
+async def finance_concentration(_: None = Depends(verify_token)) -> dict:
+    # Backs the new concentration-bars section (2026-09-06, systems audit
+    # §4) -- two separate views (ZAR accounts, Luno holdings), never one
+    # blended number. See app/finance.py's compute_concentration_metrics()
+    # docstring for why.
+    return await compute_concentration_metrics()
+
+
+@app.get("/finance/history")
+async def finance_history(
+    account_id: int, from_: str | None = Query(None, alias="from"), to: str | None = None,
+    _: None = Depends(verify_token),
+) -> list[dict]:
+    # Backs the new per-account history drill-down (2026-09-06, systems
+    # audit §4's date-range filtering) -- every logged snapshot for one
+    # account, optionally bounded by from/to ('YYYY-MM-DD'). Omitting both
+    # returns the full history, honest given real accounts here span
+    # barely two weeks so far.
+    return await get_balance_history(account_id, from_, to)
 
 
 @app.get("/search")
@@ -642,32 +911,57 @@ async def websocket_chat(websocket: WebSocket) -> None:
             try:
                 payload = json.loads(raw_message)
                 user_text = payload.get("text", "")
-                image = payload.get("image")
+                all_attachments = payload.get("attachments", [])
+                attachments_payload = all_attachments[:MAX_ATTACHMENTS_PER_MESSAGE]
+                dropped_count = len(all_attachments) - len(attachments_payload)
             except json.JSONDecodeError:
                 user_text = raw_message
-                image = None
+                attachments_payload = []
+                dropped_count = 0
 
-            image_path = None
-            if image and image.get("data") and image.get("media_type"):
+            # Real bug found live (2026-09-05, multi-attach): oversized/
+            # too-many attachments must never fail deep inside the
+            # Anthropic SDK call with a confusing raw error -- rejected
+            # ones become an honest in-band text block instead, same "the
+            # user should always be told why" discipline as everywhere
+            # else attachments can fail (see document_attachments.py). The
+            # count cap specifically used to just silently slice the list
+            # -- confirmed live, Frank had no way to know 2 of 8 attached
+            # files never arrived at all. Now says so explicitly too.
+            content_blocks: list[dict] = []
+            saved_attachments: list[dict] = []
+            total_bytes = 0
+            if dropped_count > 0:
+                content_blocks.append(
+                    {"type": "text", "text": f"[{dropped_count} attached file(s) were dropped -- only the first {MAX_ATTACHMENTS_PER_MESSAGE} per message are sent.]"}
+                )
+            for attachment in attachments_payload:
+                media_type = attachment.get("media_type", "")
+                filename = attachment.get("filename") or "attachment"
+                data = attachment.get("data")
+                if not data:
+                    continue
+                raw_bytes = base64.b64decode(data)
+                total_bytes += len(raw_bytes)
+                if len(raw_bytes) > MAX_ATTACHMENT_BYTES or total_bytes > MAX_TOTAL_ATTACHMENT_BYTES:
+                    content_blocks.append(
+                        {"type": "text", "text": f"[Attached file '{filename}' was too large and was not sent.]"}
+                    )
+                    continue
                 ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
-                extension = "png" if "png" in image["media_type"] else "jpg"
-                image_path = f"{uuid.uuid4()}.{extension}"
-                (ATTACHMENTS_DIR / image_path).write_bytes(base64.b64decode(image["data"]))
-                user_content = [
-                    {
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": image["media_type"], "data": image["data"]},
-                    },
-                    {"type": "text", "text": user_text},
-                ]
-            else:
-                user_content = user_text
+                stored_name = f"{uuid.uuid4()}{Path(filename).suffix}"
+                (ATTACHMENTS_DIR / stored_name).write_bytes(raw_bytes)
+                content_blocks.append(build_content_block(media_type, filename, raw_bytes))
+                saved_attachments.append({"filename": stored_name, "original_name": filename, "media_type": media_type})
+
+            user_content = [*content_blocks, {"type": "text", "text": user_text}] if content_blocks else user_text
 
             history.append({"role": "user", "content": user_content})
-            await save_message(conversation_id, "user", user_text, image_path=image_path)
+            await save_message(conversation_id, "user", user_text, attachments=saved_attachments or None)
 
             system_prompt = (
                 SYSTEM_PROMPT
+                + ATTACHMENT_CAPABILITY_NOTE
                 + await build_memory_block()
                 + await build_alpha_mode_block()
                 + await build_operations_block()
@@ -675,11 +969,12 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 + await build_joshx_block()
                 + await build_people_block()
                 + await build_finance_block()
+                + await build_trading_division_block()
             )
 
             try:
                 assistant_reply = await run_claude_turn(
-                    client, system_prompt, history, websocket, image=image
+                    client, system_prompt, history, websocket, conversation_id, attachments=content_blocks
                 )
             except WebSocketDisconnect:
                 # Real bug found live (2026-08-27): the socket can now die
@@ -728,7 +1023,8 @@ async def run_claude_turn(
     system_prompt: str,
     history: list,
     websocket: WebSocket,
-    image: dict | None = None,
+    conversation_id: int,
+    attachments: list[dict] | None = None,
 ) -> str:
     """Runs one user turn to completion, including any save_memory round
     trips — Frank may call the tool, see the result, then keep talking. Text
@@ -738,14 +1034,17 @@ async def run_claude_turn(
     for appending the single final assistant text turn once this returns,
     since that's the flat, plain-text form persisted to SQLite.
 
-    image (2026-08-10, Design Critic) is this turn's raw attachment, if
-    any -- Frank already sees it directly (it's part of `history`'s own
-    content blocks), but a delegated specialist's own isolated Claude
+    attachments (2026-08-10, Design Critic; generalized 2026-09-05 for
+    multi-attach documents) are this turn's already-built content blocks,
+    if any -- Frank already sees them directly (they're part of `history`'s
+    own content blocks), but a delegated specialist's own isolated Claude
     call doesn't share that history, so if Frank delegates to a
-    vision-aware agent (currently just Design Agent), the same image is
-    forwarded to it directly. Only ever the image from *this* turn, not
-    an earlier one in the same conversation -- same "don't re-inject an
-    old image" reasoning as reopening a past conversation."""
+    vision-aware agent (currently just Design Agent), the same blocks are
+    forwarded to it directly -- whatever kinds they are (image/PDF/
+    extracted-text), uniformly, no per-kind logic needed here. Only ever
+    this turn's attachments, not an earlier one in the same conversation --
+    same "don't re-inject an old attachment" reasoning as reopening a past
+    conversation."""
     assistant_text = ""
     while True:
         async with client.messages.stream(
@@ -776,12 +1075,34 @@ async def run_claude_turn(
                 *JOSHX_TOOLS,
                 *PEOPLE_TOOLS,
                 *FINANCE_TOOLS,
+                *DOCUMENTS_TOOLS,
+                *CONNECTED_APPS_TOOLS,
                 *CALENDAR_TOOLS,
+                *EMAIL_TOOLS,
+                *AUTOMATION_TOOLS,
+                *DATA_ANALYSIS_TOOLS,
+                *WEB_TOOLS,
             ],
         ) as stream:
-            async for text in stream.text_stream:
-                assistant_text += text
-                await websocket.send_text(text)
+            async for event in stream:
+                if event.type == "text":
+                    assistant_text += event.text
+                    await websocket.send_text(event.text)
+                elif event.type == "content_block_start" and event.content_block.type == "server_tool_use":
+                    # Real gap found live (2026-09-06): web_search/web_fetch
+                    # are server-executed -- Anthropic runs them and injects
+                    # results back into this same stream, so they never
+                    # produce a tool_use block and never reach the dispatch
+                    # loop below where every other tool's [tool_start]
+                    # indicator fires (tool_labels.py's label_for_tool).
+                    # Left alone, a direct web search would be a silent
+                    # pause -- the exact thing the tool-execution-indicator
+                    # feature shipped earlier tonight to prevent. Detected
+                    # here instead, off the raw event stream, purely for
+                    # indicator purposes -- nothing is dispatched or
+                    # executed on this branch.
+                    label = SERVER_TOOL_LABELS.get(event.content_block.name, "Searching the web")
+                    await websocket.send_text(f"\n[tool_start]{json.dumps({'label': label})}")
             final_message = await stream.get_final_message()
 
         if final_message.stop_reason != "tool_use":
@@ -792,6 +1113,7 @@ async def run_claude_turn(
         for block in final_message.content:
             if block.type != "tool_use":
                 continue
+            await websocket.send_text(f"\n[tool_start]{json.dumps({'label': label_for_tool(block.name)})}")
             if block.name in FOCUS_TOOL_NAMES:
                 result = await execute_focus_tool_call(block.name, block.input)
             elif block.name in DECISION_JOURNAL_TOOL_NAMES:
@@ -809,7 +1131,7 @@ async def run_claude_turn(
             elif block.name in LEGACY_VAULT_TOOL_NAMES:
                 result = await execute_legacy_vault_tool_call(block.name, block.input)
             elif block.name in ALPHA_MODE_TOOL_NAMES:
-                result = await execute_alpha_mode_tool_call(block.name, block.input)
+                result = await execute_alpha_mode_tool_call(block.name, block.input, websocket)
             elif block.name in OPERATIONS_TOOL_NAMES:
                 result = await execute_operations_tool_call(block.name, block.input, client, websocket)
                 if block.name == "consult_operations_agent":
@@ -827,7 +1149,9 @@ async def run_claude_turn(
                 # transcript too.
                 assistant_text += result
             elif block.name in DESIGN_AGENT_TOOL_NAMES:
-                result = await execute_design_agent_tool_call(block.name, block.input, client, websocket, image=image)
+                result = await execute_design_agent_tool_call(
+                    block.name, block.input, client, websocket, attachments=attachments
+                )
                 # Same reasoning as consult_operations_agent above --
                 # already streamed live, needs to land in the persisted
                 # transcript too.
@@ -876,8 +1200,18 @@ async def run_claude_turn(
                 result = await execute_people_tool_call(block.name, block.input)
             elif block.name in FINANCE_TOOL_NAMES:
                 result = await execute_finance_tool_call(block.name, block.input)
+            elif block.name in DOCUMENTS_TOOL_NAMES:
+                result = await execute_documents_tool_call(block.name, block.input)
+            elif block.name in CONNECTED_APPS_TOOL_NAMES:
+                result = await execute_connected_apps_tool_call(block.name, block.input)
             elif block.name in CALENDAR_TOOL_NAMES:
-                result = await execute_calendar_tool_call(block.name, block.input)
+                result = await execute_calendar_tool_call(block.name, block.input, websocket)
+            elif block.name in EMAIL_TOOL_NAMES:
+                result = await execute_email_tool_call(block.name, block.input)
+            elif block.name in AUTOMATION_TOOL_NAMES:
+                result = await execute_automation_tool_call(block.name, block.input, websocket)
+            elif block.name in DATA_ANALYSIS_TOOL_NAMES:
+                result = await execute_data_analysis_tool_call(block.name, block.input, conversation_id)
             else:
                 result = await execute_tool_call(block.name, block.input)
             # Real audit trail (2026-08-10, SECURITY.md's flagged gap) --
@@ -926,7 +1260,7 @@ async def run_claude_turn(
                 notification = json.dumps({"title": "Task updated", "body": result})
                 await websocket.send_text(f"\n[notify]{notification}")
 
-            automation_notification = await check_and_fire_automation(block.name, block.input, client)
+            automation_notification = await check_and_fire_automation(block.name, block.input, client, result)
             if automation_notification:
                 # Deliberately a separate notification, not folded into
                 # the block above -- this is a rule firing as a real
@@ -949,7 +1283,7 @@ def run() -> None:
     # behaves exactly as before, single listener, no behavior change.
     tailscale_ip = os.environ.get("TAILSCALE_IP")
     if not tailscale_ip:
-        uvicorn.run(app, host="127.0.0.1", port=8731)
+        uvicorn.run(app, host="127.0.0.1", port=8731, ws_max_size=WS_MAX_SIZE)
         return
 
     asyncio.run(_run_dual(tailscale_ip))
@@ -958,8 +1292,8 @@ def run() -> None:
 async def _run_dual(tailscale_ip: str) -> None:
     import uvicorn
 
-    local_server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8731))
-    tailscale_server = uvicorn.Server(uvicorn.Config(app, host=tailscale_ip, port=8731))
+    local_server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8731, ws_max_size=WS_MAX_SIZE))
+    tailscale_server = uvicorn.Server(uvicorn.Config(app, host=tailscale_ip, port=8731, ws_max_size=WS_MAX_SIZE))
     await asyncio.gather(local_server.serve(), tailscale_server.serve())
 
 

@@ -25,6 +25,8 @@ struct SettingsView: View {
     @State private var backendAutoStart = false
     @State private var backendStatusNote: String?
 
+    @StateObject private var connectedAppsClient = ConnectedAppsClient()
+
     // Same key as PCorpOSApp's @AppStorage — this is the actual toggle,
     // not a placeholder; flipping it really switches the app's theme.
     @AppStorage(AppStorageKeys.darkModeEnabled) private var darkModeEnabled = false
@@ -75,6 +77,27 @@ struct SettingsView: View {
                     )
                 }
 
+                // Gmail/Calendar/Supabase already work in the backend but
+                // had zero UI showing it (2026-09-04) -- fetched on
+                // appear rather than a timed poll like Insights/Situation
+                // Room, since Supabase's own check is a live network
+                // round-trip (see backend/app/connected_apps.py) that's
+                // only worth paying when Josh actually looks at this
+                // screen.
+                SettingsSection(title: "CONNECTED APPS") {
+                    if connectedAppsClient.apps.isEmpty {
+                        Text(connectedAppsClient.isLoading ? "Checking…" : "Couldn't reach the backend.")
+                            .font(PCorpFont.body(11.5))
+                            .foregroundStyle(theme.textSecondary)
+                            .padding(16)
+                    } else {
+                        ForEach(Array(connectedAppsClient.apps.enumerated()), id: \.element.id) { index, app in
+                            if index > 0 { settingsSeparator }
+                            ConnectedAppStatusRow(app: app)
+                        }
+                    }
+                }
+
                 Spacer(minLength: 0)
             }
             .padding(40)
@@ -82,7 +105,10 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(theme.background)
-        .onAppear { refreshBackendStatus() }
+        .onAppear {
+            refreshBackendStatus()
+            Task { await connectedAppsClient.fetch() }
+        }
     }
 
     private var backendAutoStartBinding: Binding<Bool> {
@@ -189,5 +215,41 @@ private struct SettingsToggleRow: View {
                 .tint(theme.textPrimary)
         }
         .padding(16)
+    }
+}
+
+private struct ConnectedAppStatusRow: View {
+    let app: ConnectedAppStatus
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(app.name)
+                    .font(PCorpFont.body(13, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                Text(detailText)
+                    .font(PCorpFont.body(11.5))
+                    .foregroundStyle(theme.textSecondary)
+            }
+            Spacer(minLength: 16)
+            // Not statusRisk -- Theme.swift reserves that for a real
+            // escalated alert (SituationRoomBanner). "Not connected yet"
+            // is a neutral state here, same reasoning AgentsView.swift
+            // already uses for an inactive (not failed) agent's dot.
+            Circle()
+                .fill(app.connected ? theme.statusGood : theme.textSecondary)
+                .frame(width: 7, height: 7)
+                .padding(.top, 5)
+        }
+        .padding(16)
+    }
+
+    private var detailText: String {
+        guard app.connected else { return "Not connected." }
+        guard let lastSyncedAt = app.lastSyncedAt else {
+            return "Connected — no sync recorded yet."
+        }
+        return "Last synced \(lastSyncedAt)"
     }
 }

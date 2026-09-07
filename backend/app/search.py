@@ -33,7 +33,7 @@ this codebase.
 """
 
 from app.alpha_mode_supabase import dashboard_snapshot as alpha_mode_dashboard_snapshot
-from app.automations_registry import AUTOMATIONS
+from app.automation_rules_db import list_rules as list_automation_rules
 from app.db import list_conversations
 from app.finance_db import dashboard_snapshot as finance_dashboard_snapshot
 from app.joshx_db import dashboard_snapshot as joshx_dashboard_snapshot
@@ -175,6 +175,11 @@ async def _search_personal(query: str) -> list[dict]:
 
 
 async def _search_automations(query: str) -> list[dict]:
+    # Real, persisted rules (automation_rules_db.py) as of 2026-09-06 --
+    # was a static Python-list scan over the now-deleted
+    # automations_registry.py, a trivial swap since this function was
+    # already async and already called that way.
+    rules = await list_automation_rules()
     hits = [
         {
             "domain": "Automations",
@@ -183,7 +188,7 @@ async def _search_automations(query: str) -> list[dict]:
             "target_nav_title": "Automations",
             "conversation_id": None,
         }
-        for rule in AUTOMATIONS
+        for rule in rules
         if _matches(query, rule.get("name"), rule.get("description"))
     ]
     return hits[:RESULTS_PER_DOMAIN]

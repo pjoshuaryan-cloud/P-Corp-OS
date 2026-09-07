@@ -17,6 +17,7 @@ struct ConversationHistorySheet: View {
 
     @State private var conversations: [ConversationSummary] = []
     @State private var isLoading = true
+    @State private var loadFailed = false
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
     @Environment(\.appTheme) private var theme
@@ -45,6 +46,12 @@ struct ConversationHistorySheet: View {
     private var content: some View {
         if isLoading {
             ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(theme.background)
+        } else if loadFailed {
+            Text("Couldn't load conversations — is the backend running?")
+                .font(PCorpFont.body(12))
+                .foregroundStyle(theme.textSecondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(theme.background)
         } else if conversations.isEmpty {
@@ -118,7 +125,12 @@ struct ConversationHistorySheet: View {
 
     private func load(query: String?) async {
         isLoading = true
-        conversations = await backend.fetchConversationList(query: query)
+        loadFailed = false
+        do {
+            conversations = try await backend.fetchConversationList(query: query)
+        } catch {
+            loadFailed = true
+        }
         isLoading = false
     }
 

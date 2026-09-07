@@ -8,6 +8,12 @@ public final class MemoryClient: ObservableObject {
     @Published public private(set) var records: [MemoryRecord] = []
     @Published public private(set) var isLoading = false
     @Published public private(set) var errorMessage: String?
+    /// Set only by forget()'s own failure path -- deliberately separate
+    /// from errorMessage, which drives a full-list empty-state
+    /// replacement in FrankView; a single failed delete shouldn't hide an
+    /// otherwise successfully loaded list behind a "backend unreachable"
+    /// screen. The view shows this as a small inline banner instead.
+    @Published public private(set) var forgetErrorMessage: String?
 
     public init() {}
 
@@ -31,15 +37,35 @@ public final class MemoryClient: ObservableObject {
         isLoading = false
     }
 
+    private struct ForgetResponse: Decodable { let forgotten: Bool }
+
     /// Manual forgetting from the UI — same soft-delete Frank's own
-    /// forget_memory tool uses (backend/app/db.py's deleted_at). Removes it
-    /// from the local list optimistically rather than waiting on a refetch.
+    /// forget_memory tool uses (backend/app/db.py's deleted_at).
+    ///
+    /// Real gap found live (2026-09-06, systems audit §18 sweep): this
+    /// used to remove the record from the local list unconditionally,
+    /// regardless of whether the DELETE actually succeeded -- a network
+    /// failure or a real "forgotten: false" (id already gone) would still
+    /// show the memory as forgotten in the UI while it stayed in the
+    /// database, with no way to notice or recover. Now only removes it
+    /// locally once the backend confirms `forgotten: true`; any other
+    /// outcome leaves the record in place and surfaces a real error.
     public func forget(_ record: MemoryRecord) async {
+        forgetErrorMessage = nil
         var components = URLComponents(string: "http://\(BackendHost.host):8731/memory/\(record.id)")!
         components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
         var request = URLRequest(url: components.url!)
         request.httpMethod = "DELETE"
-        _ = try? await URLSession.shared.data(for: request)
-        records.removeAll { $0.id == record.id }
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let response = try JSONDecoder().decode(ForgetResponse.self, from: data)
+            guard response.forgotten else {
+                forgetErrorMessage = "Couldn't forget that memory — it may already be gone."
+                return
+            }
+            records.removeAll { $0.id == record.id }
+        } catch {
+            forgetErrorMessage = "Couldn't reach the backend — is it running?"
+        }
     }
 }

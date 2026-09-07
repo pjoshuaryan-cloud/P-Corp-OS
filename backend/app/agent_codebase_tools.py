@@ -278,20 +278,19 @@ async def run_agentic_loop(
     initial_request: str,
     client: AsyncAnthropic,
     websocket,
-    image: dict | None = None,
+    attachments: list[dict] | None = None,
 ) -> str:
     """Shared inner tool-use loop for any specialist agent that needs real
-    codebase access. `image` mirrors design_agent.py's own multimodal
-    content-block construction -- only meaningful on the first turn, never
-    on later tool-result rounds."""
-    if image and image.get("data") and image.get("media_type"):
-        initial_content = [
-            {
-                "type": "image",
-                "source": {"type": "base64", "media_type": image["media_type"], "data": image["data"]},
-            },
-            {"type": "text", "text": initial_request},
-        ]
+    codebase access. `attachments` (generalized 2026-09-05 from a single
+    `image` dict to a list of already-built content blocks -- see
+    main.py's own `run_claude_turn` docstring) mirrors design_agent.py's
+    own multimodal content-block forwarding -- only meaningful on the
+    first turn, never on later tool-result rounds. Deleting the old
+    per-image-dict construction here (main.py already built the real
+    blocks once) removes what used to be a second, independent copy of
+    that logic."""
+    if attachments:
+        initial_content = [*attachments, {"type": "text", "text": initial_request}]
     else:
         initial_content = initial_request
 

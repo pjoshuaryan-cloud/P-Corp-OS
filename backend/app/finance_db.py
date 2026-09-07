@@ -224,6 +224,32 @@ async def dashboard_snapshot() -> dict:
     return {"accounts": accounts}
 
 
+async def get_balance_history(
+    account_id: int, start_date: str | None = None, end_date: str | None = None
+) -> list[dict]:
+    """Real per-snapshot history for one account (2026-09-06, systems
+    audit §4's date-range filtering) -- dashboard_snapshot() above
+    deliberately only ever looks at the latest 2 rows per asset for its
+    trend computation; this is new query surface for "show me
+    everything," not a change to that function's own scope.
+    start_date/end_date are optional 'YYYY-MM-DD' strings (inclusive);
+    omitting both returns the full history -- honest given every real
+    account here spans barely two weeks so far."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = "SELECT asset, balance, notes, recorded_at FROM balance_snapshots WHERE account_id = ?"
+        params: list = [account_id]
+        if start_date:
+            query += " AND recorded_at >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND recorded_at <= ?"
+            params.append(f"{end_date} 23:59:59")
+        query += " ORDER BY recorded_at DESC"
+        cursor = await db.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+
 async def summarize() -> str:
     """Folded into Frank's own system prompt (finance_tools.build_finance_block())
     -- same mechanism as build_joshx_block()/build_personal_block()."""

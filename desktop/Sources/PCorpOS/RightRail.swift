@@ -16,8 +16,7 @@ struct RightRail: View {
             .padding(22)
         }
         .frame(minWidth: 300, idealWidth: 320)
-        .background(.ultraThinMaterial)
-        .background(theme.surface.opacity(0.3))
+        .background(theme.surface)
     }
 }
 
@@ -32,22 +31,12 @@ private struct CardContainer<Content: View>: View {
         }
         .padding(Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Radius.xl)
-                .fill(.regularMaterial) // slightly more opaque than the rail behind it, so card text stays legible
-        )
-        .background(
-            RoundedRectangle(cornerRadius: Radius.xl)
-                .fill(theme.background.opacity(0.35))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Radius.xl)
-                .strokeBorder(theme.surfaceBorder)
-        )
+        .cardSurface(radius: Radius.xl)
         // Shadow eased 12/y4 -> 8/y3 (2026-08-20, Face-Lift brief item 04:
         // "avoid excessive drop shadows") -- still reads as elevated, just
-        // quieter, not a structural change to the material-based approach
-        // UI_GUIDELINES.md already deliberately committed to.
+        // quieter. Kept as-is (2026-08-31 UI cleanup) -- this modest
+        // shadow isn't what Frank's own shadow complaint targeted, that
+        // was specifically the War Room input bar's oversized resting glow.
         .shadow(color: theme.cardShadow, radius: 8, x: 0, y: 3)
     }
 }
@@ -106,7 +95,7 @@ private struct MissionStatusCard: View {
                 SectionLabel(text: "MISSION STATUS")
                 Spacer()
                 HStack(spacing: 4) {
-                    Circle().fill(Color.green).frame(width: 6, height: 6)
+                    Circle().fill(theme.statusGood).frame(width: 6, height: 6)
                     Text("Active").font(PCorpFont.body(11, weight: .semibold)).foregroundStyle(theme.textPrimary)
                 }
             }
@@ -209,9 +198,30 @@ private struct InsightsCard: View {
 
     var body: some View {
         CardContainer {
-            HStack {
+            HStack(spacing: 8) {
                 SectionLabel(text: "FRANK'S INSIGHTS")
                 Spacer()
+                // Real gap found live (2026-09-03, P Corp OS systems
+                // audit): this card silently polls every 30s with no way
+                // to force a refresh and no signal for how stale what's
+                // on screen is -- confirmed the only two views in the
+                // whole app missing both (the other being Situation Room
+                // below). Same manual-refresh convention already used on
+                // 10 other views (e.g. TriggersView's own header), just
+                // never applied here.
+                if let lastFetchedAt = client.lastFetchedAt {
+                    Text("Updated \(lastFetchedAt.formatted(date: .omitted, time: .standard))")
+                        .font(PCorpFont.body(9.5))
+                        .foregroundStyle(theme.textTertiary)
+                }
+                Button {
+                    Task { await client.fetch() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(theme.textSecondary)
+                }
+                .buttonStyle(.plain)
                 LinkTextButton(title: "View all") {
                     navigate(to: "Frank", selectedID: $selectedID)
                 }

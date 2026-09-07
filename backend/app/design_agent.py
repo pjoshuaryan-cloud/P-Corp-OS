@@ -71,9 +71,9 @@ CONSULT_DESIGN_AGENT_TOOL = {
     "description": (
         "Delegate to the Design Agent for genuine design work: branding direction, UI/UX feedback, typography "
         "choices, logo concepts, building out a design system, iconography, or motion/animation direction. If "
-        "Joshua attached an image this turn and wants it critiqued or discussed as a design, delegate here -- "
-        "the actual image is automatically forwarded to this agent, it doesn't need to be described in the "
-        "request text. It also has real read/propose-edit access to P Corp OS's actual UI source (SwiftUI views, "
+        "Joshua attached an image or file this turn and wants it critiqued or discussed as a design, delegate "
+        "here -- the actual attachment is automatically forwarded to this agent, it doesn't need to be described "
+        "in the request text. It also has real read/propose-edit access to P Corp OS's actual UI source (SwiftUI views, "
         "Theme.swift/Style.swift) -- delegate here for reviewing or changing the real design system too, not just "
         "advisory feedback; any proposed edit needs Joshua's explicit approval before it's written. Use this "
         "rather than answering yourself when the request calls for real design-specific depth."
@@ -92,12 +92,15 @@ DESIGN_AGENT_TOOL_NAMES = {tool["name"] for tool in DESIGN_AGENT_TOOLS}
 
 
 async def execute_design_agent_tool_call(
-    name: str, tool_input: dict, client: AsyncAnthropic, websocket, image: dict | None = None
+    name: str, tool_input: dict, client: AsyncAnthropic, websocket, attachments: list[dict] | None = None
 ) -> str:
     if name != "consult_design_agent":
         return f"Unknown tool: {name}"
-    # image, when present, is the real one Joshua attached this turn,
-    # forwarded straight into the shared loop's first turn -- Design
-    # Critic actually looking at pixels, not working from Frank's
-    # secondhand description of them (2026-08-10).
-    return await run_agentic_loop(DESIGN_AGENT_SYSTEM_PROMPT, tool_input["request"], client, websocket, image=image)
+    # attachments, when present, are the real ones Joshua attached this
+    # turn, forwarded straight into the shared loop's first turn -- Design
+    # Critic actually looking at pixels (or reading a real PDF/DOCX export),
+    # not working from Frank's secondhand description of them (2026-08-10;
+    # generalized from a single image to any attachment kind 2026-09-05).
+    return await run_agentic_loop(
+        DESIGN_AGENT_SYSTEM_PROMPT, tool_input["request"], client, websocket, attachments=attachments
+    )

@@ -17,6 +17,19 @@ struct FrankView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().overlay(theme.divider)
+            // Real gap found live (2026-09-06, systems audit §18 sweep):
+            // a failed forget() used to remove the row from the list
+            // regardless, with zero feedback that the delete didn't
+            // actually happen. A small inline banner, not a full-list
+            // replacement -- the list itself is fine, only one action
+            // failed.
+            if let forgetError = client.forgetErrorMessage {
+                Text(forgetError)
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle(theme.statusRisk)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 8)
+            }
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -153,18 +166,7 @@ private struct MemoryRecordRow: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.regularMaterial)
-        )
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(theme.background.opacity(0.35))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(theme.surfaceBorder)
-        )
+        .cardSurface(radius: 14)
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
         }

@@ -90,14 +90,14 @@ struct Sidebar: View {
             Spacer(minLength: 24)
 
             if showSystemStatus {
-                Divider()
+                Divider().overlay(theme.divider)
                 VStack(alignment: .leading, spacing: 6) {
                     Text("SYSTEM STATUS")
                         .font(PCorpFont.label(9.5))
                         .trackedLabel(1.8)
                         .foregroundStyle(theme.textSecondary)
                     HStack(spacing: 7) {
-                        Circle().fill(Color.green).frame(width: 7, height: 7)
+                        Circle().fill(theme.statusGood).frame(width: 7, height: 7)
                         Text("All Systems Operational")
                             .font(PCorpFont.body(12.5))
                             .foregroundStyle(theme.textPrimary)
@@ -114,8 +114,7 @@ struct Sidebar: View {
         // distributed extra window space -- the sidebar started growing
         // with the window instead of staying a fixed narrow column.
         .frame(minWidth: 220, idealWidth: 240, maxWidth: 260)
-        .background(.ultraThinMaterial)
-        .background(theme.surface.opacity(0.3)) // faint theme tint under the glass so it doesn't go fully neutral
+        .background(theme.surface)
     }
 }
 

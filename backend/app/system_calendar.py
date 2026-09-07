@@ -47,7 +47,17 @@ def _escape(text: str) -> str:
 
 
 async def _run_osascript(script: str) -> tuple[bool, str]:
-    subprocess.run(["open", "-a", "Calendar"], capture_output=True)
+    # `-g` (real bug found live, 2026-08-27): plain `open -a Calendar`
+    # activates/foregrounds the app even when it's already running --
+    # invisible for a one-off user-initiated calendar action, but the new
+    # periodic Google Calendar sync (main.py's _calendar_sync_loop, every
+    # 15 minutes forever) calls into this same AppleScript path in the
+    # background, which was yanking Calendar.app to the foreground every
+    # single tick with zero user interaction -- confirmed as the real
+    # cause of Calendar.app "randomly reopening." `-g` still launches the
+    # app if it isn't running (AppleScript automation still needs it
+    # actually open), it just never steals focus while doing so.
+    subprocess.run(["open", "-g", "-a", "Calendar"], capture_output=True)
     await asyncio.sleep(1)
     proc = await asyncio.create_subprocess_exec(
         "osascript", "-e", script, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE

@@ -39,6 +39,22 @@ public struct AppTheme {
     /// backgrounds; against dark ones a black shadow is nearly invisible, so
     /// dark mode leans on a faint white shadow instead to read as elevation.
     public let cardShadow: Color
+    /// Three real semantic status tokens (2026-08-31, UI cleanup) --
+    /// replace raw full-saturation SwiftUI system colors (Color.green/
+    /// .red/.orange) that were scattered across ~7 call sites, all outside
+    /// AppTheme entirely and all noticeably louder than the one deliberate
+    /// accent color this app otherwise uses. Muted to roughly the same
+    /// saturation register as `accent` rather than SF defaults -- a
+    /// first-pass judgment call, easy to retune once seen live.
+    /// statusGood: system/agent/automation "operating normally" indicator.
+    public let statusGood: Color
+    /// statusRisk: a real escalated alert (SituationRoomBanner) -- kept
+    /// visually distinct from statusGood, not a shared "attention" color.
+    public let statusRisk: Color
+    /// statusHot: sales-lead temperature/urgency -- semantically different
+    /// from both of the above (not a health signal), gets its own token
+    /// rather than being folded into a generic "warning" color.
+    public let statusHot: Color
 
     public static let light = AppTheme(
         background: Color(red: 0.961, green: 0.961, blue: 0.953),   // #F5F5F3
@@ -54,7 +70,10 @@ public struct AppTheme {
         accentText: .white,
         accent: Color(red: 0.271, green: 0.322, blue: 0.898),       // #4552E5, controlled indigo-blue
         divider: Color.black.opacity(0.08),
-        cardShadow: Color.black.opacity(0.06)
+        cardShadow: Color.black.opacity(0.06),
+        statusGood: Color(red: 0.216, green: 0.529, blue: 0.322),   // #37875C, muted forest green
+        statusRisk: Color(red: 0.749, green: 0.263, blue: 0.263),   // #BF4343, muted red
+        statusHot: Color(red: 0.780, green: 0.494, blue: 0.145)     // #C77E25, muted amber
     )
 
     public static let dark = AppTheme(
@@ -75,7 +94,10 @@ public struct AppTheme {
         accentText: .black,
         accent: Color(red: 0.431, green: 0.498, blue: 1.0),        // #6E7FFF, brighter for dark-bg legibility
         divider: Color.white.opacity(0.1),
-        cardShadow: Color.black.opacity(0.4)
+        cardShadow: Color.black.opacity(0.4),
+        statusGood: Color(red: 0.4, green: 0.75, blue: 0.55),       // #66BF8C, brighter for dark-bg legibility
+        statusRisk: Color(red: 0.914, green: 0.443, blue: 0.443),   // #E97171
+        statusHot: Color(red: 0.937, green: 0.647, blue: 0.345)     // #EFA558
     )
 }
 

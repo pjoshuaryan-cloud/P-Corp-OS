@@ -146,8 +146,27 @@ struct RootView: View {
             backend.connect()
             startSituationRoomPolling()
         }
-        .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active else { return }
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            // Real bug found live (2026-09-04): this used to fire on ANY
+            // transition into .active, not just a genuine return from the
+            // background -- iOS also passes through .active after purely
+            // transient .inactive states (Control Center, an incoming
+            // call banner, the app-switcher gesture starting) that never
+            // actually suspend networking at all. Each one of those was
+            // still paying the full cost this watcher exists for --
+            // disconnect() + a fresh socket + a full loadHistory()
+            // refetch -- for a connection that was never actually dead,
+            // which is exactly what "Frank feels slow/unresponsive on my
+            // phone" looks like from the outside: routine app-switching
+            // silently interrupting whatever was on screen (including a
+            // reply mid-stream) for no real reason. Gating on
+            // oldPhase == .background restricts the reconnect to the one
+            // case WarRoomView's own doc comment on this fix actually
+            // describes -- the OS suspending network activity while
+            // properly backgrounded or the phone locks -- which is the
+            // only case where the existing `task` can actually be silently
+            // dead.
+            guard newPhase == .active, oldPhase == .background else { return }
             backend.disconnect()
             backend.connect()
         }

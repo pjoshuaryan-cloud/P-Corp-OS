@@ -119,7 +119,7 @@ private struct AgentCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 ZStack {
-                    Circle().fill(.regularMaterial).frame(width: 40, height: 40)
+                    Circle().fill(theme.surfaceElevated).frame(width: 40, height: 40)
                     Image(systemName: agent.icon)
                         .font(.system(size: 16))
                         .foregroundStyle(IconColors.forAgentIcon(agent.icon))
@@ -134,7 +134,7 @@ private struct AgentCard: View {
                 }
                 Spacer()
                 HStack(spacing: 6) {
-                    Circle().fill(agent.status == "active" ? Color.green : Color.gray).frame(width: 6, height: 6)
+                    Circle().fill(agent.status == "active" ? theme.statusGood : theme.textSecondary).frame(width: 6, height: 6)
                     Text(agent.status.uppercased())
                         .font(PCorpFont.label(9))
                         .trackedLabel(1.2)
@@ -149,9 +149,7 @@ private struct AgentCard: View {
                 .foregroundStyle(theme.textSecondary)
         }
         .padding(18)
-        .background(RoundedRectangle(cornerRadius: 14).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 14).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 14)
     }
 }
 
@@ -191,8 +189,6 @@ private struct TaskRow: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 12)
     }
 }

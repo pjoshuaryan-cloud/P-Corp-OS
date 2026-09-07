@@ -10,6 +10,19 @@ import PCorpKit
 struct JoshxView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = JoshxClient()
+    @State private var selectedProject: JoshxProject?
+    @State private var leadPendingDelete: JoshxLead?
+    @State private var projectPendingDelete: JoshxProject?
+    @State private var clientPendingDelete: JoshxClientRecord?
+
+    // Mirrors backend/app/joshx_db.py's _CLOSED_LEAD_STAGES -- a booked
+    // or lost lead is done, and (2026-08-31) shouldn't clutter the
+    // active leads list just because nothing auto-closed/deleted it.
+    private static let closedLeadStages: Set<String> = ["booked", "lost"]
+
+    private func openLeads(_ dashboard: JoshxDashboard) -> [JoshxLead] {
+        dashboard.leads.filter { !Self.closedLeadStages.contains($0.stage) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -21,27 +34,50 @@ struct JoshxView: View {
                         Text("Loading…")
                             .font(PCorpFont.body(12))
                             .foregroundStyle(theme.textSecondary)
-                    } else if let error = client.errorMessage {
-                        Text(error)
-                            .font(PCorpFont.body(12))
-                            .foregroundStyle(theme.textSecondary)
                     } else if let dashboard = client.dashboard {
-                        statsRow(dashboard: dashboard)
+                        // See desktop's own JoshxView.swift for why a
+                        // loaded dashboard wins over errorMessage here
+                        // (systems audit §18 sweep, 2026-09-06) -- a
+                        // write failure shouldn't hide an already-loaded
+                        // dashboard behind a bare error screen.
+                        if let error = client.errorMessage {
+                            Text(error)
+                                .font(PCorpFont.body(12))
+                                .foregroundStyle(theme.statusRisk)
+                        }
+                        statsRow(dashboard: dashboard, analytics: client.analytics)
                         section(title: "PROJECTS") {
                             if dashboard.projects.isEmpty {
                                 emptyRow("No projects yet — tell Frank about a Joshx booking to get started.")
                             } else {
                                 ForEach(dashboard.projects) { project in
-                                    ProjectRow(project: project)
+                                    Button {
+                                        selectedProject = project
+                                    } label: {
+                                        ProjectRow(project: project)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        Button("Delete Project", role: .destructive) {
+                                            projectPendingDelete = project
+                                        }
+                                    }
                                 }
                             }
                         }
                         section(title: "LEADS") {
                             if dashboard.leads.isEmpty {
                                 emptyRow("No leads yet — tell Frank about a Joshx opportunity to get started.")
+                            } else if openLeads(dashboard).isEmpty {
+                                emptyRow("No leads currently open — booked/lost ones are hidden here.")
                             } else {
-                                ForEach(dashboard.leads) { lead in
+                                ForEach(openLeads(dashboard)) { lead in
                                     LeadRow(lead: lead)
+                                        .contextMenu {
+                                            Button("Delete Lead", role: .destructive) {
+                                                leadPendingDelete = lead
+                                            }
+                                        }
                                 }
                             }
                         }
@@ -51,9 +87,18 @@ struct JoshxView: View {
                             } else {
                                 ForEach(dashboard.clients) { record in
                                     ClientRow(record: record)
+                                        .contextMenu {
+                                            Button("Delete Client", role: .destructive) {
+                                                clientPendingDelete = record
+                                            }
+                                        }
                                 }
                             }
                         }
+                    } else if let error = client.errorMessage {
+                        Text(error)
+                            .font(PCorpFont.body(12))
+                            .foregroundStyle(theme.textSecondary)
                     }
                 }
                 .padding(20)
@@ -62,6 +107,48 @@ struct JoshxView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
         .task { await client.fetch() }
+        .sheet(item: $selectedProject) { project in
+            JoshxProjectDetailSheet(project: project, client: client)
+        }
+        .confirmationDialog(
+            "Delete lead for \(leadPendingDelete?.clientName ?? "")?",
+            isPresented: Binding(get: { leadPendingDelete != nil }, set: { if !$0 { leadPendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let lead = leadPendingDelete {
+                    Task { await client.deleteLead(id: lead.id) }
+                }
+                leadPendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { leadPendingDelete = nil }
+        }
+        .confirmationDialog(
+            "Delete project \"\(projectPendingDelete?.projectName ?? "")\"?",
+            isPresented: Binding(get: { projectPendingDelete != nil }, set: { if !$0 { projectPendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let project = projectPendingDelete {
+                    Task { await client.deleteProject(id: project.id) }
+                }
+                projectPendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { projectPendingDelete = nil }
+        }
+        .confirmationDialog(
+            "Delete client \"\(clientPendingDelete?.name ?? "")\"?",
+            isPresented: Binding(get: { clientPendingDelete != nil }, set: { if !$0 { clientPendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let record = clientPendingDelete {
+                    Task { await client.deleteClient(id: record.id) }
+                }
+                clientPendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { clientPendingDelete = nil }
+        }
     }
 
     private var header: some View {
@@ -90,7 +177,7 @@ struct JoshxView: View {
     }
 
     @ViewBuilder
-    private func statsRow(dashboard: JoshxDashboard) -> some View {
+    private func statsRow(dashboard: JoshxDashboard, analytics: JoshxAnalytics?) -> some View {
         HStack(spacing: 0) {
             statItem(label: "ACTIVE PROJECTS", value: dashboard.activeProjects)
             statDivider
@@ -103,9 +190,41 @@ struct JoshxView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
 
-        Text("Revenue, outstanding invoices, and availability tracking arrive in a later phase — not shown until there's a real Money/Availability system behind them.")
-            .font(PCorpFont.body(11))
-            .foregroundStyle(theme.textTertiary)
+        // Performance metrics (2026-09-06, systems audit §3) -- replaces
+        // the old "arrives in a later phase" disclaimer, factually stale
+        // since invoices/expenses shipped weeks earlier. Real sample
+        // sizes are small today, so every tile shows its own `n` rather
+        // than a bare rate/average, matching the desktop port of this
+        // same change and compute_performance_metrics()'s own discipline.
+        if let analytics {
+            HStack(spacing: 0) {
+                metricStatItem(
+                    label: "REPEAT CLIENTS",
+                    value: analytics.repeatClientRate.map { "\(Int(($0 * 100).rounded()))%" } ?? "—",
+                    caption: "\(analytics.repeatClients) of \(analytics.distinctClients) clients"
+                )
+                statDivider
+                metricStatItem(
+                    label: "AVG PROJECT VALUE",
+                    value: analytics.avgProjectValue.map { "R\(Int($0.rounded()))" } ?? "—",
+                    caption: analytics.pricedProjects == 0 ? "no priced projects yet" : "across \(analytics.pricedProjects) project(s)"
+                )
+                statDivider
+                metricStatItem(
+                    label: "LEAD CONVERSION",
+                    value: analytics.leadConversionRate.map { "\(Int(($0 * 100).rounded()))%" } ?? "—",
+                    caption: analytics.totalLeads == 0 ? "no leads yet" : "\(analytics.convertedLeads) of \(analytics.totalLeads) leads"
+                )
+            }
+            .padding(16)
+            .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
+            .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+
+            Text("\(analytics.projectsCreatedThisMonth) project(s) created this month, \(analytics.projectsCreatedLastMonth) last month.")
+                .font(PCorpFont.body(11))
+                .foregroundStyle(theme.textTertiary)
+        }
     }
 
     private var statDivider: some View {
@@ -122,6 +241,22 @@ struct JoshxView: View {
             Text(label)
                 .font(PCorpFont.label(8.5))
                 .trackedLabel(1.1)
+                .foregroundStyle(theme.textTertiary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func metricStatItem(label: String, value: String, caption: String) -> some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(PCorpFont.mono(20, weight: .semibold))
+                .foregroundStyle(theme.textPrimary)
+            Text(label)
+                .font(PCorpFont.label(8.5))
+                .trackedLabel(1.1)
+                .foregroundStyle(theme.textTertiary)
+            Text(caption)
+                .font(PCorpFont.body(9.5))
                 .foregroundStyle(theme.textTertiary)
         }
         .frame(maxWidth: .infinity)

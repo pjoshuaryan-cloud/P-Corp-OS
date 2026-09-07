@@ -38,12 +38,21 @@ extension View {
     }
 }
 
-/// A fully rounded (capsule) button — filled for primary actions, tinted for
-/// secondary chips like the Quick Actions grid. Replaces the default
-/// `.borderedProminent` style, which only rounds corners slightly on macOS.
+/// A primary/secondary action button — filled for primary actions, tinted
+/// for secondary ones. Replaces the default `.borderedProminent` style,
+/// which only rounds corners slightly on macOS.
 /// `.onHover` is a real no-op on touch-only iOS (no pointer, no crash) --
 /// harmless there, not desktop-only code that needed splitting out.
-public struct PillButtonStyle: ButtonStyle {
+///
+/// Renamed from `PillButtonStyle` (2026-08-31, UI cleanup) -- was a
+/// `Capsule()`, which reads as a status/tag chip shape (Linear/Raycast
+/// reserve true capsules for exactly that, using small-radius rects for
+/// real actions), and this app's own status chips (STANDBY, project/lead
+/// status badges) are already plain Capsule-shaped `Text`, not buttons --
+/// keeping this style capsule-shaped too meant two visually-identical
+/// shapes meaning different things. A "Pill" name on a non-pill shape
+/// would just be a new confusion in the other direction.
+public struct ActionButtonStyle: ButtonStyle {
     var filled: Bool = true
     @Environment(\.appTheme) private var theme
     @State private var isHovering = false
@@ -58,7 +67,7 @@ public struct PillButtonStyle: ButtonStyle {
             .padding(.horizontal, 16)
             .padding(.vertical, 9)
             .background(
-                Capsule().fill(fillColor(pressed: configuration.isPressed))
+                RoundedRectangle(cornerRadius: Radius.md).fill(fillColor(pressed: configuration.isPressed))
             )
             .foregroundStyle(filled ? theme.accentText : theme.textPrimary)
             .opacity(configuration.isPressed ? 0.9 : 1)
@@ -78,9 +87,33 @@ public struct PillButtonStyle: ButtonStyle {
     }
 }
 
-extension ButtonStyle where Self == PillButtonStyle {
-    public static var pillFilled: PillButtonStyle { PillButtonStyle(filled: true) }
-    public static var pillTinted: PillButtonStyle { PillButtonStyle(filled: false) }
+extension ButtonStyle where Self == ActionButtonStyle {
+    public static var actionFilled: ActionButtonStyle { ActionButtonStyle(filled: true) }
+    public static var actionTinted: ActionButtonStyle { ActionButtonStyle(filled: false) }
+}
+
+/// Flat, opaque "floating card" surface (2026-08-31, UI cleanup) --
+/// replaces the material-blur + doubled-background hack independently
+/// reimplemented in 14+ view files, none of which used the
+/// `surfaceElevated` token `AppTheme` already defines for exactly this
+/// purpose. Radius is a caller-supplied parameter, not remapped onto
+/// `Radius.*` tokens here -- that's a separate, later cleanup once these
+/// values are settled, not bundled into a glassmorphism removal pass.
+public extension View {
+    func cardSurface(radius: CGFloat) -> some View {
+        modifier(CardSurfaceModifier(radius: radius))
+    }
+}
+
+private struct CardSurfaceModifier: ViewModifier {
+    let radius: CGFloat
+    @Environment(\.appTheme) private var theme
+
+    func body(content: Content) -> some View {
+        content
+            .background(RoundedRectangle(cornerRadius: radius).fill(theme.surfaceElevated))
+            .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(theme.surfaceBorder))
+    }
 }
 
 /// A circular icon-only button with real hover/press feedback — replaces

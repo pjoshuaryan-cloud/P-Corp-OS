@@ -174,9 +174,7 @@ private struct GoalRow: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 12)
     }
 }
 
@@ -209,9 +207,7 @@ private struct HabitRow: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 12)
     }
 }
 
@@ -246,9 +242,7 @@ private struct PersonRow: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 12)
     }
 
     private var subtitle: String {

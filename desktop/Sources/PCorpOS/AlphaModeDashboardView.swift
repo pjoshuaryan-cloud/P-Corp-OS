@@ -134,9 +134,7 @@ private struct ProjectRow: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 12)
     }
 }
 
@@ -166,9 +164,7 @@ private struct InvoiceRow: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 12)
     }
 }
 
@@ -180,7 +176,7 @@ private struct LeadRow: View {
         HStack(spacing: 10) {
             Image(systemName: "flame")
                 .font(.system(size: 13))
-                .foregroundStyle(.orange)
+                .foregroundStyle(theme.statusHot)
             VStack(alignment: .leading, spacing: 1) {
                 Text(lead.client)
                     .font(PCorpFont.body(13.5, weight: .semibold))
@@ -193,8 +189,6 @@ private struct LeadRow: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 12)
     }
 }

@@ -97,6 +97,29 @@ public struct SituationRoomAlert: Identifiable, Decodable {
     }
 }
 
+/// Backs GET /connected-apps (2026-09-04) -- see backend/app/
+/// connected_apps.py's docstring for why "connected"/"last synced" mean
+/// something different per row (Gmail/Calendar share one Google token but
+/// separate sync stories; Supabase is a live PostgREST probe with no
+/// cache to timestamp). `id` is a local UUID, not decoded -- same
+/// reasoning as SituationRoomAlert above: this list is recomputed on
+/// every fetch, nothing to reference across fetches.
+public struct ConnectedAppStatus: Identifiable, Decodable {
+    public let id = UUID()
+    public let name: String
+    public let connected: Bool
+    /// Raw string from the backend, not a decoded Date -- same
+    /// "format at render time, or don't format at all" convention as
+    /// every other *Date field here. nil is a real, honest state ("never
+    /// synced" / "check failed"), not "unknown."
+    public let lastSyncedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name, connected
+        case lastSyncedAt = "last_synced_at"
+    }
+}
+
 /// A row in the conversation switcher — backs GET /conversations. `id`
 /// matches the real backend conversation_id (not a client-generated UUID)
 /// since it has to round-trip to POST /conversations/{id}/activate.
@@ -384,9 +407,14 @@ public struct AutomationRule: Identifiable, Decodable {
     public let name: String
     public let description: String
     public let agent: String
+    /// Real, persisted (2026-09-06) -- was a hardcoded-list entry with no
+    /// enabled/disabled concept at all before this; the backend always
+    /// returns this now (a DB NOT NULL DEFAULT 1 column), no optional/
+    /// transitional case to handle.
+    public let enabled: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, name, description, agent
+        case id, name, description, agent, enabled
         case triggerTool = "trigger_tool"
     }
 }
@@ -556,6 +584,13 @@ public struct JoshxProject: Identifiable, Decodable {
     public let budget: Double?
     public let priority: String?
     public let status: String
+    /// Separate from `status` (2026-08-31, auto-scheduling's sibling
+    /// feature) -- status also encodes production stage, so it can't
+    /// double as "has the client paid" without either losing pipeline
+    /// position or being unable to reflect an early payment. One of
+    /// "unpaid"/"partially_paid"/"paid" (backend/app/joshx_db.py's
+    /// PROJECT_PAYMENT_STATUS_VALUES).
+    public let paymentStatus: String
     public let deliverables: String?
     public let notes: String?
     public let createdAt: String
@@ -568,6 +603,61 @@ public struct JoshxProject: Identifiable, Decodable {
         case startDate = "start_date"
         case dueDate = "due_date"
         case shootDate = "shoot_date"
+        case paymentStatus = "payment_status"
+        case createdAt = "created_at"
+    }
+}
+
+/// Mirrors backend/app/joshx_db.py's `invoices` table (2026-08-31). A
+/// project can carry more than one real invoice (deposit + final, say), so
+/// this is a flat list matched against `JoshxProject.id` client-side, same
+/// "no foreign-key join, plain filter" reasoning `JoshxProjectDetailPopover`
+/// already uses for `clients`/`projects`. Backend returns this in every
+/// dashboard fetch, but nothing rendered it until 2026-09-03 -- the exact
+/// "data exists, no UI reads it yet" gap the P Corp OS systems audit
+/// flagged as the cheapest real win in the whole brief.
+public struct JoshxInvoice: Identifiable, Decodable {
+    public let id: Int
+    public let projectId: Int
+    public let amount: Double
+    public let amountPaid: Double
+    public let status: String
+    public let issuedDate: String?
+    public let dueDate: String?
+    public let notes: String?
+    public let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, amount, status, notes
+        case projectId = "project_id"
+        case amountPaid = "amount_paid"
+        case issuedDate = "issued_date"
+        case dueDate = "due_date"
+        case createdAt = "created_at"
+    }
+}
+
+/// Mirrors backend/app/joshx_db.py's `expenses` table (2026-09-03, P Corp
+/// OS systems audit). Same shape/reasoning as `JoshxInvoice` above -- a
+/// project accrues multiple real line items (props, fuel, crew meals), so
+/// this is a flat list matched against `JoshxProject.id` client-side, not
+/// a single field. Revenue/profit/margin are never stored anywhere,
+/// backend or Swift -- always computed from this list plus `JoshxInvoice`
+/// at the point of display, so neither can ever drift from the real rows
+/// behind it.
+public struct JoshxExpense: Identifiable, Decodable {
+    public let id: Int
+    public let projectId: Int
+    public let amount: Double
+    public let description: String?
+    public let incurredDate: String?
+    public let notes: String?
+    public let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, amount, description, notes
+        case projectId = "project_id"
+        case incurredDate = "incurred_date"
         case createdAt = "created_at"
     }
 }
@@ -652,11 +742,79 @@ public struct FinanceDashboard: Decodable {
     public let accounts: [FinanceAccount]
 }
 
-/// Fetched from GET /joshx/dashboard. Deliberately no revenue/outstanding/
-/// available-days fields -- Phase 1 has no invoices or availability data
-/// model, and this app never shows a stat without real data behind it
-/// (Mission Status's fake progress bar, removed 2026-08-20, is the
-/// standing example of what NOT to do).
+/// Mirrors backend/app/finance.py's compute_concentration_metrics()
+/// (2026-09-06, systems audit §4) -- deliberately TWO separate views,
+/// never one blended number: zarAccounts are four real, same-currency
+/// balances (a legitimate comparison); lunoHoldings is Luno's own
+/// already-approved live-priced *estimate*, kept self-contained rather
+/// than combined with the real ZAR balances above (see the backend
+/// function's own docstring for why mixing a real number with a market
+/// estimate would misrepresent both).
+public struct ZarAccountConcentration: Identifiable, Decodable {
+    public var id: String { account }
+    public let account: String
+    public let balance: Double
+    public let percentOfTotal: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case account, balance
+        case percentOfTotal = "percent_of_total"
+    }
+}
+
+public struct LunoHoldingConcentration: Identifiable, Decodable {
+    public var id: String { asset }
+    public let asset: String
+    public let estimatedZarValue: Double
+    public let percentOfTotal: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case asset
+        case estimatedZarValue = "estimated_zar_value"
+        case percentOfTotal = "percent_of_total"
+    }
+}
+
+public struct FinanceConcentration: Decodable {
+    public let zarAccounts: [ZarAccountConcentration]
+    public let zarTotal: Double
+    public let lunoHoldings: [LunoHoldingConcentration]
+    public let lunoTotalEstimate: Double?
+    public let lunoUnpricedAssets: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case zarAccounts = "zar_accounts"
+        case zarTotal = "zar_total"
+        case lunoHoldings = "luno_holdings"
+        case lunoTotalEstimate = "luno_total_estimate"
+        case lunoUnpricedAssets = "luno_unpriced_assets"
+    }
+}
+
+/// Mirrors backend/app/finance_db.py's get_balance_history() (2026-09-06,
+/// systems audit §4's date-range filtering) -- one real logged snapshot,
+/// not a computed trend point. Fetched per-account for the new history
+/// drill-down sheet/popover.
+public struct BalanceHistoryEntry: Identifiable, Decodable {
+    public var id: String { "\(asset)-\(recordedAt)" }
+    public let asset: String
+    public let balance: Double
+    public let notes: String?
+    public let recordedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case asset, balance, notes
+        case recordedAt = "recorded_at"
+    }
+}
+
+/// Fetched from GET /joshx/dashboard. Real invoices exist (`invoices`,
+/// added 2026-08-31) but still deliberately no *computed* revenue/
+/// outstanding/available-days stat -- this app never shows a stat without
+/// both real data AND a real UI asking for it (Mission Status's fake
+/// progress bar, removed 2026-08-20, is the standing example of what NOT
+/// to do); a dashboard-level revenue rollup is a separate, later ask, not
+/// bundled into just wiring the raw list through.
 public struct JoshxDashboard: Decodable {
     public let activeProjects: Int
     public let openLeads: Int
@@ -664,12 +822,48 @@ public struct JoshxDashboard: Decodable {
     public let clients: [JoshxClientRecord]
     public let leads: [JoshxLead]
     public let projects: [JoshxProject]
+    public let invoices: [JoshxInvoice]
+    public let expenses: [JoshxExpense]
 
     enum CodingKeys: String, CodingKey {
-        case clients, leads, projects
+        case clients, leads, projects, invoices, expenses
         case activeProjects = "active_projects"
         case openLeads = "open_leads"
         case upcomingShoots = "upcoming_shoots"
+    }
+}
+
+/// Mirrors backend/app/joshx_db.py's compute_performance_metrics()
+/// (2026-09-06, systems audit §3) -- a deliberately separate model/
+/// endpoint from JoshxDashboard/GET /joshx/dashboard, not new fields
+/// bolted onto it, matching that function's own docstring on why the
+/// boundary matters. Every rate/average is Optional, not defaulted to 0
+/// or omitted -- an honest "not enough data yet" (nil) reads differently
+/// from a real "0%" the backend actually computed, and JoshxView owns
+/// deciding how to render the difference.
+public struct JoshxAnalytics: Decodable {
+    public let repeatClientRate: Double?
+    public let distinctClients: Int
+    public let repeatClients: Int
+    public let avgProjectValue: Double?
+    public let pricedProjects: Int
+    public let leadConversionRate: Double?
+    public let convertedLeads: Int
+    public let totalLeads: Int
+    public let projectsCreatedThisMonth: Int
+    public let projectsCreatedLastMonth: Int
+
+    enum CodingKeys: String, CodingKey {
+        case repeatClientRate = "repeat_client_rate"
+        case distinctClients = "distinct_clients"
+        case repeatClients = "repeat_clients"
+        case avgProjectValue = "avg_project_value"
+        case pricedProjects = "priced_projects"
+        case leadConversionRate = "lead_conversion_rate"
+        case convertedLeads = "converted_leads"
+        case totalLeads = "total_leads"
+        case projectsCreatedThisMonth = "projects_created_this_month"
+        case projectsCreatedLastMonth = "projects_created_last_month"
     }
 }
 

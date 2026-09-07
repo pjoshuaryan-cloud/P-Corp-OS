@@ -21,10 +21,20 @@ approval-gated real-codebase toolset Engineering Agent proved out first
 own tools, real added complexity this doesn't need yet" when this file
 was first written is no longer a speculative cost, since Engineering
 Agent already built and verified the whole mechanism (see SECURITY.md's
-2026-08-27 entry). Real value here: this agent can now read and propose
-actual edits to backend/app/automations_registry.py (genuinely adding or
-modifying an automation rule) or draft a real new Knowledge doc, rather
-than only ever giving advisory text Joshua has to implement by hand.
+2026-08-27 entry). Real value here: this agent can read the codebase and
+draft a real new Knowledge doc, rather than only ever giving advisory
+text Joshua has to implement by hand.
+
+Update (2026-09-06): automations are no longer a hand-edited Python file
+this agent could propose_file_edit its way into -- backend/app/
+automations_registry.py is deleted, superseded by real, persisted rules
+(automation_rules_db.py) that Frank creates directly via his own
+propose_create_automation tool, approval-gated the same way. This agent's
+own toolset (agent_codebase_tools.py's fixed set) doesn't include that
+tool, so an automation suggestion from Operations Agent goes back to
+Frank as advisory text now, same as an SOP suggestion Frank himself
+decides whether to act on -- not a regression, just routed through the
+one place that tool actually lives.
 """
 
 from anthropic import AsyncAnthropic
@@ -36,7 +46,7 @@ OPERATIONS_AGENT_SYSTEM_PROMPT = """You are the Operations Agent inside P Corp O
 
 Your responsibilities: building SOPs, improving workflows, project planning, task coordination, deadlines, checklists, documentation, identifying bottlenecks, and suggesting automations. Think like a genuinely good COO -- concrete, practical, oriented toward what actually gets executed, not generic project-management platitudes.
 
-REAL CAPABILITY, not just advice: you have real tools -- read_file, list_directory, git_log, git_diff, git_show, run_build_check, and propose_file_edit. When a workflow improvement or automation suggestion is genuinely actionable in this codebase, don't just describe it -- read `backend/app/automations_registry.py` first, then propose_file_edit a real new or modified automation rule. Same for a genuinely useful new SOP: read a couple of existing docs (list them via list_directory on the repo root, or read_file one of the *.md files) to match their real tone/structure, then propose_file_edit the actual new file. propose_file_edit never writes immediately -- it sends Joshua a real approval card with your summary and diff, and blocks until he approves or rejects; always give it the complete real content, not a description. You cannot run shell commands, commit/push, or touch secrets -- no tool for any of that exists.
+REAL CAPABILITY, not just advice: you have real tools -- read_file, list_directory, git_log, git_diff, git_show, run_build_check, and propose_file_edit. For a genuinely useful new SOP: read a couple of existing docs (list them via list_directory on the repo root, or read_file one of the *.md files) to match their real tone/structure, then propose_file_edit the actual new file. propose_file_edit never writes immediately -- it sends Joshua a real approval card with your summary and diff, and blocks until he approves or rejects; always give it the complete real content, not a description. Automations are different -- you don't have a tool to create one directly; if a genuinely actionable automation occurs to you (a specific tool that should trigger a specific specialist consult), say so plainly and specifically enough that Frank can create it himself. You cannot run shell commands, commit/push, or touch secrets -- no tool for any of that exists.
 
 Be direct and concise, matching Frank's own communication style. Give a real answer or a real draft (an actual SOP, an actual checklist, or a real proposed edit), not a description of what one might look like."""
 
@@ -94,11 +104,12 @@ CONSULT_OPERATIONS_AGENT_TOOL = {
     "description": (
         "Delegate to the Operations Agent for genuinely operational work: drafting an SOP, planning a project, "
         "identifying bottlenecks, suggesting workflow improvements or automations, building a checklist. It also "
-        "has real read/propose-edit access to this codebase -- delegate here to actually add or modify a real "
-        "automation rule (backend/app/automations_registry.py) or draft a real new Knowledge doc, not just "
-        "advisory text; any proposed edit needs Joshua's explicit approval before it's written. Use this rather "
-        "than answering yourself when the request calls for real operational depth, not a quick reply. Not for "
-        "simple task tracking -- use add_task/update_task_status directly for that."
+        "has real read/propose-edit access to this codebase -- delegate here to draft a real new Knowledge doc, "
+        "not just advisory text; any proposed edit needs Joshua's explicit approval before it's written. For an "
+        "actual new automation rule, use propose_create_automation directly instead -- that's Frank's own tool, "
+        "not something to route through this delegate. Use this rather than answering yourself when the request "
+        "calls for real operational depth, not a quick reply. Not for simple task tracking -- use add_task/"
+        "update_task_status directly for that."
     ),
     "input_schema": {
         "type": "object",

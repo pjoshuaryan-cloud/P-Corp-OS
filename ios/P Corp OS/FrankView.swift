@@ -21,6 +21,16 @@ struct FrankView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().overlay(theme.divider)
+            // See desktop's own FrankView.swift for why this is a small
+            // inline banner, not a full-list replacement (systems audit
+            // §18 sweep, 2026-09-06).
+            if let forgetError = client.forgetErrorMessage {
+                Text(forgetError)
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle(theme.statusRisk)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+            }
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

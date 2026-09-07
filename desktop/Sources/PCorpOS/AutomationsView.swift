@@ -4,10 +4,11 @@ import PCorpKit
 /// The "Automations" nav section — real event-triggered rules (Frank
 /// consults an agent automatically when a matching tool call happens,
 /// e.g. a new Alpha Mode project triggers a Design Agent folder-structure
-/// suggestion), plus a real firing history, not a placeholder. Same
-/// dynamic-registry pattern as AgentsView: GET /automations/rules backs
-/// the rule cards, so adding a rule in automations_registry.py needs no
-/// further UI changes here, same as agents_registry.py did for Agents.
+/// suggestion), plus a real firing history, not a placeholder. GET
+/// /automations/rules backs the rule cards -- rules are real, persisted,
+/// user-created data since 2026-09-06 (Frank creates one conversationally
+/// via propose_create_automation, approval-gated), not a hardcoded Python
+/// list a developer had to edit and redeploy.
 struct AutomationsView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = AutomationsClient()
@@ -56,14 +57,32 @@ struct AutomationsView: View {
             Text("Loading…")
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
-        } else if let error = client.errorMessage {
+        } else if client.rules.isEmpty, let error = client.errorMessage {
             Text(error)
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
         } else {
+            // Real gap found live (2026-09-06, systems audit §18 sweep):
+            // errorMessage used to be checked before the rules list, so a
+            // failed toggle/delete (now surfaced honestly instead of
+            // silently discarded) would hide an already-loaded rule list
+            // behind a bare error screen. Shown as a small inline banner
+            // above the list instead, whenever rules did load.
+            if let error = client.errorMessage {
+                Text(error)
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle(theme.statusRisk)
+            }
             VStack(alignment: .leading, spacing: 14) {
                 ForEach(client.rules) { rule in
-                    RuleCard(rule: rule)
+                    // runs is already ORDER BY id DESC (automations_db.py),
+                    // so .first is genuinely the most recent firing.
+                    RuleCard(
+                        rule: rule,
+                        lastRun: client.runs.first(where: { $0.ruleId == rule.id }),
+                        onToggle: { enabled in Task { await client.toggleRule(id: rule.id, enabled: enabled) } },
+                        onDelete: { Task { await client.deleteRule(id: rule.id) } }
+                    )
                 }
             }
         }
@@ -95,13 +114,18 @@ struct AutomationsView: View {
 
 private struct RuleCard: View {
     let rule: AutomationRule
+    /// Most recent automation_runs row for this rule, if any -- nil means
+    /// genuinely never fired yet, not an error.
+    let lastRun: AutomationRun?
+    let onToggle: (Bool) -> Void
+    let onDelete: () -> Void
     @Environment(\.appTheme) private var theme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 ZStack {
-                    Circle().fill(.regularMaterial).frame(width: 40, height: 40)
+                    Circle().fill(theme.surfaceElevated).frame(width: 40, height: 40)
                     Image(systemName: "bolt.fill")
                         .font(.system(size: 16))
                         .foregroundStyle(theme.textPrimary)
@@ -115,25 +139,54 @@ private struct RuleCard: View {
                         .foregroundStyle(theme.textSecondary)
                 }
                 Spacer()
-                HStack(spacing: 6) {
-                    Circle().fill(Color.green).frame(width: 6, height: 6)
-                    Text("ACTIVE")
-                        .font(PCorpFont.label(9))
-                        .trackedLabel(1.2)
+                // Real, persisted enabled state (2026-09-06) -- was a
+                // hardcoded "ACTIVE" Circle+Text with no backing field at
+                // all before this; pause/resume is UI-driven (a PATCH),
+                // not a Frank tool, same reasoning Triggers' own toggle
+                // already established.
+                Toggle("", isOn: Binding(get: { rule.enabled }, set: onToggle))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .tint(theme.textPrimary)
+                Menu {
+                    Button("Delete", role: .destructive, action: onDelete)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                         .foregroundStyle(theme.textSecondary)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(theme.textPrimary.opacity(0.05)))
+                .menuStyle(.borderlessButton)
+                .frame(width: 20)
             }
             Text(rule.description)
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
+
+            // Closes the audit's own "no failure tracking" gap using data
+            // that already existed in automation_runs, just never
+            // surfaced per-rule until now.
+            HStack(spacing: 6) {
+                if let lastRun {
+                    let failed = lastRun.result.hasPrefix("FAILED")
+                    Circle()
+                        .fill(failed ? theme.statusRisk : theme.statusGood)
+                        .frame(width: 6, height: 6)
+                    Text(failed ? "LAST RUN FAILED" : "LAST RUN OK")
+                        .font(PCorpFont.label(9))
+                        .trackedLabel(1.2)
+                        .foregroundStyle(theme.textSecondary)
+                    Text(lastRun.createdAt)
+                        .font(PCorpFont.body(10.5))
+                        .foregroundStyle(theme.textTertiary)
+                } else {
+                    Text("Never run yet")
+                        .font(PCorpFont.body(11))
+                        .foregroundStyle(theme.textTertiary)
+                }
+            }
         }
         .padding(18)
-        .background(RoundedRectangle(cornerRadius: 14).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 14).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 14)
+        .opacity(rule.enabled ? 1.0 : 0.55)
     }
 }
 
@@ -164,8 +217,6 @@ private struct RunRow: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 12)
     }
 }

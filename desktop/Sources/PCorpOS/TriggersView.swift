@@ -99,13 +99,11 @@ struct TriggersView: View {
             } label: {
                 Text(isRunningNow ? "Sending…" : "Send Digest Now")
             }
-            .buttonStyle(.pillTinted)
+            .buttonStyle(.actionTinted)
             .disabled(isRunningNow)
         }
         .padding(16)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 12)
 
         if let result = client.lastRunResult {
             Text(result.sent ? "Sent — \(result.itemCount) item(s) in the digest." : "Nothing due to send right now.")
@@ -131,7 +129,7 @@ private struct RuleSectionCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 ZStack {
-                    Circle().fill(.regularMaterial).frame(width: 40, height: 40)
+                    Circle().fill(theme.surfaceElevated).frame(width: 40, height: 40)
                     Image(systemName: "bell.badge")
                         .font(.system(size: 15))
                         .foregroundStyle(theme.textPrimary)
@@ -164,9 +162,7 @@ private struct RuleSectionCard: View {
             }
         }
         .padding(18)
-        .background(RoundedRectangle(cornerRadius: 14).fill(.regularMaterial))
-        .background(RoundedRectangle(cornerRadius: 14).fill(theme.background.opacity(0.35)))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(theme.surfaceBorder))
+        .cardSurface(radius: 14)
     }
 
     private var subtitle: String {

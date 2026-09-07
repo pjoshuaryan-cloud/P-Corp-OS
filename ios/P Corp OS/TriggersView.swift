@@ -90,7 +90,7 @@ struct TriggersView: View {
             } label: {
                 Text(isRunningNow ? "Sending…" : "Send Digest Now")
             }
-            .buttonStyle(.pillTinted)
+            .buttonStyle(.actionTinted)
             .disabled(isRunningNow)
         }
         .padding(16)

@@ -110,3 +110,23 @@ async def summarize() -> str:
     else:
         lines.append("No Monte Carlo runs yet.")
     return "\n".join(lines)
+
+
+async def build_trading_division_block() -> str:
+    """Real gap found live (2026-09-03, P Corp OS systems audit): every
+    other business area (Alpha Mode, Joshx, Finance, Personal, Operations,
+    People) gets its summarize() folded into Frank's own system prompt
+    every turn, via main.py's build_*_block() concatenation -- Trading
+    Division never did, despite summarize() above being written with
+    exactly that in mind from the start ("for the Trading Division Agent's
+    system prompt"). The practical effect: Frank had zero baseline
+    awareness the trading robot even existed unless he happened to already
+    know to call consult_trading_division_agent -- a broad "how's the
+    business doing" could silently skip the one thing Joshua's own Mission
+    Status card names as his top priority ("Finish trading robot V1
+    ASAP"). Same shape as build_alpha_mode_block() -- no new formatting
+    convention introduced."""
+    snapshot = await summarize()
+    if not snapshot:
+        return ""
+    return f"\n\n## Trading Division — current research snapshot\n{snapshot}"

@@ -1,6 +1,7 @@
 import SwiftUI
 import PCorpKit
 import PhotosUI
+import UniformTypeIdentifiers
 
 /// The real War Room screen (2026-08-12, restyled to match desktop
 /// pixel-for-pixel where the layout allows). Desktop's own docs call
@@ -85,10 +86,15 @@ struct WarRoomView: View {
     @StateObject private var voiceOutput = VoiceOutput()
     @State private var pendingVoiceReply = false
     @State private var inputText = ""
+    // Multi-attach (2026-09-05, generalized from the old single image-only
+    // slots below) -- one PendingAttachment per staged file, any kind.
+    @State private var pendingAttachments: [PendingAttachment] = []
+    // photoPickerItem still drives the Photo picker binding, but no longer
+    // 1:1 with a single attachment -- on load it appends and resets to nil
+    // so the picker can be invoked again for another photo.
     @State private var photoPickerItem: PhotosPickerItem?
-    @State private var attachedImageData: Data?
-    @State private var attachedImageMediaType: String?
-    @State private var attachedImagePreview: UIImage?
+    @State private var showPhotosPicker = false
+    @State private var showDocumentImporter = false
     @FocusState private var isInputFocused: Bool
     @Environment(\.appTheme) private var theme
 
@@ -200,17 +206,19 @@ struct WarRoomView: View {
                 // the messages makes the whole thing one continuous
                 // scrollable region -- the header just scrolls out of the
                 // way instead of permanently reserving space.
-                ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming) {
+                ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming, runningTool: backend.runningTool) {
                     dashboardHeader
                 }
             }
-            if let preview = attachedImagePreview {
-                attachedImageChip(preview)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
+            if !pendingAttachments.isEmpty {
+                AttachmentChipStrip(attachments: pendingAttachments) { id in
+                    pendingAttachments.removeAll { $0.id == id }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
             }
             if let approval = backend.pendingApproval {
-                ApprovalRequestCard(
+                ApprovalCard(
                     request: approval,
                     onApprove: { backend.respondToApproval(approved: true) },
                     onReject: { backend.respondToApproval(approved: false) }
@@ -247,44 +255,63 @@ struct WarRoomView: View {
             guard let newItem else { return }
             Task {
                 guard let data = try? await newItem.loadTransferable(type: Data.self),
-                      let image = UIImage(data: data)
+                      UIImage(data: data) != nil
                 else { return }
+                // Real bug found live, fixed as part of generalizing this
+                // to multi-attach (2026-09-05): this used to hardcode
+                // "image/jpeg" regardless of what was actually picked --
+                // derived properly now via the item's own content type,
+                // matching desktop's own (correct, file-extension-based)
+                // behavior.
+                let mediaType = newItem.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
                 await MainActor.run {
-                    attachedImageData = data
-                    attachedImageMediaType = "image/jpeg"
-                    attachedImagePreview = image
+                    pendingAttachments.append(
+                        PendingAttachment(data: data, mediaType: mediaType, filename: "photo", thumbnail: UIImage(data: data))
+                    )
+                    photoPickerItem = nil
                 }
             }
         }
-    }
-
-    private func attachedImageChip(_ preview: UIImage) -> some View {
-        HStack(spacing: 8) {
-            Image(uiImage: preview)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 32, height: 32)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            Text("Image attached")
-                .font(PCorpFont.body(12))
-                .foregroundStyle(theme.textSecondary)
-            Spacer()
-            Button(action: clearAttachedImage) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(theme.textTertiary)
-            }
-            .buttonStyle(.plain)
+        .photosPicker(isPresented: $showPhotosPicker, selection: $photoPickerItem, matching: .images)
+        .fileImporter(
+            isPresented: $showDocumentImporter,
+            allowedContentTypes: Self.documentContentTypes,
+            allowsMultipleSelection: true
+        ) { result in
+            guard case .success(let urls) = result else { return }
+            for url in urls { stageAttachment(from: url) }
         }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.surface.opacity(0.5)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
     }
 
-    private func clearAttachedImage() {
-        photoPickerItem = nil
-        attachedImageData = nil
-        attachedImageMediaType = nil
-        attachedImagePreview = nil
+    private static let documentContentTypes: [UTType] = {
+        var types: [UTType] = [.pdf, .commaSeparatedText]
+        if let docx = UTType(filenameExtension: "docx") { types.append(docx) }
+        if let xlsx = UTType(filenameExtension: "xlsx") { types.append(xlsx) }
+        return types
+    }()
+
+    /// The one code path for "a file got attached" via the document
+    /// importer. Files outside the sandbox (iCloud Drive, Files app)
+    /// require security-scoped access -- easy to omit and have it work
+    /// fine in the Simulator's more forgiving sandbox while silently
+    /// failing on a real device.
+    private func stageAttachment(from url: URL) {
+        guard url.startAccessingSecurityScopedResource() else { return }
+        defer { url.stopAccessingSecurityScopedResource() }
+        guard let data = try? Data(contentsOf: url) else { return }
+        let filename = url.lastPathComponent
+        let mediaType = Self.mediaType(forExtension: url.pathExtension.lowercased())
+        pendingAttachments.append(PendingAttachment(data: data, mediaType: mediaType, filename: filename))
+    }
+
+    private static func mediaType(forExtension ext: String) -> String {
+        switch ext {
+        case "pdf": return "application/pdf"
+        case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        case "csv": return "text/csv"
+        default: return "application/octet-stream"
+        }
     }
 
     private var dashboardHeader: some View {
@@ -353,7 +380,29 @@ struct WarRoomView: View {
 
     private var insightsCard: some View {
         CardContainer {
-            sectionLabel("FRANK'S INSIGHTS")
+            HStack(spacing: 8) {
+                sectionLabel("FRANK'S INSIGHTS")
+                Spacer()
+                // Real gap found live (2026-09-03, P Corp OS systems
+                // audit): this card silently polls every 30s with no way
+                // to force a refresh and no signal for how stale what's
+                // on screen is -- confirmed the only two views in the
+                // whole app missing both (the other being Situation Room
+                // below).
+                if let lastFetchedAt = insightsClient.lastFetchedAt {
+                    Text("Updated \(lastFetchedAt.formatted(date: .omitted, time: .standard))")
+                        .font(PCorpFont.body(9.5))
+                        .foregroundStyle(theme.textTertiary)
+                }
+                Button {
+                    Task { await insightsClient.fetch() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+            }
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(insightsClient.insights) { insight in
                     HStack(alignment: .top, spacing: 10) {
@@ -379,11 +428,35 @@ struct WarRoomView: View {
     private var situationRoomBanner: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(theme.statusRisk)
                 Text("SITUATION ROOM")
                     .font(PCorpFont.label(10))
                     .tracking(1.4)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(theme.statusRisk)
+                Spacer()
+                // Real gap found live (2026-09-03, P Corp OS systems
+                // audit): the only other view in the app with no manual
+                // refresh and no staleness signal, alongside the Insights
+                // card above -- an escalated alert shouldn't rely on
+                // waiting out a silent 30s poll. Also matches desktop's
+                // own WarRoomView.swift in using theme.statusRisk here
+                // instead of raw .red -- this banner was one of the
+                // pieces the 2026-08-31 UI cleanup pass deliberately left
+                // for iOS's own follow-on sweep, fixed here since these
+                // are the exact lines already being touched.
+                if let lastFetchedAt = situationRoomClient.lastFetchedAt {
+                    Text("Updated \(lastFetchedAt.formatted(date: .omitted, time: .standard))")
+                        .font(PCorpFont.body(9))
+                        .foregroundStyle(theme.statusRisk.opacity(0.7))
+                }
+                Button {
+                    Task { await situationRoomClient.fetch() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(theme.statusRisk.opacity(0.8))
+                }
+                .buttonStyle(.plain)
             }
             ForEach(situationRoomClient.alerts) { alert in
                 Text("\(alert.title) — \(alert.detail)")
@@ -394,12 +467,12 @@ struct WarRoomView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .background(Color.red.opacity(0.12))
-        .overlay(Rectangle().frame(height: 1).foregroundStyle(.red.opacity(0.3)), alignment: .bottom)
+        .background(theme.statusRisk.opacity(0.12))
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(theme.statusRisk.opacity(0.3)), alignment: .bottom)
     }
 
     private var inputBar: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .bottom, spacing: 12) {
             Button {
                 if !voiceInput.isListening {
                     // About to start a new push-to-talk recording --
@@ -423,19 +496,26 @@ struct WarRoomView: View {
             }
             .buttonStyle(.plain)
 
-            PhotosPicker(selection: $photoPickerItem, matching: .images) {
+            // PhotosPicker is photo-library-only -- it can't reach Files/
+            // iCloud Drive, so documents need a second, separate trigger
+            // (.fileImporter, below) behind this same paperclip glyph
+            // (2026-09-05, generalized from image-only).
+            Menu {
+                Button("Photo") { showPhotosPicker = true }
+                Button("Document") { showDocumentImporter = true }
+            } label: {
                 Image(systemName: "paperclip")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(theme.textSecondary)
                     .frame(width: 32, height: 32)
             }
 
-            TextField("Talk to Frank...", text: $inputText)
-                .textFieldStyle(.plain)
-                .font(PCorpFont.body(14))
-                .foregroundStyle(theme.textPrimary)
-                .focused($isInputFocused)
-                .onSubmit(sendMessage)
+            GrowingChatInput(
+                text: $inputText,
+                placeholder: "Talk to Frank...",
+                isFocused: $isInputFocused,
+                onSend: sendMessage
+            )
 
             if backend.isStreaming {
                 Button(action: backend.stopGenerating) {
@@ -472,10 +552,10 @@ struct WarRoomView: View {
 
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || attachedImageData != nil else { return }
-        backend.send(text, imageData: attachedImageData, mediaType: attachedImageMediaType)
+        guard !text.isEmpty || !pendingAttachments.isEmpty else { return }
+        backend.send(text, attachments: pendingAttachments)
         inputText = ""
-        clearAttachedImage()
+        pendingAttachments = []
     }
 
     private func sectionLabel(_ text: String) -> some View {
@@ -535,13 +615,17 @@ private struct CardContainer<Content: View>: View {
 /// Engineering Agent's file-edit approval card (2026-08-27, iOS parity
 /// port of desktop's own) -- shown whenever BackendClient.pendingApproval
 /// is non-nil, blocking normal chat input until Joshua explicitly
-/// approves or rejects (see backend/app/engineering_agent.py's
-/// propose_file_edit tool). Styled as a neutral bordered card, reusing
-/// attachedImageChip's own surface/border treatment -- deliberately NOT
-/// situationRoomBanner's red alert styling above, since that's already
-/// this app's specific signal for a real risk alert, and reusing it here
-/// would blur that meaning. This is a decision request, not a risk alert.
-private struct ApprovalRequestCard: View {
+/// approves or rejects. Generalized (2026-09-06, iOS parity port of
+/// desktop's own same-day refactor) from two separate card views
+/// (ApprovalRequestCard/CalendarApprovalCard) into one that switches on
+/// request.kind, on the third approval flow's arrival (automation-rule
+/// creation) -- see BackendClient.swift's ApprovalRequest doc comment.
+/// Styled as a neutral bordered card, reusing attachedImageChip's own
+/// surface/border treatment -- deliberately NOT situationRoomBanner's red
+/// alert styling above, since that's already this app's specific signal
+/// for a real risk alert, and reusing it here would blur that meaning.
+/// This is a decision request, not a risk alert.
+private struct ApprovalCard: View {
     let request: ApprovalRequest
     let onApprove: () -> Void
     let onReject: () -> Void
@@ -550,35 +634,13 @@ private struct ApprovalRequestCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: "pencil.and.outline")
-                    .foregroundStyle(theme.accentText)
-                Text("ENGINEERING AGENT WANTS TO EDIT A FILE")
-                    .font(PCorpFont.label(10))
-                    .tracking(1.2)
-                    .foregroundStyle(theme.textSecondary)
+            header
+            switch request.kind {
+            case .fileEdit: fileEditBody
+            case .calendarChange: calendarChangeBody
+            case .automationRule: automationRuleBody
+            case .alphaModeChange: alphaModeChangeBody
             }
-
-            Text(request.path)
-                .font(PCorpFont.body(13, weight: .semibold))
-                .foregroundStyle(theme.textPrimary)
-
-            Text(request.summary)
-                .font(PCorpFont.body(13))
-                .foregroundStyle(theme.textSecondary)
-
-            DisclosureGroup("Show diff", isExpanded: $isDiffExpanded) {
-                ScrollView {
-                    Text(request.diff)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(theme.textPrimary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                }
-                .frame(maxHeight: 240)
-            }
-            .font(PCorpFont.body(12))
-
             HStack(spacing: 10) {
                 Button("Reject", role: .destructive, action: onReject)
                     .buttonStyle(.bordered)
@@ -591,6 +653,86 @@ private struct ApprovalRequestCard: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(theme.surface.opacity(0.5)))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.accentFill, lineWidth: 1.5))
     }
+
+    @ViewBuilder
+    private var header: some View {
+        HStack(spacing: 6) {
+            switch request.kind {
+            case .fileEdit:
+                Image(systemName: "pencil.and.outline").foregroundStyle(theme.accentText)
+                Text("ENGINEERING AGENT WANTS TO EDIT A FILE")
+            case .calendarChange:
+                Image(systemName: "calendar.badge.clock").foregroundStyle(theme.accentText)
+                Text("FRANK WANTS TO CHANGE YOUR CALENDAR")
+            case .automationRule:
+                Image(systemName: "bolt.badge.clock").foregroundStyle(theme.accentText)
+                Text("FRANK WANTS TO CREATE AN AUTOMATION")
+            case .alphaModeChange:
+                Image(systemName: "building.2.crop.circle").foregroundStyle(theme.accentText)
+                Text("FRANK WANTS TO UPDATE ALPHA MODE MEDIA")
+            }
+        }
+        .font(PCorpFont.label(10))
+        .tracking(1.2)
+        .foregroundStyle(theme.textSecondary)
+    }
+
+    @ViewBuilder
+    private var fileEditBody: some View {
+        Text(request.path ?? "")
+            .font(PCorpFont.body(13, weight: .semibold))
+            .foregroundStyle(theme.textPrimary)
+        Text(request.summary ?? "")
+            .font(PCorpFont.body(13))
+            .foregroundStyle(theme.textSecondary)
+        DisclosureGroup("Show diff", isExpanded: $isDiffExpanded) {
+            ScrollView {
+                Text(request.diff ?? "")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(theme.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(maxHeight: 240)
+        }
+        .font(PCorpFont.body(12))
+    }
+
+    @ViewBuilder
+    private var calendarChangeBody: some View {
+        Text(request.title ?? "")
+            .font(PCorpFont.body(13, weight: .semibold))
+            .foregroundStyle(theme.textPrimary)
+        Text(request.details ?? "")
+            .font(PCorpFont.body(13))
+            .foregroundStyle(theme.textSecondary)
+    }
+
+    @ViewBuilder
+    private var alphaModeChangeBody: some View {
+        Text(request.title ?? "")
+            .font(PCorpFont.body(13, weight: .semibold))
+            .foregroundStyle(theme.textPrimary)
+        Text(request.details ?? "")
+            .font(PCorpFont.body(13))
+            .foregroundStyle(theme.textSecondary)
+    }
+
+    @ViewBuilder
+    private var automationRuleBody: some View {
+        Text(request.name ?? "")
+            .font(PCorpFont.body(13, weight: .semibold))
+            .foregroundStyle(theme.textPrimary)
+        Text(request.description ?? "")
+            .font(PCorpFont.body(13))
+            .foregroundStyle(theme.textSecondary)
+        Text("Trigger: \(request.triggerTool ?? "?")  ·  Agent: \(request.agent ?? "?")")
+            .font(PCorpFont.body(11.5))
+            .foregroundStyle(theme.textTertiary)
+        Text(request.instruction ?? "")
+            .font(PCorpFont.body(12))
+            .foregroundStyle(theme.textSecondary)
+    }
 }
 
 /// Its own dedicated scroll region with auto-scroll-to-newest, including
@@ -600,6 +742,7 @@ private struct ApprovalRequestCard: View {
 private struct ChatThreadView<Header: View>: View {
     let messages: [ChatMessage]
     let isStreaming: Bool
+    let runningTool: String?
     @ViewBuilder var header: () -> Header
     @Environment(\.appTheme) private var theme
 
@@ -611,7 +754,14 @@ private struct ChatThreadView<Header: View>: View {
                     Divider().overlay(theme.divider)
                     LazyVStack(alignment: .leading, spacing: 14) {
                         ForEach(messages) { message in
-                            ChatBubble(message: message).id(message.id)
+                            // Same "only the last message" reasoning as
+                            // desktop's own ChatThreadView -- a tool call
+                            // is always part of the turn currently in
+                            // flight, never an older one.
+                            let isPending = isStreaming && message.id == messages.last?.id
+                                && message.role == "assistant" && message.content.isEmpty
+                            let isLast = message.id == messages.last?.id
+                            ChatBubble(message: message, isPending: isPending, runningTool: isLast ? runningTool : nil).id(message.id)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -635,6 +785,36 @@ private struct ChatThreadView<Header: View>: View {
     }
 }
 
+/// Ported verbatim from desktop's own private TypingIndicatorDots
+/// (WarRoomView.swift there), 2026-09-04 -- iOS had no equivalent at all
+/// before this (ChatBubble below used to show a static "…" literal with
+/// no animation while a reply was pending), a real, separate gap fixed
+/// here as a side effect of adding the tool-execution indicator, which
+/// needed this same dots affordance to build on.
+private struct TypingIndicatorDots: View {
+    @Environment(\.appTheme) private var theme
+    @State private var animate = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .fill(theme.textSecondary)
+                    .frame(width: 5, height: 5)
+                    .scaleEffect(animate ? 1 : 0.5)
+                    .opacity(animate ? 1 : 0.4)
+                    .animation(
+                        .easeInOut(duration: 0.55)
+                            .repeatForever(autoreverses: true)
+                            .delay(Double(index) * 0.15),
+                        value: animate
+                    )
+            }
+        }
+        .onAppear { animate = true }
+    }
+}
+
 /// Exact match for desktop's own private ChatBubble (WarRoomView.swift
 /// there) -- same colors, corner radius, padding, max width, spacer
 /// widths. Plain Text, not desktop's markdown renderer -- that lives in
@@ -642,6 +822,17 @@ private struct ChatThreadView<Header: View>: View {
 /// shortfall of this pass specifically.
 private struct ChatBubble: View {
     let message: ChatMessage
+    /// True only for the single trailing empty assistant bubble while a
+    /// reply is being awaited -- same meaning as desktop's own ChatBubble.
+    var isPending: Bool = false
+    /// The friendly label from the backend's most recent tool call while
+    /// it's still running (see BackendClient.runningTool), non-nil only
+    /// for the trailing message. Shown alongside the typing dots when no
+    /// text has streamed yet, or appended below already-streamed text
+    /// when a tool fires mid-reply (2026-09-04) -- same shape as desktop's
+    /// own ChatBubble, ported here alongside TypingIndicatorDots below
+    /// since neither existed on iOS before this.
+    var runningTool: String? = nil
     @Environment(\.appTheme) private var theme
 
     private var isUser: Bool { message.role == "user" }
@@ -651,27 +842,56 @@ private struct ChatBubble: View {
             if isUser { Spacer(minLength: 40) }
 
             VStack(alignment: isUser ? .trailing : .leading, spacing: 8) {
-                if let image = message.image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: 240, maxHeight: 240)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                } else if message.hasStoredImage {
+                // Generalized 2026-09-05 from a single image to any kind/
+                // count of attachment -- see MessageAttachmentsView's own
+                // doc comment (only ever meaningfully populated for a user
+                // message; Frank never attaches anything to his own
+                // replies, so this renders as nothing for assistant
+                // messages exactly as the old image-only version did).
+                MessageAttachmentsView(
+                    attachments: message.attachments,
+                    storedAttachmentNames: message.storedAttachmentNames
+                )
+                if isPending, let runningTool {
                     HStack(spacing: 6) {
-                        Image(systemName: "photo")
-                        Text("Image attached")
+                        TypingIndicatorDots()
+                        Text(runningTool)
+                            .font(PCorpFont.body(12))
+                            .foregroundStyle(theme.textPrimary.opacity(0.7))
                     }
-                    .font(PCorpFont.body(12))
-                    .foregroundStyle((isUser ? theme.accentText : theme.textPrimary).opacity(0.8))
-                }
-                if !message.content.isEmpty || (message.image == nil && !message.hasStoredImage) {
-                    Text(message.content.isEmpty ? "…" : message.content)
-                        .font(PCorpFont.body(14))
-                        // Real bug found live (2026-08-27): Joshua
-                        // couldn't copy chat text to paste elsewhere --
-                        // plain SwiftUI Text isn't selectable by default.
-                        .textSelection(.enabled)
+                } else if isPending {
+                    TypingIndicatorDots()
+                } else if !message.content.isEmpty || (message.attachments.isEmpty && message.storedAttachmentNames.isEmpty) {
+                    if isUser {
+                        // User's own literally-typed characters -- a
+                        // stray "*"/"#" shouldn't be reinterpreted as
+                        // markdown syntax, matching desktop's own
+                        // assistant-only-markdown decision exactly.
+                        Text(message.content)
+                            .font(PCorpFont.body(14))
+                            // Real bug found live (2026-08-27): Joshua
+                            // couldn't copy chat text to paste elsewhere --
+                            // plain SwiftUI Text isn't selectable by default.
+                            .textSelection(.enabled)
+                    } else {
+                        // Real gap closed (2026-09-05): this used to be
+                        // plain Text for assistant replies too, so
+                        // headings/lists/bold/italic never rendered here
+                        // at all -- desktop's own ChatBubble already used
+                        // SimpleMarkdownView; iOS's chat view just hadn't
+                        // been wired up to it yet (iOS's Knowledge section
+                        // already was). Now also gets tables/code blocks
+                        // for free as SimpleMarkdownView's own capability.
+                        SimpleMarkdownView(text: message.content)
+                    }
+                    if let runningTool {
+                        HStack(spacing: 6) {
+                            TypingIndicatorDots()
+                            Text(runningTool)
+                                .font(PCorpFont.body(12))
+                                .foregroundStyle(theme.textPrimary.opacity(0.7))
+                        }
+                    }
                 }
             }
             .foregroundStyle(isUser ? theme.accentText : theme.textPrimary)

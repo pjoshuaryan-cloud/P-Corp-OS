@@ -224,7 +224,7 @@ private struct SectionPlaceholderView: View {
         VStack(spacing: 18) {
             ZStack {
                 Circle()
-                    .fill(.regularMaterial)
+                    .fill(theme.surfaceElevated)
                     .frame(width: 72, height: 72)
                 Circle()
                     .strokeBorder(theme.surfaceBorder, lineWidth: 1)

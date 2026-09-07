@@ -13,6 +13,7 @@ from datetime import date
 
 from app.coingecko_client import fetch_xstock_zar_prices
 from app.finance_db import (
+    dashboard_snapshot,
     get_hf_markets_schedule,
     get_luno_schedule,
     log_balance,
@@ -96,23 +97,103 @@ async def compute_luno_zar_value(holdings: list[dict]) -> dict:
     total = 0.0
     priced_assets: list[str] = []
     unpriced_assets: list[str] = []
+    # Per-asset ZAR value (2026-09-06, systems audit §4's concentration
+    # metric) -- additive only, existing keys/callers untouched. Lets
+    # compute_concentration_metrics() below report "which Luno asset is
+    # biggest" without a second, duplicate pricing pass.
+    per_asset_zar_value: dict[str, float] = {}
     for holding in holdings:
         asset = holding["asset"]
         balance = holding["balance"]
         if asset == "ZAR":
             total += balance
             priced_assets.append(asset)
+            per_asset_zar_value[asset] = balance
             continue
         price = prices.get(asset)
         if price is None:
             unpriced_assets.append(asset)
             continue
-        total += balance * price
+        value = balance * price
+        total += value
         priced_assets.append(asset)
+        per_asset_zar_value[asset] = value
     return {
         "estimated_zar_value": total,
         "priced_assets": priced_assets,
         "unpriced_assets": unpriced_assets,
+        "per_asset_zar_value": per_asset_zar_value,
+    }
+
+
+# The four genuinely ZAR-denominated accounts -- Luno can also hold real
+# ZAR cash alongside its crypto/tokenized-asset positions, but that
+# balance is already covered by the Luno-holdings concentration view
+# below; including it here too would double-count the same rand.
+_ZAR_ACCOUNT_NAMES = {"Liberty Stash", "EasyEquities", "Ashburton Stable Income Fund", "Nasdaq / Markets"}
+
+
+async def compute_concentration_metrics() -> dict:
+    """Systems audit §4's concentration metric (2026-09-06) -- two
+    separate, honestly-labeled views, never merged into one number.
+    finance_db.py's own dashboard_snapshot() docstring already declines a
+    blended cross-currency total ("summing those into one number would
+    misrepresent the real portfolio"); combining the four *real* ZAR
+    balances with Luno's *estimated*, live-priced ZAR value would repeat
+    that exact mistake one level up -- a real number and a market-price
+    estimate presented as equally certain. Kept apart instead:
+
+    - `zar_accounts`: the four real ZAR-denominated accounts (see
+      _ZAR_ACCOUNT_NAMES above), each as a % of their own real combined
+      total -- genuinely the same currency, a legitimate comparison.
+    - `luno_holdings`: each Luno asset's estimated ZAR value as a % of
+      Luno's own total estimate, reusing compute_luno_zar_value()'s
+      per_asset_zar_value directly rather than a second pricing pass --
+      stays self-contained to the one account that estimate was already
+      scoped to."""
+    snapshot = await dashboard_snapshot()
+
+    zar_rows = []
+    for account in snapshot["accounts"]:
+        if account["name"] not in _ZAR_ACCOUNT_NAMES:
+            continue
+        zar_holding = next((h for h in account["holdings"] if h["asset"] == "ZAR"), None)
+        if zar_holding is not None:
+            zar_rows.append({"account": account["name"], "balance": zar_holding["balance"]})
+    zar_total = sum(r["balance"] for r in zar_rows)
+    zar_accounts = [
+        {
+            "account": r["account"],
+            "balance": r["balance"],
+            "percent_of_total": (r["balance"] / zar_total) if zar_total else None,
+        }
+        for r in zar_rows
+    ]
+
+    luno_account = next((a for a in snapshot["accounts"] if a["name"] == "Luno"), None)
+    luno_holdings: list[dict] = []
+    luno_total_estimate = None
+    luno_unpriced_assets: list[str] = []
+    if luno_account and luno_account["holdings"]:
+        luno_value = await compute_luno_zar_value(luno_account["holdings"])
+        luno_total_estimate = luno_value["estimated_zar_value"]
+        luno_unpriced_assets = luno_value["unpriced_assets"]
+        for asset, value in luno_value["per_asset_zar_value"].items():
+            luno_holdings.append(
+                {
+                    "asset": asset,
+                    "estimated_zar_value": value,
+                    "percent_of_total": (value / luno_total_estimate) if luno_total_estimate else None,
+                }
+            )
+        luno_holdings.sort(key=lambda h: h["estimated_zar_value"], reverse=True)
+
+    return {
+        "zar_accounts": zar_accounts,
+        "zar_total": zar_total,
+        "luno_holdings": luno_holdings,
+        "luno_total_estimate": luno_total_estimate,
+        "luno_unpriced_assets": luno_unpriced_assets,
     }
 
 

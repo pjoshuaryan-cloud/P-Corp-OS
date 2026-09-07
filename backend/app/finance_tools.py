@@ -16,6 +16,7 @@ what it's told; "look for lucrative opportunities" is real, separately-
 scoped future work, not something bolted onto this tool.
 """
 
+from app.finance import compute_concentration_metrics
 from app.finance_db import log_balance, summarize
 
 LOG_FINANCE_BALANCE_TOOL = {
@@ -44,11 +45,40 @@ FINANCE_TOOLS = [LOG_FINANCE_BALANCE_TOOL]
 FINANCE_TOOL_NAMES = {tool["name"] for tool in FINANCE_TOOLS}
 
 
+async def _concentration_summary_lines() -> list[str]:
+    """Composed here, not inside finance_db.py's own summarize() --
+    compute_concentration_metrics() lives in finance.py, which already
+    imports FROM finance_db.py, so calling it back from there would be a
+    real circular import. finance_tools.py sits above both, so this is
+    the right layer to combine them for Frank's system prompt."""
+    metrics = await compute_concentration_metrics()
+    if not metrics["zar_accounts"] and not metrics["luno_holdings"]:
+        return []
+    lines = ["Finance concentration (two separate views, never blended into one total):"]
+    if metrics["zar_accounts"]:
+        lines.append(f"  - ZAR accounts (R{metrics['zar_total']:,.2f} combined):")
+        for row in sorted(metrics["zar_accounts"], key=lambda r: r["balance"], reverse=True):
+            pct = f"{row['percent_of_total']:.0%}" if row["percent_of_total"] is not None else "n/a"
+            lines.append(f"    - {row['account']}: R{row['balance']:,.2f} ({pct})")
+    if metrics["luno_holdings"]:
+        top = metrics["luno_holdings"][0]
+        pct = f"{top['percent_of_total']:.0%}" if top["percent_of_total"] is not None else "n/a"
+        lines.append(
+            f"  - Luno's largest holding: {top['asset']}, an estimated R{top['estimated_zar_value']:,.2f} "
+            f"({pct} of Luno's ~R{metrics['luno_total_estimate']:,.2f} estimated total)"
+        )
+    return lines
+
+
 async def build_finance_block() -> str:
     snapshot = await summarize()
-    if not snapshot:
+    concentration_lines = await _concentration_summary_lines()
+    if not snapshot and not concentration_lines:
         return ""
-    return f"\n\n## Finance (Josh's personal investments -- track and display only, never advise)\n{snapshot}"
+    body = snapshot
+    if concentration_lines:
+        body = f"{body}\n" + "\n".join(concentration_lines) if body else "\n".join(concentration_lines)
+    return f"\n\n## Finance (Josh's personal investments -- track and display only, never advise)\n{body}"
 
 
 async def execute_finance_tool_call(name: str, tool_input: dict) -> str:

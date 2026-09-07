@@ -12,6 +12,7 @@ import PCorpKit
 struct FinanceView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = FinanceClient()
+    @State private var historyAccount: FinanceAccount?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -28,8 +29,11 @@ struct FinanceView: View {
                             .font(PCorpFont.body(12))
                             .foregroundStyle(theme.textSecondary)
                     } else if let dashboard = client.dashboard {
+                        if let concentration = client.concentration {
+                            ConcentrationSection(concentration: concentration)
+                        }
                         ForEach(dashboard.accounts) { account in
-                            AccountCard(account: account)
+                            AccountCard(account: account) { historyAccount = account }
                         }
                     }
                 }
@@ -39,6 +43,9 @@ struct FinanceView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
         .task { await client.fetch() }
+        .sheet(item: $historyAccount) { account in
+            FinanceAccountHistorySheet(account: account, client: client)
+        }
     }
 
     private var header: some View {
@@ -65,6 +72,7 @@ struct FinanceView: View {
 
 private struct AccountCard: View {
     let account: FinanceAccount
+    let onTapHistory: () -> Void
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -93,6 +101,10 @@ private struct AccountCard: View {
                     .padding(.vertical, 5)
                     .background(Capsule().fill(theme.textPrimary.opacity(0.05)))
                 }
+                Button(action: onTapHistory) {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+                .buttonStyle(.icon)
             }
 
             if account.holdings.isEmpty {
@@ -223,5 +235,217 @@ private struct HoldingRow: View {
         holding.asset == "ZAR"
             ? "R\(String(format: "%.2f", holding.balance))"
             : String(format: "%.6f", holding.balance)
+    }
+}
+
+/// Concentration metrics (2026-09-06, systems audit §4) -- ported
+/// directly from desktop's own ConcentrationSection, see that file's
+/// docstring for why the two bar groups stay separate.
+private struct ConcentrationSection: View {
+    let concentration: FinanceConcentration
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if !concentration.zarAccounts.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("ZAR ACCOUNT CONCENTRATION")
+                        .font(PCorpFont.label(9))
+                        .trackedLabel(1.1)
+                        .foregroundStyle(theme.textTertiary)
+                    ForEach(concentration.zarAccounts.sorted(by: { $0.balance > $1.balance })) { row in
+                        ConcentrationBar(
+                            label: row.account,
+                            valueLabel: "R\(String(format: "%.2f", row.balance))",
+                            fraction: row.percentOfTotal ?? 0
+                        )
+                    }
+                }
+            }
+            if !concentration.lunoHoldings.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("LUNO HOLDINGS CONCENTRATION")
+                        .font(PCorpFont.label(9))
+                        .trackedLabel(1.1)
+                        .foregroundStyle(theme.textTertiary)
+                    ForEach(concentration.lunoHoldings.prefix(6)) { holding in
+                        ConcentrationBar(
+                            label: holding.asset,
+                            valueLabel: "R\(String(format: "%.2f", holding.estimatedZarValue))",
+                            fraction: holding.percentOfTotal ?? 0
+                        )
+                    }
+                    if !concentration.lunoUnpricedAssets.isEmpty {
+                        Text("Excludes \(concentration.lunoUnpricedAssets.joined(separator: ", ")) — no live ZAR price available.")
+                            .font(PCorpFont.body(10.5))
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.regularMaterial))
+        .background(RoundedRectangle(cornerRadius: 14).fill(theme.background.opacity(0.35)))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(theme.surfaceBorder))
+    }
+}
+
+private struct ConcentrationBar: View {
+    let label: String
+    let valueLabel: String
+    let fraction: Double
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(label)
+                    .font(PCorpFont.body(12, weight: .medium))
+                    .foregroundStyle(theme.textPrimary)
+                Spacer()
+                Text(valueLabel)
+                    .font(PCorpFont.mono(11.5))
+                    .foregroundStyle(theme.textSecondary)
+                Text("\(Int((fraction * 100).rounded()))%")
+                    .font(PCorpFont.mono(11.5, weight: .semibold))
+                    .foregroundStyle(theme.textTertiary)
+                    .frame(width: 34, alignment: .trailing)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(theme.divider).frame(height: 6)
+                    Rectangle()
+                        .fill(theme.accent)
+                        .frame(width: geo.size.width * CGFloat(min(max(fraction, 0), 1)), height: 6)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .frame(height: 6)
+        }
+    }
+}
+
+/// Per-account balance history (2026-09-06, systems audit §4's date-range
+/// filtering) -- ported from desktop's own FinanceAccountHistoryPopover,
+/// presented as a `.sheet` per this file's own established iOS-vs-desktop
+/// modal convention (see JoshxProjectDetailSheet.swift). See desktop's
+/// docstring for why this is a plain filterable list, not a chart.
+private struct FinanceAccountHistorySheet: View {
+    let account: FinanceAccount
+    @ObservedObject var client: FinanceClient
+    @Environment(\.appTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+    @State private var period: Period = .allTime
+    @State private var entries: [BalanceHistoryEntry] = []
+    @State private var isLoading = true
+    @State private var loadFailed = false
+
+    private enum Period: String, CaseIterable, Identifiable {
+        case week = "Week", month = "Month", quarter = "Quarter", allTime = "All Time"
+        var id: String { rawValue }
+        var days: Int? {
+            switch self {
+            case .week: 7
+            case .month: 30
+            case .quarter: 90
+            case .allTime: nil
+            }
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 0) {
+                Picker("Period", selection: $period) {
+                    ForEach(Period.allCases) { p in
+                        Text(p.rawValue).tag(p)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 10)
+
+                Divider().overlay(theme.divider)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if isLoading {
+                            Text("Loading…")
+                                .font(PCorpFont.body(12))
+                                .foregroundStyle(theme.textSecondary)
+                                .padding(16)
+                        } else if loadFailed {
+                            Text("Couldn't load history — is the backend running?")
+                                .font(PCorpFont.body(12))
+                                .foregroundStyle(theme.textSecondary)
+                                .padding(16)
+                        } else if entries.isEmpty {
+                            Text("No snapshots logged in this period yet.")
+                                .font(PCorpFont.body(12))
+                                .foregroundStyle(theme.textSecondary)
+                                .padding(16)
+                        } else {
+                            ForEach(entries) { entry in
+                                HistoryRow(entry: entry)
+                                Divider().overlay(theme.divider)
+                            }
+                        }
+                    }
+                }
+            }
+            .background(theme.background)
+            .navigationTitle(account.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .task(id: period) { await load() }
+    }
+
+    private func load() async {
+        isLoading = true
+        loadFailed = false
+        let from = period.days.map { days in
+            ISO8601DateFormatter().string(from: Date().addingTimeInterval(-Double(days) * 86400)).prefix(10)
+        }.map(String.init)
+        do {
+            entries = try await client.fetchHistory(accountId: account.id, from: from)
+        } catch {
+            loadFailed = true
+        }
+        isLoading = false
+    }
+}
+
+private struct HistoryRow: View {
+    let entry: BalanceHistoryEntry
+    @Environment(\.appTheme) private var theme
+
+    private var formattedBalance: String {
+        entry.asset == "ZAR"
+            ? "R\(String(format: "%.2f", entry.balance))"
+            : String(format: "%.6f", entry.balance)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(entry.asset)
+                .font(PCorpFont.mono(11, weight: .medium))
+                .foregroundStyle(theme.textSecondary)
+                .frame(width: 42, alignment: .leading)
+            Text(formattedBalance)
+                .font(PCorpFont.body(13, weight: .semibold))
+                .foregroundStyle(theme.textPrimary)
+            Spacer()
+            Text(entry.recordedAt)
+                .font(PCorpFont.body(10.5))
+                .foregroundStyle(theme.textTertiary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 }

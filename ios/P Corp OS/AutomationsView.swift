@@ -6,6 +6,8 @@ import SwiftUI
 /// cross-platform AutomationsClient/AutomationRule/AutomationRun, no
 /// AppKit dependencies and no hover-only affordances to adapt (unlike
 /// FrankView's forget button), so this is a direct, unmodified port.
+/// Real enabled toggle + per-rule last-run status added 2026-09-06,
+/// ported alongside desktop's own same-day change.
 struct AutomationsView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = AutomationsClient()
@@ -54,14 +56,29 @@ struct AutomationsView: View {
             Text("Loading…")
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
-        } else if let error = client.errorMessage {
+        } else if client.rules.isEmpty, let error = client.errorMessage {
             Text(error)
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
         } else {
+            // See desktop's own AutomationsView.swift for why a loaded
+            // rule list wins over errorMessage here (systems audit §18
+            // sweep, 2026-09-06).
+            if let error = client.errorMessage {
+                Text(error)
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle(theme.statusRisk)
+            }
             VStack(alignment: .leading, spacing: 14) {
                 ForEach(client.rules) { rule in
-                    RuleCard(rule: rule)
+                    // runs is already ORDER BY id DESC (automations_db.py),
+                    // so .first is genuinely the most recent firing.
+                    RuleCard(
+                        rule: rule,
+                        lastRun: client.runs.first(where: { $0.ruleId == rule.id }),
+                        onToggle: { enabled in Task { await client.toggleRule(id: rule.id, enabled: enabled) } },
+                        onDelete: { Task { await client.deleteRule(id: rule.id) } }
+                    )
                 }
             }
         }
@@ -93,6 +110,11 @@ struct AutomationsView: View {
 
 private struct RuleCard: View {
     let rule: AutomationRule
+    /// Most recent automation_runs row for this rule, if any -- nil means
+    /// genuinely never fired yet, not an error.
+    let lastRun: AutomationRun?
+    let onToggle: (Bool) -> Void
+    let onDelete: () -> Void
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -113,25 +135,55 @@ private struct RuleCard: View {
                         .foregroundStyle(theme.textSecondary)
                 }
                 Spacer()
-                HStack(spacing: 6) {
-                    Circle().fill(Color.green).frame(width: 6, height: 6)
-                    Text("ACTIVE")
-                        .font(PCorpFont.label(9))
-                        .trackedLabel(1.2)
+                // Real, persisted enabled state (2026-09-06) -- was a
+                // hardcoded "ACTIVE" Circle+Text with no backing field at
+                // all before this; pause/resume is UI-driven (a PATCH),
+                // not a Frank tool, same reasoning Triggers' own toggle
+                // already established.
+                Toggle("", isOn: Binding(get: { rule.enabled }, set: onToggle))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .tint(theme.textPrimary)
+                Menu {
+                    Button("Delete", role: .destructive, action: onDelete)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                         .foregroundStyle(theme.textSecondary)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(theme.textPrimary.opacity(0.05)))
+                .frame(width: 20)
             }
             Text(rule.description)
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
+
+            // Closes the audit's own "no failure tracking" gap using data
+            // that already existed in automation_runs, just never
+            // surfaced per-rule until now.
+            HStack(spacing: 6) {
+                if let lastRun {
+                    let failed = lastRun.result.hasPrefix("FAILED")
+                    Circle()
+                        .fill(failed ? theme.statusRisk : theme.statusGood)
+                        .frame(width: 6, height: 6)
+                    Text(failed ? "LAST RUN FAILED" : "LAST RUN OK")
+                        .font(PCorpFont.label(9))
+                        .trackedLabel(1.2)
+                        .foregroundStyle(theme.textSecondary)
+                    Text(lastRun.createdAt)
+                        .font(PCorpFont.body(10.5))
+                        .foregroundStyle(theme.textTertiary)
+                } else {
+                    Text("Never run yet")
+                        .font(PCorpFont.body(11))
+                        .foregroundStyle(theme.textTertiary)
+                }
+            }
         }
         .padding(18)
         .background(RoundedRectangle(cornerRadius: 14).fill(.regularMaterial))
         .background(RoundedRectangle(cornerRadius: 14).fill(theme.background.opacity(0.35)))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(theme.surfaceBorder))
+        .opacity(rule.enabled ? 1.0 : 0.55)
     }
 }
 

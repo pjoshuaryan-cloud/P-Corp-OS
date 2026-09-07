@@ -42,6 +42,7 @@ Deliberately NOT here yet: semantic/vector search over memory_records, an
 single conversation that gets very long.
 """
 
+import json
 from pathlib import Path
 
 import aiosqlite
@@ -90,6 +91,16 @@ async def init_db() -> None:
         # themselves -- keeps this TEXT column cheap regardless of image size.
         if "image_path" not in columns:
             await db.execute("ALTER TABLE messages ADD COLUMN image_path TEXT")
+        # Migration path: multi-attach documents (2026-09-05) generalize
+        # single-image_path to N attachments of any kind. New column, not
+        # a rework of image_path -- old rows keep reading correctly via
+        # image_path (never written again going forward), new rows write
+        # this instead. Nullable -- most messages have no attachments.
+        # JSON-encoded list of {filename, original_name, media_type} --
+        # filenames under data/attachments/, never the bytes themselves,
+        # same reasoning as image_path above.
+        if "attachments" not in columns:
+            await db.execute("ALTER TABLE messages ADD COLUMN attachments TEXT")
 
         await db.execute(
             """
@@ -124,6 +135,15 @@ async def init_db() -> None:
         # an error), same reasoning as objective_set_at above.
         if "last_brief_viewed_at" not in columns:
             await db.execute("ALTER TABLE app_state ADD COLUMN last_brief_viewed_at TEXT")
+
+        # Migration path: app_state existed before Connected Apps' Gmail
+        # sync tracking did (2026-09-04). Nullable -- Gmail has only ever
+        # synced on demand (email_tools.py's search_emails-style tool
+        # call), never on a periodic tick like Calendar's, so "never
+        # synced yet" is a real, honest state for a fresh install or one
+        # where that tool has simply never run -- not an error to hide.
+        if "last_gmail_sync_at" not in columns:
+            await db.execute("ALTER TABLE app_state ADD COLUMN last_gmail_sync_at TEXT")
 
         await db.execute(
             """
@@ -270,6 +290,19 @@ async def mark_brief_viewed() -> None:
         await db.commit()
 
 
+async def get_last_gmail_sync_at() -> str | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT last_gmail_sync_at FROM app_state WHERE id = 1")
+        (last_synced,) = await cursor.fetchone()
+        return last_synced
+
+
+async def mark_gmail_synced() -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE app_state SET last_gmail_sync_at = datetime('now') WHERE id = 1")
+        await db.commit()
+
+
 async def create_new_conversation() -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("INSERT INTO conversations DEFAULT VALUES")
@@ -332,30 +365,75 @@ async def list_conversations(query: str | None = None) -> list[dict]:
 
 
 async def load_history(conversation_id: int) -> list[dict]:
-    # image_path is included for the UI (GET /history — the "📎 image
-    # attached" placeholder for a reopened old conversation) but is
-    # deliberately stripped back out before this shape reaches Claude's own
-    # message history (see main.py's websocket handler) -- a reopened old
-    # image is shown, not re-sent as real vision context every reload,
-    # confirmed decision 2026-08-05 (cost vs. Frank genuinely "re-seeing"
-    # it every time).
+    # image_path/attachments are included for the UI (GET /history — the
+    # "📎 image attached"/"N files attached" placeholder for a reopened old
+    # conversation) but are deliberately stripped back out before this
+    # shape reaches Claude's own message history (see main.py's websocket
+    # handler) -- a reopened old attachment is shown, not re-sent as real
+    # context every reload, confirmed decision 2026-08-05 (cost vs. Frank
+    # genuinely "re-seeing" it every time), extended to all attachment
+    # kinds 2026-09-05. `attachments` is only populated for messages sent
+    # after that migration -- an older row has `image_path` set instead
+    # (still read here, never re-written).
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT role, content, image_path FROM messages WHERE conversation_id = ? ORDER BY id ASC",
+            "SELECT role, content, image_path, attachments FROM messages WHERE conversation_id = ? ORDER BY id ASC",
             (conversation_id,),
         )
         rows = await cursor.fetchall()
-        return [{"role": row["role"], "content": row["content"], "image_path": row["image_path"]} for row in rows]
+        return [
+            {
+                "role": row["role"],
+                "content": row["content"],
+                "image_path": row["image_path"],
+                "attachments": json.loads(row["attachments"]) if row["attachments"] else None,
+            }
+            for row in rows
+        ]
 
 
-async def save_message(conversation_id: int, role: str, content: str, image_path: str | None = None) -> None:
+async def save_message(
+    conversation_id: int,
+    role: str,
+    content: str,
+    image_path: str | None = None,
+    attachments: list[dict] | None = None,
+) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO messages (conversation_id, role, content, image_path) VALUES (?, ?, ?, ?)",
-            (conversation_id, role, content, image_path),
+            "INSERT INTO messages (conversation_id, role, content, image_path, attachments) VALUES (?, ?, ?, ?, ?)",
+            (conversation_id, role, content, image_path, json.dumps(attachments) if attachments else None),
         )
         await db.commit()
+
+
+async def find_recent_attachment(conversation_id: int, name_hint: str) -> dict | None:
+    """Resolves data_analysis.py's `source` argument to a real stored
+    attachment dict ({filename, original_name, media_type}) -- the first
+    query against messages.attachments beyond the reopened-conversation
+    placeholder load_history already does. Mirrors joshx_db.py's own
+    fuzzy-identifier convention: exact case-insensitive match first, then
+    substring, scanned most-recent-message-first so a re-attached same-name
+    file resolves to the newest copy."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT attachments FROM messages WHERE conversation_id = ? "
+            "AND attachments IS NOT NULL ORDER BY id DESC",
+            (conversation_id,),
+        )
+        rows = await cursor.fetchall()
+
+    candidates = [att for row in rows for att in json.loads(row["attachments"])]
+    needle = name_hint.strip().lower()
+    for att in candidates:
+        if att["original_name"].strip().lower() == needle:
+            return att
+    for att in candidates:
+        if needle in att["original_name"].lower():
+            return att
+    return None
 
 
 async def load_memory_records() -> list[dict]:
