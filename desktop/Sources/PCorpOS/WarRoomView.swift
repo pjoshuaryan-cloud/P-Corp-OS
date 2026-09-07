@@ -222,7 +222,7 @@ struct WarRoomView: View {
                 // Stats row sits below Frank himself, not competing with
                 // him — "Frank > Mission > Intelligence > Navigation" per
                 // the brief's own stated hierarchy (item 21).
-                WarRoomCommandMap()
+                WarRoomCommandMap(insightsClient: greetingInsightsClient)
                     .padding(.horizontal, 48)
 
                 Spacer(minLength: 20)

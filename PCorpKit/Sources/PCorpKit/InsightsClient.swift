@@ -24,7 +24,7 @@ public final class InsightsClient: ObservableObject {
     public func fetch() async {
         isLoading = true
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await BackendURLSession.shared.data(from: url)
             insights = try JSONDecoder().decode([InsightItem].self, from: data)
             lastFetchedAt = Date()
         } catch {

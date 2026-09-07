@@ -16,7 +16,7 @@ public final class FocusClient: ObservableObject {
 
     public func fetch() async {
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await BackendURLSession.shared.data(from: url)
             objective = try JSONDecoder().decode(FocusObjective.self, from: data).objective
         } catch {
             objective = nil

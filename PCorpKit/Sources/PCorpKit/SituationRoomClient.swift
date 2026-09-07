@@ -23,7 +23,7 @@ public final class SituationRoomClient: ObservableObject {
 
     public func fetch() async {
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await BackendURLSession.shared.data(from: url)
             alerts = try JSONDecoder().decode([SituationRoomAlert].self, from: data)
             lastFetchedAt = Date()
         } catch {

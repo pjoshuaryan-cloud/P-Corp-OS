@@ -18,7 +18,11 @@ import SwiftUI
 struct WarRoomCommandMap: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var agentsClient = AgentsClient()
-    @StateObject private var insightsClient = InsightsClient()
+    // Reliability pass (2026-09-07): was its own @StateObject InsightsClient,
+    // fetching GET /insights a second time on every cold launch alongside
+    // WarRoomView's own instance -- passed in from the parent instead, so
+    // this row just observes the same already-fetched data reactively.
+    @ObservedObject var insightsClient: InsightsClient
 
     private var opportunityCount: Int {
         insightsClient.insights.filter { $0.category == "opportunity" }.count
@@ -38,7 +42,6 @@ struct WarRoomCommandMap: View {
         }
         .task {
             await agentsClient.fetch()
-            await insightsClient.fetch()
         }
     }
 

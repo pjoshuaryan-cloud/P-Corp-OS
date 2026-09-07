@@ -347,7 +347,7 @@ struct WarRoomView: View {
             // visible layout doesn't have in this spot; placing it right
             // after the greeting, before the cards, is the closest honest
             // analog -- quiet ambient info ahead of the actionable cards.
-            WarRoomCommandMap()
+            WarRoomCommandMap(insightsClient: insightsClient)
             missionStatusCard
             if !insightsClient.insights.isEmpty {
                 insightsCard

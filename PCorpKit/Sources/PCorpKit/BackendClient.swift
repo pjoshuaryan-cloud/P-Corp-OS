@@ -251,7 +251,7 @@ public final class BackendClient: ObservableObject {
     /// URLSession retains itself until told otherwise.
     private func openTask() -> URLSessionWebSocketTask {
         session?.invalidateAndCancel()
-        let newSession = URLSession(configuration: .default)
+        let newSession = URLSession(configuration: BackendURLSession.configuration)
         session = newSession
         let task = newSession.webSocketTask(with: wsURL)
         // Real bug found live (2026-09-05, multi-attach): Apple's own docs
@@ -330,7 +330,7 @@ public final class BackendClient: ObservableObject {
         messages = []
         var request = URLRequest(url: newConversationURL)
         request.httpMethod = "POST"
-        _ = try? await URLSession.shared.data(for: request)
+        _ = try? await BackendURLSession.shared.data(for: request)
         disconnect()
         connect()
     }
@@ -347,7 +347,7 @@ public final class BackendClient: ObservableObject {
     /// apart. Callers should catch and show a real "couldn't load"
     /// state instead of trusting an empty array as a true empty history.
     public func fetchConversationList(query: String? = nil) async throws -> [ConversationSummary] {
-        let (data, _) = try await URLSession.shared.data(from: conversationListURL(query: query))
+        let (data, _) = try await BackendURLSession.shared.data(from: conversationListURL(query: query))
         return try JSONDecoder().decode([ConversationSummary].self, from: data)
     }
 
@@ -358,7 +358,7 @@ public final class BackendClient: ObservableObject {
         messages = []
         var request = URLRequest(url: activateURL(conversationID))
         request.httpMethod = "POST"
-        _ = try? await URLSession.shared.data(for: request)
+        _ = try? await BackendURLSession.shared.data(for: request)
         disconnect()
         connect()
     }
@@ -414,7 +414,7 @@ public final class BackendClient: ObservableObject {
     private func startFreshConversationForLaunch() async {
         var request = URLRequest(url: newConversationURL)
         request.httpMethod = "POST"
-        _ = try? await URLSession.shared.data(for: request)
+        _ = try? await BackendURLSession.shared.data(for: request)
     }
 
     public func disconnect() {
@@ -626,7 +626,7 @@ public final class BackendClient: ObservableObject {
 
     private func loadHistory() async {
         do {
-            let (data, _) = try await URLSession.shared.data(from: historyURL)
+            let (data, _) = try await BackendURLSession.shared.data(from: historyURL)
             let entries = try JSONDecoder().decode([HistoryEntry].self, from: data)
             messages = entries.map { entry in
                 // A row written after the 2026-09-05 migration carries real
