@@ -95,14 +95,14 @@ async def init_triggers_db() -> None:
             CREATE TABLE IF NOT EXISTS digest_schedule (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 last_sent_date TEXT,
-                send_hour INTEGER NOT NULL DEFAULT 7
+                send_hour INTEGER NOT NULL DEFAULT 6
             )
             """
         )
         cursor = await db.execute("SELECT COUNT(*) FROM digest_schedule WHERE id = 1")
         (count,) = await cursor.fetchone()
         if count == 0:
-            await db.execute("INSERT INTO digest_schedule (id, last_sent_date, send_hour) VALUES (1, NULL, 7)")
+            await db.execute("INSERT INTO digest_schedule (id, last_sent_date, send_hour) VALUES (1, NULL, 6)")
 
         # market_movers.py's price history -- a market price isn't tied
         # to any one account/holding (unlike Finance's balance_snapshots),

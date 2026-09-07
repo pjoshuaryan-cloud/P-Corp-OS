@@ -1,9 +1,9 @@
 """
 Proactive Triggers Layer (2026-08-21) — the rule-checking + digest-
 composition half. See triggers_db.py's docstring for the persistence
-design (rule rows + per-item dedup/decay state) and email_digest.py for
-delivery. This file is the part that actually decides what's true right
-now, against real data:
+design (rule rows + per-item dedup/decay state) and digest_notification.py
+for delivery. This file is the part that actually decides what's true
+right now, against real data:
 
 - invoice_overdue / project_stage_stall read the REAL Alpha Mode Media
   Admin Supabase (alpha_mode_supabase.py's `select_rows`) — the live
@@ -29,7 +29,7 @@ import aiosqlite
 
 from app.alpha_mode_db import DB_PATH as ALPHA_MODE_DB_PATH
 from app.alpha_mode_supabase import PROJECT_STAGES
-from app.email_digest import send_digest_email
+from app.digest_notification import send_digest_notification
 from app.market_movers import check_market_movers
 from app.people_db import get_overdue_follow_ups
 from app.supabase_client import select_rows
@@ -235,7 +235,7 @@ async def run_daily_digest() -> dict:
 
     item_count = sum(len(items) for items in sections.values())
     body = _format_digest_body(sections)
-    send_digest_email(f"Frank's Daily Brief — {item_count} item(s)", body)
+    send_digest_notification(f"Frank's Daily Brief — {item_count} item(s)", body)
 
     for rule_type, items in sections.items():
         await mark_notified([item["item_key"] for item in items])
