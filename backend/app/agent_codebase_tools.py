@@ -150,6 +150,32 @@ async def _run_git(*args: str) -> str:
     return stdout.decode(errors="replace")
 
 
+def _label_for_codebase_tool(name: str, tool_input: dict) -> str:
+    """Progress-signal fix (2026-09-07): run_agentic_loop used to show one
+    static "Consulting the X Agent" label for an entire consult, no matter
+    how many internal read_file/git_log/etc. rounds it took -- confirmed
+    live to have actually hit a multi-thousand-token silent stall with
+    zero visible text in one real case (see run_agentic_loop's own comment
+    on thinking/max_tokens). Mirrors tool_labels.py's per-tool-name
+    pattern, just one level deeper -- these are the specific internal
+    actions Frank's own outer turn never sees."""
+    if name == "read_file":
+        return f"Reading {tool_input['path']}"
+    if name == "list_directory":
+        return f"Looking in {tool_input['path']}"
+    if name == "git_log":
+        return "Checking recent commits"
+    if name == "git_diff":
+        return "Checking the diff"
+    if name == "git_show":
+        return f"Looking at commit {tool_input['ref']}"
+    if name == "run_build_check":
+        return f"Running a {tool_input['target']} build check"
+    if name == "propose_file_edit":
+        return "Proposing a file edit"
+    return "Working on it"
+
+
 async def execute_codebase_tool(name: str, tool_input: dict, websocket) -> str:
     try:
         if name == "read_file":
@@ -332,6 +358,8 @@ async def run_agentic_loop(
         for block in final_message.content:
             if block.type != "tool_use":
                 continue
+            label = _label_for_codebase_tool(block.name, block.input)
+            await websocket.send_text(f"\n[tool_start]{json.dumps({'label': label})}")
             result = await execute_codebase_tool(block.name, block.input, websocket)
             # Real audit trail for each individual inner action (read_file,
             # git_log, propose_file_edit, etc.) -- main.py's own dispatch

@@ -1040,14 +1040,24 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 # generic branch below and show as one confusing raw SDK
                 # error string in the chat transcript, with zero
                 # persistent signal anywhere else in the app -- the status
-                # header stayed "SYSTEM NOMINAL" throughout. error.type is
-                # the SDK's own structured field (immune to message-
-                # wording changes, unlike substring-matching str(error));
-                # "billing_error" is the real value Anthropic sends for
-                # this exact case. Must be caught before the generic
-                # `except Exception` below, since APIStatusError is a
-                # subclass of it.
-                if getattr(error, "type", None) == "billing_error":
+                # header stayed "SYSTEM NOMINAL" throughout. Originally
+                # checked only `error.type == "billing_error"`, assumed
+                # from a synthetic test -- a real credit-exhaustion error
+                # hit live during a later feature's own testing that same
+                # night proved the actual value Anthropic sends for this
+                # exact "credit balance is too low" case is
+                # "invalid_request_error", not "billing_error" (confirmed
+                # directly from the real response body). Kept the
+                # structured-type check (real "billing_error" cases may
+                # exist for other billing conditions) and added a message
+                # substring fallback for the case actually observed live,
+                # rather than trusting the assumed value alone. Must be
+                # caught before the generic `except Exception` below,
+                # since APIStatusError is a subclass of it.
+                is_credit_exhaustion = getattr(error, "type", None) == "billing_error" or (
+                    "credit balance" in str(error).lower()
+                )
+                if is_credit_exhaustion:
                     await set_credits_exhausted()
                     message = (
                         "Frank is temporarily unavailable — the Anthropic account has run "

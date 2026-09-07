@@ -183,6 +183,42 @@ async def _research_sub_question(client: AsyncAnthropic, question: str) -> dict:
         return {"question": question, "answer": "", "citations": [], "error": str(error)}
 
 
+async def _research_sub_questions_with_progress(
+    client: AsyncAnthropic, sub_questions: list[str], websocket
+) -> list[dict]:
+    """Progress-signal fix (2026-09-07): a blind asyncio.gather() left the
+    single "Researching N angles" label static for the entire parallel
+    phase, no matter how long it actually took. Sends one incremental
+    update per sub-question as it actually finishes -- only when there's
+    more than one, since a single sub-question's own "Researching that
+    angle" label already covers the no-parallelism case, and a "1 of 1"
+    message here would just be a redundant extra flash right before
+    synthesis starts.
+
+    Results are written back by original index, not completion order --
+    asyncio.as_completed() only tells us WHEN something finished, not
+    which one, and _format_sub_answers_for_synthesis()'s "Angle 1/2/3..."
+    numbering depends on the original decomposition order being
+    preserved, not the (nondeterministic) order sub-questions happen to
+    resolve in."""
+    if len(sub_questions) == 1:
+        return [await _research_sub_question(client, sub_questions[0])]
+
+    async def _indexed(index: int, question: str) -> tuple[int, dict]:
+        return index, await _research_sub_question(client, question)
+
+    tasks = [asyncio.create_task(_indexed(i, q)) for i, q in enumerate(sub_questions)]
+    sub_answers: list[dict | None] = [None] * len(tasks)
+    completed = 0
+    for coro in asyncio.as_completed(tasks):
+        index, result = await coro
+        sub_answers[index] = result
+        completed += 1
+        label = f"Researched {completed} of {len(tasks)} angles"
+        await websocket.send_text(f"\n[tool_start]{json.dumps({'label': label})}")
+    return sub_answers
+
+
 def _format_sub_answers_for_synthesis(sub_answers: list[dict]) -> str:
     parts = []
     for i, sub in enumerate(sub_answers, start=1):
@@ -213,7 +249,7 @@ async def execute_research_agent_tool_call(name: str, tool_input: dict, client: 
 
     label = "Researching that angle" if len(sub_questions) == 1 else f"Researching {len(sub_questions)} angles"
     await websocket.send_text(f"\n[tool_start]{json.dumps({'label': label})}")
-    sub_answers = await asyncio.gather(*(_research_sub_question(client, q) for q in sub_questions))
+    sub_answers = await _research_sub_questions_with_progress(client, sub_questions, websocket)
 
     await websocket.send_text(f"\n[tool_start]{json.dumps({'label': 'Cross-checking and synthesizing'})}")
     synthesis_prompt = (
