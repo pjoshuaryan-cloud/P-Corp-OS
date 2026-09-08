@@ -267,7 +267,18 @@ def generate_pdf_document(title: str, content: str, document_type: str = "docume
     story.extend(_markdown_to_flowables(content, styles))
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    filename = f"{_slugify(document_type)}-{_slugify(title)}-{timestamp}.pdf"
+    type_slug = _slugify(document_type)
+    title_slug = _slugify(title)
+    # Real bug found live (2026-09-09): a natural title restates the
+    # document type ("Invoice INV-001 - Herbish" for document_type=
+    # "invoice"), so prepending type_slug unconditionally produced doubled
+    # prefixes like "invoice-invoice-inv-001-herbish...". Skip the prefix
+    # when the title's own slug already starts with it -- applies equally
+    # to "quote"/"proposal"/etc., not just this one case.
+    if title_slug == type_slug or title_slug.startswith(f"{type_slug}-"):
+        filename = f"{title_slug}-{timestamp}.pdf"
+    else:
+        filename = f"{type_slug}-{title_slug}-{timestamp}.pdf"
     output_path = DOCS_DIR / filename
 
     doc = SimpleDocTemplate(

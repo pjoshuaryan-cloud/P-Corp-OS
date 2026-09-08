@@ -251,7 +251,19 @@ public final class BackendClient: ObservableObject {
     /// URLSession retains itself until told otherwise.
     private func openTask() -> URLSessionWebSocketTask {
         session?.invalidateAndCancel()
-        let newSession = URLSession(configuration: BackendURLSession.configuration)
+        // Real bug found live (2026-09-08, "connection drops mid-reply,
+        // most days"): this used to build from `BackendURLSession.
+        // configuration`, which sets `timeoutIntervalForResource = 10` --
+        // a hard cap on this task's *total* lifetime, not an idle timeout.
+        // Every chat connection was being killed by URLSession itself
+        // exactly 10 seconds after opening, regardless of whether Frank
+        // was mid-reply -- see BackendURLSession.webSocketConfiguration's
+        // own doc comment for the full root-cause writeup. This socket is
+        // meant to stay open for an entire, possibly long-running,
+        // multi-tool-call conversation turn (and beyond, across turns) --
+        // it needs the fast 10s handshake-failure behavior but must not
+        // inherit a 10s life span.
+        let newSession = URLSession(configuration: BackendURLSession.webSocketConfiguration)
         session = newSession
         let task = newSession.webSocketTask(with: wsURL)
         // Real bug found live (2026-09-05, multi-attach): Apple's own docs
