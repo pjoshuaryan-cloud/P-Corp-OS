@@ -1,6 +1,7 @@
 import SwiftUI
 import PCorpKit
 import PhotosUI
+import QuickLook
 import UniformTypeIdentifiers
 
 /// The real War Room screen (2026-08-12, restyled to match desktop
@@ -834,6 +835,7 @@ private struct ChatBubble: View {
     /// since neither existed on iOS before this.
     var runningTool: String? = nil
     @Environment(\.appTheme) private var theme
+    @State private var previewURL: URL?
 
     private var isUser: Bool { message.role == "user" }
 
@@ -852,6 +854,23 @@ private struct ChatBubble: View {
                     attachments: message.attachments,
                     storedAttachmentNames: message.storedAttachmentNames
                 )
+                // Real PDFs Frank generated (2026-09-09, "viewable &
+                // saveable" fix) -- fetched over the network (no
+                // filesystem access to the Mac from a phone), then shown
+                // via SwiftUI's own native QuickLook integration.
+                ForEach(message.generatedDocuments) { document in
+                    GeneratedDocumentRow(document: document) {
+                        Task {
+                            guard let (data, _) = try? await BackendURLSession.shared.data(
+                                from: BackendClient.documentURL(filename: document.filename)
+                            ) else { return }
+                            let tempURL = FileManager.default.temporaryDirectory
+                                .appendingPathComponent(document.filename)
+                            try? data.write(to: tempURL)
+                            previewURL = tempURL
+                        }
+                    }
+                }
                 if isPending, let runningTool {
                     HStack(spacing: 6) {
                         TypingIndicatorDots()
@@ -904,6 +923,7 @@ private struct ChatBubble: View {
             if !isUser { Spacer(minLength: 40) }
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+        .quickLookPreview($previewURL)
     }
 }
 

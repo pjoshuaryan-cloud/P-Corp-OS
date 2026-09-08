@@ -75,6 +75,28 @@ public struct SentAttachment: Identifiable {
     }
 }
 
+/// A real PDF Frank generated this turn (2026-09-09, "viewable & saveable"
+/// fix) -- `filename` is the real name on disk under
+/// backend/data/generated_documents/, used both by desktop's direct
+/// same-machine file access and iOS's GET /documents/{filename} fetch.
+/// The first case of Frank attaching something to his own reply --
+/// AttachmentViews.swift's MessageAttachmentsView is deliberately not
+/// reused for this, see its own doc comment.
+public struct GeneratedDocument: Identifiable, Equatable {
+    public let id = UUID()
+    public let filename: String
+    public let title: String
+
+    public init(filename: String, title: String) {
+        self.filename = filename
+        self.title = title
+    }
+
+    public static func == (lhs: GeneratedDocument, rhs: GeneratedDocument) -> Bool {
+        lhs.filename == rhs.filename && lhs.title == rhs.title
+    }
+}
+
 /// A single turn in the conversation — user or assistant. Mirrors
 /// backend/app/db.py's `messages` table. Conversations can now start fresh
 /// (startNewConversation below) — durable memory, not the transcript, is
@@ -98,17 +120,26 @@ public struct ChatMessage: Identifiable {
     /// every reconnect vs. just knowing one was attached), now covering
     /// every attachment kind rather than only images.
     public var storedAttachmentNames: [String] = []
+    /// Real PDFs Frank generated as part of this reply -- a list since a
+    /// turn could in principle call generate_pdf_document more than once.
+    /// Populated live via the [document_generated] sentinel, or reconstructed
+    /// on history reload from the same messages.attachments column the
+    /// backend now also populates for the assistant role (see
+    /// HistoryAttachmentEntry/loadHistory() below).
+    public var generatedDocuments: [GeneratedDocument] = []
 
     public init(
         role: String,
         content: String,
         attachments: [SentAttachment] = [],
-        storedAttachmentNames: [String] = []
+        storedAttachmentNames: [String] = [],
+        generatedDocuments: [GeneratedDocument] = []
     ) {
         self.role = role
         self.content = content
         self.attachments = attachments
         self.storedAttachmentNames = storedAttachmentNames
+        self.generatedDocuments = generatedDocuments
     }
 }
 
@@ -307,6 +338,20 @@ public final class BackendClient: ObservableObject {
 
     private var historyURL: URL {
         var components = URLComponents(string: "http://\(BackendHost.host):8731/history")!
+        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
+        return components.url!
+    }
+
+    /// iOS-only (2026-09-09, "viewable & saveable" PDFs) -- the phone has
+    /// no access to the Mac's filesystem, unlike desktop, which reads
+    /// generated PDFs straight off local disk via ProjectPaths.repoRoot
+    /// instead of calling this at all. Mirrors historyURL's exact shape.
+    /// `static`, not an instance method like the private URL builders
+    /// above -- it depends on nothing but BackendHost/AuthToken (both
+    /// already static), and ChatBubble (where this is actually called
+    /// from) has no BackendClient instance of its own to call through.
+    public static func documentURL(filename: String) -> URL {
+        var components = URLComponents(string: "http://\(BackendHost.host):8731/documents/\(filename)")!
         components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
         return components.url!
     }
@@ -623,10 +668,17 @@ public final class BackendClient: ObservableObject {
     private struct WireAttachment: Encodable { let media_type: String; let filename: String; let data: String }
     private struct WirePayload: Encodable { let text: String; let attachments: [WireAttachment] }
 
+    /// One shape covering two real cases sharing the same messages.attachments
+    /// column (2026-09-09) -- a user row's real attachment (filename/
+    /// original_name/media_type) or an assistant row's generated PDF
+    /// (filename/title). Fields optional so decoding a whole [HistoryEntry]
+    /// array doesn't throw when a single row is the other case's shape --
+    /// loadHistory() below picks which fields it reads based on entry.role.
     private struct HistoryAttachmentEntry: Decodable {
-        let filename: String
-        let original_name: String
-        let media_type: String
+        let filename: String?
+        let original_name: String?
+        let media_type: String?
+        let title: String?
     }
 
     private struct HistoryEntry: Decodable {
@@ -641,6 +693,18 @@ public final class BackendClient: ObservableObject {
             let (data, _) = try await BackendURLSession.shared.data(from: historyURL)
             let entries = try JSONDecoder().decode([HistoryEntry].self, from: data)
             messages = entries.map { entry in
+                if entry.role == "assistant" {
+                    // Real PDFs Frank generated in a since-reopened
+                    // conversation (2026-09-09) -- reconstructed from the
+                    // same column the live [document_generated] sentinel
+                    // populates going forward, see run_claude_turn's own
+                    // comment in main.py.
+                    let generatedDocuments = (entry.attachments ?? []).compactMap { attachment -> GeneratedDocument? in
+                        guard let filename = attachment.filename, let title = attachment.title else { return nil }
+                        return GeneratedDocument(filename: filename, title: title)
+                    }
+                    return ChatMessage(role: entry.role, content: entry.content, generatedDocuments: generatedDocuments)
+                }
                 // A row written after the 2026-09-05 migration carries real
                 // attachments (each with its own original filename); an
                 // older row only has image_path -- still shown, just with
@@ -648,7 +712,7 @@ public final class BackendClient: ObservableObject {
                 // re-fetch" reasoning as before.
                 let storedNames: [String]
                 if let attachments = entry.attachments, !attachments.isEmpty {
-                    storedNames = attachments.map(\.original_name)
+                    storedNames = attachments.compactMap(\.original_name)
                 } else if entry.image_path != nil {
                     storedNames = ["Image"]
                 } else {
@@ -669,6 +733,7 @@ public final class BackendClient: ObservableObject {
 
     private struct NotificationPayload: Decodable { let title: String; let body: String }
     private struct ToolStartPayload: Decodable { let label: String }
+    private struct DocumentGeneratedPayload: Decodable { let filename: String; let title: String }
     // One private wire-decode struct per sentinel, matching each backend
     // payload's exact shape unchanged -- ApprovalRequest itself is no
     // longer directly Decodable (it's a union of all three kinds' fields,
@@ -688,6 +753,7 @@ public final class BackendClient: ObservableObject {
     private static let automationApprovalRequestPrefix = "\n[automation_approval_request]"
     private static let alphaModeApprovalRequestPrefix = "\n[alpha_mode_approval_request]"
     private static let toolStartPrefix = "\n[tool_start]"
+    private static let documentGeneratedPrefix = "\n[document_generated]"
 
     private func listen() {
         guard let task else { return }
@@ -766,6 +832,15 @@ public final class BackendClient: ObservableObject {
                             if let data = payloadText.data(using: .utf8),
                                let payload = try? JSONDecoder().decode(ToolStartPayload.self, from: data) {
                                 self.runningTool = payload.label
+                            }
+                        } else if text.hasPrefix(Self.documentGeneratedPrefix) {
+                            let payloadText = String(text.dropFirst(Self.documentGeneratedPrefix.count))
+                            if let data = payloadText.data(using: .utf8),
+                               let payload = try? JSONDecoder().decode(DocumentGeneratedPayload.self, from: data),
+                               let lastIndex = self.messages.indices.last, self.messages[lastIndex].role == "assistant" {
+                                self.messages[lastIndex].generatedDocuments.append(
+                                    GeneratedDocument(filename: payload.filename, title: payload.title)
+                                )
                             }
                         } else {
                             // Real text (or a "\n[backend error: ...]" string,

@@ -1162,6 +1162,7 @@ private struct ChatBubble: View {
         } else if let runningTool {
             VStack(alignment: .leading, spacing: 6) {
                 SimpleMarkdownView(text: message.content)
+                generatedDocumentRows
                 HStack(spacing: 6) {
                     TypingIndicatorDots()
                     Text(runningTool)
@@ -1170,7 +1171,28 @@ private struct ChatBubble: View {
                 }
             }
         } else {
-            SimpleMarkdownView(text: message.content)
+            VStack(alignment: .leading, spacing: 6) {
+                SimpleMarkdownView(text: message.content)
+                generatedDocumentRows
+            }
+        }
+    }
+
+    // Real PDFs Frank generated (2026-09-09, "viewable & saveable" fix) --
+    // desktop already runs on the same Mac as the backend, so this reads
+    // the real file straight off local disk (ProjectPaths.repoRoot, same
+    // shortcut already used for auth_token/Knowledge docs) rather than
+    // round-tripping over HTTP the way iOS has to. NSWorkspace.shared.open
+    // hands it to the user's default PDF viewer (Preview), which already
+    // provides full view + save (Cmd+S, drag out, Reveal in Finder)
+    // natively -- no custom save-panel code needed.
+    @ViewBuilder
+    private var generatedDocumentRows: some View {
+        ForEach(message.generatedDocuments) { document in
+            GeneratedDocumentRow(document: document) {
+                let url = ProjectPaths.repoRoot.appendingPathComponent("backend/data/generated_documents/\(document.filename)")
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 }

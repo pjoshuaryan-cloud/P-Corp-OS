@@ -106,6 +106,38 @@ public struct MessageAttachmentsView: View {
     }
 }
 
+/// A real PDF Frank generated, shown in his own reply bubble (2026-09-09,
+/// "viewable & saveable" fix) -- deliberately not folded into
+/// MessageAttachmentsView above, which documents itself as "only ever used
+/// from a user message's own rendering" and has no tap-handling shape at
+/// all. Reuses that view's own placeholderRow styling for visual
+/// consistency; `onTap` is platform-specific (desktop: NSWorkspace against
+/// the real local file; iOS: fetch over GET /documents/{filename} then
+/// QuickLook), so it lives in the caller, not here.
+public struct GeneratedDocumentRow: View {
+    let document: GeneratedDocument
+    let onTap: () -> Void
+    @Environment(\.appTheme) private var theme
+
+    public init(document: GeneratedDocument, onTap: @escaping () -> Void) {
+        self.document = document
+        self.onTap = onTap
+    }
+
+    public var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.richtext.fill")
+                Text(document.title)
+                    .lineLimit(1)
+            }
+            .font(PCorpFont.body(12))
+            .foregroundStyle(theme.accentText.opacity(0.8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 func platformImage(_ image: PlatformImage) -> Image {
     #if canImport(UIKit)
     return Image(uiImage: image)

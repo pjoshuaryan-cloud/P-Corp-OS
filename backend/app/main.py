@@ -121,7 +121,7 @@ from app.email_db import init_email_db
 from app.email_tools import EMAIL_TOOL_NAMES, EMAIL_TOOLS, execute_email_tool_call
 from app import google_oauth
 from app.finance_tools import FINANCE_TOOL_NAMES, FINANCE_TOOLS, build_finance_block, execute_finance_tool_call
-from app.documents import DOCUMENTS_TOOL_NAMES, DOCUMENTS_TOOLS, execute_documents_tool_call
+from app.documents import DOCS_DIR, DOCUMENTS_TOOL_NAMES, DOCUMENTS_TOOLS, execute_documents_tool_call
 from app.finance import (
     compute_concentration_metrics,
     compute_luno_zar_value,
@@ -560,6 +560,24 @@ async def knowledge_content(filename: str, _: None = Depends(verify_token)) -> d
     # filename is validated against a fixed allowlist inside read_doc, not
     # trusted as a free-form path -- see app/knowledge.py.
     return {"content": await read_knowledge_doc(filename)}
+
+
+@app.get("/documents/{filename}")
+async def generated_document(filename: str, _: None = Depends(verify_token)) -> Response:
+    # Real gap found live (2026-09-09): generate_pdf_document() only ever
+    # returned a raw Mac-local absolute path -- meaningless on iOS, which
+    # has no filesystem access to this Mac at all. Desktop reads generated
+    # PDFs straight off local disk instead (ProjectPaths.repoRoot, same
+    # "same-machine shortcut" already used for Knowledge docs above); this
+    # route exists for iOS. filename isn't a fixed allowlist like
+    # Knowledge's own (these are dynamically generated, one per document),
+    # so the boundary check is a direct parent-directory match instead --
+    # agent_file_safety.py's resolve_repo_path() doesn't apply here, it
+    # explicitly denies everything under backend/data.
+    candidate = (DOCS_DIR / filename).resolve()
+    if candidate.parent != DOCS_DIR.resolve() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Document not found")
+    return Response(content=candidate.read_bytes(), media_type="application/pdf")
 
 
 @app.get("/trading-division/dashboard")
@@ -1013,7 +1031,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
             )
 
             try:
-                assistant_reply = await run_claude_turn(
+                assistant_reply, generated_documents = await run_claude_turn(
                     client, system_prompt, history, websocket, conversation_id, attachments=content_blocks
                 )
             except WebSocketDisconnect:
@@ -1094,7 +1112,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
             # single-row UPDATE, correct as a no-op when nothing was set.
             await clear_credits_exhausted()
             history.append({"role": "assistant", "content": assistant_reply})
-            await save_message(conversation_id, "assistant", assistant_reply)
+            await save_message(conversation_id, "assistant", assistant_reply, attachments=generated_documents or None)
             await websocket.send_text("\n[done]")
     except WebSocketDisconnect:
         pass
@@ -1107,7 +1125,7 @@ async def run_claude_turn(
     websocket: WebSocket,
     conversation_id: int,
     attachments: list[dict] | None = None,
-) -> str:
+) -> tuple[str, list[dict]]:
     """Runs one user turn to completion, including any save_memory round
     trips — Frank may call the tool, see the result, then keep talking. Text
     streams to the websocket as it arrives, across every round. `history` is
@@ -1115,6 +1133,13 @@ async def run_claude_turn(
     context for the rest of this live connection); the caller is responsible
     for appending the single final assistant text turn once this returns,
     since that's the flat, plain-text form persisted to SQLite.
+
+    Also returns any PDFs generated this turn (2026-09-09, "viewable &
+    saveable" fix) — same generic `attachments` shape/column db.py's
+    save_message already has, just populated for the assistant role for
+    the first time, so a generated-document button survives reopening the
+    conversation instead of only existing for the live [document_generated]
+    websocket sentinel.
 
     attachments (2026-08-10, Design Critic; generalized 2026-09-05 for
     multi-attach documents) are this turn's already-built content blocks,
@@ -1128,6 +1153,7 @@ async def run_claude_turn(
     same "don't re-inject an old attachment" reasoning as reopening a past
     conversation."""
     assistant_text = ""
+    generated_documents: list[dict] = []
     while True:
         async with client.messages.stream(
             model=MODEL,
@@ -1188,7 +1214,7 @@ async def run_claude_turn(
             final_message = await stream.get_final_message()
 
         if final_message.stop_reason != "tool_use":
-            return assistant_text
+            return assistant_text, generated_documents
 
         history.append({"role": "assistant", "content": final_message.content})
         tool_results = []
@@ -1341,6 +1367,19 @@ async def run_claude_turn(
             elif block.name in ("add_task", "update_task_status", "delete_task"):
                 notification = json.dumps({"title": "Task updated", "body": result})
                 await websocket.send_text(f"\n[notify]{notification}")
+            elif block.name == "generate_pdf_document" and result.startswith("PDF saved to "):
+                # Real fix (2026-09-09): "viewable & saveable" PDFs -- the
+                # result string is Frank's own context, still just a raw
+                # path; this is the real, structured signal the UI acts on.
+                # A distinct sentinel, not folded into [notify], since this
+                # attaches to the message itself (a real file to open),
+                # not a transient banner.
+                document_filename = Path(result.removeprefix("PDF saved to ")).name
+                document_title = block.input.get("title", document_filename)
+                generated_documents.append({"filename": document_filename, "title": document_title})
+                await websocket.send_text(
+                    f"\n[document_generated]{json.dumps({'filename': document_filename, 'title': document_title})}"
+                )
 
             automation_notification = await check_and_fire_automation(block.name, block.input, client, result)
             if automation_notification:
