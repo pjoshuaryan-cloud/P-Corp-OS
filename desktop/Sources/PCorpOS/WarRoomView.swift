@@ -1303,10 +1303,14 @@ private struct FrankOrb: View {
 
     /// Deterministic (fixed seed), not true randomness — same layout every
     /// launch, matching the rest of the shell's "reproducible, not jittery
-    /// between runs" pattern. Bumped again, 260 -> 450, with larger dot sizes
+    /// between runs" pattern. Bumped once, 260 -> 450, with larger dot sizes
     /// and higher base opacity per direct feedback ("more particles... it
-    /// must be bolder") — this pass deliberately goes for a denser, more
-    /// solid-reading cluster rather than a faint scatter.
+    /// must be bolder"). Briefly tried 450 -> 250 (2026-09-09) as a CPU fix,
+    /// then reverted: a diagnostic build with a fully empty Canvas (still
+    /// ticking at 15fps) measured the *same* ~40% CPU as 450 particles --
+    /// proof the draw content was never the cost, only tick frequency is.
+    /// Cutting particle count bought nothing, so it stayed at 450 rather
+    /// than eating the "bolder" feedback for no real benefit.
     private static let particles: [Particle] = {
         var rng = SeededGenerator(seed: 7)
         return (0..<450).map { _ in
@@ -1336,7 +1340,20 @@ private struct FrankOrb: View {
             // since those come from ordinary SwiftUI view updates, not
             // from this schedule; only the continuous idle/decorative
             // ticking stops.
-            TimelineView(.animation(paused: reduceMotion)) { timeline in
+            //
+            // Real CPU issue found live (2026-09-09): `.animation` schedules
+            // as often as the display can refresh (60-120fps), and every
+            // tick redrew all 450 particles with a fresh Path+fill each --
+            // sustained 85-92% CPU confirmed via `sample`. The motion this
+            // produces is a slow shimmer (~12.6s period), so sampling it at
+            // display refresh rate bought nothing visually. 15fps is well
+            // above what's needed to read as smooth for a wave that slow.
+            // Both branches must share one concrete TimelineSchedule type
+            // (a ternary between .animation and .periodic won't typecheck),
+            // so Reduce Motion is expressed as a 1-hour interval -- real
+            // state changes still redraw normally via ordinary SwiftUI
+            // updates, only the decorative ticking goes effectively static.
+            TimelineView(.periodic(from: .now, by: reduceMotion ? 3600 : 1.0 / 15.0)) { timeline in
                 Canvas { context, size in
                     let center = CGPoint(x: size.width / 2, y: size.height / 2)
                     let maxRadius = min(size.width, size.height) / 2
