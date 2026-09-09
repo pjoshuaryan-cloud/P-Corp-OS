@@ -11,11 +11,7 @@ public final class AutomationsClient: ObservableObject {
 
     public init() {}
 
-    private func url(path: String) -> URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731\(path)")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private func url(path: String) -> URL { BackendHost.url(path: path) }
 
     public func fetch() async {
         isLoading = true

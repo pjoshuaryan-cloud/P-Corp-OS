@@ -11,11 +11,7 @@ public final class AlphaModeDashboardClient: ObservableObject {
 
     public init() {}
 
-    private var url: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/alpha-mode/dashboard")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var url: URL { BackendHost.url(path: "/alpha-mode/dashboard") }
 
     public func fetch() async {
         isLoading = true

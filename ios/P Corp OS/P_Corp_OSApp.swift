@@ -12,7 +12,12 @@ struct P_Corp_OSApp: App {
         // read back from the Keychain here (KeychainTokenStore.swift,
         // 2026-08-12 -- replaced the first pass's UserDefaults storage,
         // a flagged scope cut, not an oversight).
-        BackendHost.host = "100.93.170.24"
+        //
+        // localHost, not host (2026-09-09, Infrastructure Independence
+        // Stage 2): this is what BackendHost.environment == .local
+        // resolves to on this platform -- same value, same mechanism,
+        // renamed once a real .staging/.production also became possible.
+        BackendHost.localHost = "100.93.170.24"
         AuthToken.provider = {
             KeychainTokenStore.load()
         }

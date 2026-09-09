@@ -13,16 +13,10 @@ public final class FinanceClient: ObservableObject {
 
     public init() {}
 
-    private var url: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/finance/dashboard")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var url: URL { BackendHost.url(path: "/finance/dashboard") }
 
     private func url(path: String, extraItems: [URLQueryItem] = []) -> URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731\(path)")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")] + extraItems
-        return components.url!
+        BackendHost.url(path: path, extraQueryItems: extraItems)
     }
 
     public func fetch() async {

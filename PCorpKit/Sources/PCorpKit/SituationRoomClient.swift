@@ -15,11 +15,7 @@ public final class SituationRoomClient: ObservableObject {
 
     public init() {}
 
-    private var url: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/situation-room")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var url: URL { BackendHost.url(path: "/situation-room") }
 
     public func fetch() async {
         do {

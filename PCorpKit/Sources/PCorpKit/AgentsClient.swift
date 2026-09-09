@@ -11,11 +11,7 @@ public final class AgentsClient: ObservableObject {
 
     public init() {}
 
-    private var url: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/agents")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var url: URL { BackendHost.url(path: "/agents") }
 
     public func fetch() async {
         isLoading = true

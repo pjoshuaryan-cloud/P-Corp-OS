@@ -21,12 +21,7 @@ public final class SearchClient: ObservableObject {
     public init() {}
 
     private func url(for query: String) -> URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/search")!
-        components.queryItems = [
-            URLQueryItem(name: "q", value: query),
-            URLQueryItem(name: "token", value: AuthToken.current ?? ""),
-        ]
-        return components.url!
+        BackendHost.url(path: "/search", extraQueryItems: [URLQueryItem(name: "q", value: query)])
     }
 
     /// Call on every keystroke -- cancels any pending/in-flight search

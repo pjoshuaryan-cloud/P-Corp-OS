@@ -54,9 +54,11 @@ final class ActivityTracker {
     }
 
     private func post(_ name: String) async {
-        var components = URLComponents(string: "http://127.0.0.1:8731/activity/log")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        var request = URLRequest(url: components.url!)
+        // Real gap found in Infrastructure Independence Stage 1
+        // (2026-09-09): this hardcoded 127.0.0.1 directly, bypassing
+        // BackendHost entirely -- fixed the same way as VoiceOutput.swift's
+        // identical issue.
+        var request = URLRequest(url: BackendHost.url(path: "/activity/log"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONEncoder().encode(ActivityLogPayload(appName: name))

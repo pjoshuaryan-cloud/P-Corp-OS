@@ -45,11 +45,13 @@ final class VoiceOutput: NSObject, ObservableObject {
     /// can't start speaking anyway.
     private var generation = 0
 
-    private var speakURL: URL {
-        var components = URLComponents(string: "http://127.0.0.1:8731/speak")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    // Real gap found in Infrastructure Independence Stage 1 (2026-09-09):
+    // this hardcoded 127.0.0.1 directly, bypassing BackendHost entirely --
+    // harmless only because desktop's .local default happened to equal
+    // this literal. Now goes through the same shared builder every other
+    // client uses, so an environment switch actually reaches this call
+    // site too.
+    private var speakURL: URL { BackendHost.url(path: "/speak") }
 
     func speak(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)

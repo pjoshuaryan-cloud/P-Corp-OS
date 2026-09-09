@@ -11,13 +11,16 @@ import PCorpKit
 /// identically on iOS), so this needed no real rework -- except the one
 /// platform-specific fix below.
 ///
-/// Real fix, not copied verbatim: desktop's `speakURL` hardcodes
-/// "127.0.0.1" because the backend runs on the same Mac the app does. On
-/// iOS the backend runs on Joshua's Mac, not the phone -- BackendClient.swift
-/// (PCorpKit) already solves this exact problem for chat via
-/// `BackendHost.host` (set to the Mac's Tailscale IP in P_Corp_OSApp.swift),
-/// so this uses the same host rather than a hardcoded loopback address that
-/// would silently fail on a real device.
+/// Real fix, not copied verbatim: on iOS the backend runs on Joshua's Mac,
+/// not the phone -- BackendClient.swift (PCorpKit) already solves this
+/// exact problem for chat via `BackendHost` (its `.local` environment
+/// resolves to the Mac's Tailscale IP, set once in P_Corp_OSApp.swift), so
+/// this uses the same shared builder rather than a hardcoded loopback
+/// address that would silently fail on a real device. (Desktop's own
+/// `speakURL` used to hardcode "127.0.0.1" directly for the same reason
+/// it didn't matter there -- fixed in the 2026-09-09 Infrastructure
+/// Independence pass to go through the same builder too, so an eventual
+/// environment switch reaches it.)
 @MainActor
 final class VoiceOutput: NSObject, ObservableObject {
     @Published private(set) var isSpeaking = false
@@ -41,11 +44,7 @@ final class VoiceOutput: NSObject, ObservableObject {
     /// can't start speaking anyway.
     private var generation = 0
 
-    private var speakURL: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/speak")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var speakURL: URL { BackendHost.url(path: "/speak") }
 
     func speak(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)

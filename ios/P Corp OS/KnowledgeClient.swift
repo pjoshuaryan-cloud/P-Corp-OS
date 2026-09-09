@@ -24,11 +24,7 @@ final class KnowledgeClient: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
 
-    private var listURL: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/knowledge")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var listURL: URL { BackendHost.url(path: "/knowledge") }
 
     func fetch() async {
         isLoading = true
@@ -43,9 +39,7 @@ final class KnowledgeClient: ObservableObject {
     }
 
     func fetchContent(filename: String) async -> String {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/knowledge/\(filename)")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        guard let url = components.url else { return "Couldn't load \(filename)." }
+        let url = BackendHost.url(path: "/knowledge/\(filename)")
         struct ContentResponse: Decodable { let content: String }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)

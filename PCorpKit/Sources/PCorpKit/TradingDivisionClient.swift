@@ -13,11 +13,7 @@ public final class TradingDivisionClient: ObservableObject {
 
     public init() {}
 
-    private var url: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/trading-division/dashboard")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var url: URL { BackendHost.url(path: "/trading-division/dashboard") }
 
     public func fetch() async {
         isLoading = true

@@ -113,6 +113,8 @@ from app.people_tools import PEOPLE_TOOL_NAMES, PEOPLE_TOOLS, build_people_block
 from app.finance_db import (
     dashboard_snapshot as finance_dashboard_snapshot,
     get_balance_history,
+    get_hf_markets_schedule,
+    get_luno_schedule,
     init_finance_db,
 )
 from app.calendar_tools import CALENDAR_TOOL_NAMES, CALENDAR_TOOLS, execute_calendar_tool_call
@@ -158,13 +160,20 @@ from app.connected_apps import (
 )
 from app.search import search_all
 from app.triggers import compute_status as compute_trigger_status, maybe_run_daily_digest, run_daily_digest
-from app.triggers_db import init_triggers_db, list_rules as list_trigger_rules, set_rule_enabled
+from app.triggers_db import (
+    get_digest_schedule,
+    get_market_movers_schedule,
+    init_triggers_db,
+    list_rules as list_trigger_rules,
+    set_rule_enabled,
+)
 from app.operations_db import init_operations_db, list_open_tasks
 from app.db import (
     clear_credits_exhausted,
     create_new_conversation,
     forget_memory_by_id,
     get_active_conversation_id,
+    get_credits_exhausted_since,
     get_focus_objective,
     init_db,
     list_conversations,
@@ -416,6 +425,43 @@ app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), na
 @app.get("/health")
 async def health(_: None = Depends(verify_token)) -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/status")
+async def status(_: None = Depends(verify_token)) -> dict:
+    # Real observability endpoint (2026-09-09, Infrastructure Independence
+    # Stage 2) -- deliberately separate from /health above, not an
+    # extension of it: the hang-watchdog calls /health every 30s expecting
+    # a fast response within a 2s timeout, and a real DB/integration check
+    # here could itself run slow under real load, which would make the
+    # watchdog misdiagnose a slow check as a hung process. Every field
+    # below traces to a real, already-existing check -- no fabricated
+    # status, same discipline connected_apps.py/trading_division.py
+    # already apply to their own domains.
+    try:
+        await get_active_conversation_id()
+        database_reachable = True
+    except Exception:
+        database_reachable = False
+
+    integrations = await compute_connected_apps_status()
+    digest_schedule = await get_digest_schedule()
+    market_movers_schedule = await get_market_movers_schedule()
+    luno_schedule = await get_luno_schedule()
+    hf_markets_schedule = await get_hf_markets_schedule()
+
+    return {
+        "backend": "online",
+        "database_reachable": database_reachable,
+        "credits_exhausted_since": await get_credits_exhausted_since(),
+        "integrations": integrations,
+        "background_jobs": {
+            "daily_digest": digest_schedule,
+            "market_movers_snapshot": market_movers_schedule,
+            "luno_snapshot": luno_schedule,
+            "hf_markets_snapshot": hf_markets_schedule,
+        },
+    }
 
 
 @app.get("/mobile")

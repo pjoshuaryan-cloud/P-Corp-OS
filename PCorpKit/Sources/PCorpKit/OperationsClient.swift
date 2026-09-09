@@ -11,11 +11,7 @@ public final class OperationsClient: ObservableObject {
 
     public init() {}
 
-    private var url: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/operations/tasks")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var url: URL { BackendHost.url(path: "/operations/tasks") }
 
     public func fetch() async {
         isLoading = true

@@ -14,11 +14,7 @@ public final class ConnectedAppsClient: ObservableObject {
 
     public init() {}
 
-    private var url: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/connected-apps")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var url: URL { BackendHost.url(path: "/connected-apps") }
 
     public func fetch() async {
         isLoading = true

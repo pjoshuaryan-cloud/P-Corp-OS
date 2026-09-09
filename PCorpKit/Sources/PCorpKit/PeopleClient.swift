@@ -16,11 +16,7 @@ public final class PeopleClient: ObservableObject {
 
     public init() {}
 
-    private var url: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/people/dashboard")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var url: URL { BackendHost.url(path: "/people/dashboard") }
 
     public func fetch() async {
         isLoading = true

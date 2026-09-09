@@ -25,17 +25,9 @@ public final class JoshxClient: ObservableObject {
 
     public init() {}
 
-    private var url: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/joshx/dashboard")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var url: URL { BackendHost.url(path: "/joshx/dashboard") }
 
-    private func url(path: String) -> URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731\(path)")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private func url(path: String) -> URL { BackendHost.url(path: path) }
 
     public func fetch() async {
         isLoading = true

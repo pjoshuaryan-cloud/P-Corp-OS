@@ -324,23 +324,17 @@ public final class BackendClient: ObservableObject {
     /// (search + date grouping) already makes any of them reachable.
     private static var hasStartedFreshThisLaunch = false
 
-    /// Host comes from BackendHost.host (2026-08-12) -- "127.0.0.1" by
-    /// default (desktop: same Mac as the backend, unreachable over the
-    /// network by design), settable by the iOS app to this Mac's
-    /// Tailscale IP. Token appended fresh at connect time (see
-    /// AuthToken.swift) — the backend rejects any connection without it
-    /// (SECURITY.md's local-auth fix).
-    private var wsURL: URL {
-        var components = URLComponents(string: "ws://\(BackendHost.host):8731/ws")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    /// Host/scheme/port come from BackendHost's current environment
+    /// (2026-08-12, extended to a real environment system 2026-09-09) --
+    /// "127.0.0.1" by default under `.local` (desktop: same Mac as the
+    /// backend, unreachable over the network by design), settable by the
+    /// iOS app to this Mac's Tailscale IP via `BackendHost.localHost`.
+    /// Token appended fresh at connect time (see AuthToken.swift) — the
+    /// backend rejects any connection without it (SECURITY.md's
+    /// local-auth fix).
+    private var wsURL: URL { BackendHost.wsURL(path: "/ws") }
 
-    private var historyURL: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/history")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var historyURL: URL { BackendHost.url(path: "/history") }
 
     /// iOS-only (2026-09-09, "viewable & saveable" PDFs) -- the phone has
     /// no access to the Mac's filesystem, unlike desktop, which reads
@@ -351,31 +345,21 @@ public final class BackendClient: ObservableObject {
     /// already static), and ChatBubble (where this is actually called
     /// from) has no BackendClient instance of its own to call through.
     public static func documentURL(filename: String) -> URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/documents/\(filename)")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
+        BackendHost.url(path: "/documents/\(filename)")
     }
 
-    private var newConversationURL: URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/conversations")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
-    }
+    private var newConversationURL: URL { BackendHost.url(path: "/conversations") }
 
     private func conversationListURL(query: String?) -> URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/conversations")!
-        var items = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
+        var extraItems: [URLQueryItem] = []
         if let query, !query.isEmpty {
-            items.append(URLQueryItem(name: "q", value: query))
+            extraItems.append(URLQueryItem(name: "q", value: query))
         }
-        components.queryItems = items
-        return components.url!
+        return BackendHost.url(path: "/conversations", extraQueryItems: extraItems)
     }
 
     private func activateURL(_ conversationID: Int) -> URL {
-        var components = URLComponents(string: "http://\(BackendHost.host):8731/conversations/\(conversationID)/activate")!
-        components.queryItems = [URLQueryItem(name: "token", value: AuthToken.current ?? "")]
-        return components.url!
+        BackendHost.url(path: "/conversations/\(conversationID)/activate")
     }
 
     /// Starts a fresh conversation on the backend, then reconnects so the
