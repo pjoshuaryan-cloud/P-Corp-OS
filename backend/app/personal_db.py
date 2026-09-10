@@ -19,6 +19,7 @@ GitHub.
 """
 
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -136,8 +137,22 @@ async def delete_habit(identifier: str) -> str | None:
         return row["title"]
 
 
-async def dashboard_snapshot() -> dict:
-    """Backs GET /personal/dashboard (the desktop tab)."""
+async def dashboard_snapshot(postgres_conn: Any = None) -> dict:
+    """Backs GET /personal/dashboard (the desktop tab).
+
+    Stage 4 prep (2026-09-10): a proof-of-concept dual-backend read. The
+    route (main.py) passes a live psycopg AsyncConnection here only when
+    DATA_BACKEND=postgres; otherwise this stays exactly today's SQLite
+    path, untouched. Every write in this file (add_goal, update_goal_status,
+    delete_goal, add_habit, delete_habit) is deliberately NOT part of this --
+    Stage 4 is reads only, writes are Stage 5.
+    """
+    if postgres_conn is not None:
+        return await _dashboard_snapshot_postgres(postgres_conn)
+    return await _dashboard_snapshot_sqlite()
+
+
+async def _dashboard_snapshot_sqlite() -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -151,6 +166,51 @@ async def dashboard_snapshot() -> dict:
             "WHERE deleted_at IS NULL ORDER BY id DESC"
         )
         habits = [dict(r) for r in await cursor.fetchall()]
+
+    return {"goals": goals, "habits": habits}
+
+
+async def _dashboard_snapshot_postgres(conn: Any) -> dict:
+    """Reads the same shape from personal.goals/personal.habits -- the
+    exact schema/column names the Stage 3 migration tooling already
+    creates and populates (backend/app/migration/manifest.py), so no new
+    mapping is needed here. created_at/target_date come back as real
+    Postgres types (str/datetime, not always plain str like SQLite) --
+    str()'d explicitly so the JSON shape matches the SQLite path exactly.
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id, title, status, target_date, notes, created_at FROM personal.goals "
+            "WHERE deleted_at IS NULL ORDER BY id DESC"
+        )
+        goal_rows = await cur.fetchall()
+        goals = [
+            {
+                "id": r[0],
+                "title": r[1],
+                "status": r[2],
+                "target_date": str(r[3]) if r[3] is not None else None,
+                "notes": r[4],
+                "created_at": str(r[5]) if r[5] is not None else None,
+            }
+            for r in goal_rows
+        ]
+
+        await cur.execute(
+            "SELECT id, title, cadence, notes, created_at FROM personal.habits "
+            "WHERE deleted_at IS NULL ORDER BY id DESC"
+        )
+        habit_rows = await cur.fetchall()
+        habits = [
+            {
+                "id": r[0],
+                "title": r[1],
+                "cadence": r[2],
+                "notes": r[3],
+                "created_at": str(r[4]) if r[4] is not None else None,
+            }
+            for r in habit_rows
+        ]
 
     return {"goals": goals, "habits": habits}
 

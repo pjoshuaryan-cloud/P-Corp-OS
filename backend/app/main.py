@@ -53,6 +53,7 @@ from pathlib import Path
 
 import anthropic
 import httpx
+import psycopg
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -233,6 +234,19 @@ from app.piper_tts import synthesize_wav_bytes
 # from __file__ instead of cwd is the actual fix, not a workaround.
 load_dotenv(Path(__file__).parent.parent / ".env")
 
+# Stage 4 prep (2026-09-10): a dual-backend read path, proven against a
+# local Postgres instance ahead of any real cloud one existing. Deliberately
+# a different variable from the Stage 3 migration tool's own
+# MIGRATION_POSTGRES_DSN (app/migration/replicate.py) -- that's a one-off
+# script's destination, this is the live app's read source; today they'd
+# point at the same local database for testing, but they're different
+# concerns that could legitimately diverge later (e.g. testing a fresh
+# migration while the live app keeps reading an already-verified copy).
+# Defaults to "sqlite" -- today's exact, unchanged behavior -- so leaving
+# this unset changes nothing about the other 11 domains or any write route.
+DATA_BACKEND = os.environ.get("DATA_BACKEND", "sqlite")
+CLOUD_POSTGRES_DSN = os.environ.get("CLOUD_POSTGRES_DSN")
+
 MODEL = "claude-sonnet-5"
 # Real bug found 2026-07-31: 1024 was cutting off longer replies mid-
 # generation (confirmed directly -- a multi-phase SOP relayed from the
@@ -399,6 +413,18 @@ async def lifespan(app: FastAPI):
     # snapshot just made it visible first.
     if not hasattr(app.state, "elevenlabs_client"):
         app.state.elevenlabs_client = httpx.AsyncClient(timeout=30.0)
+    # Stage 4 prep: only touched when DATA_BACKEND=postgres is explicitly
+    # set -- SQLite-mode startup (today's default, every real deployment
+    # right now) never reaches this block at all. Fails loud on a missing/
+    # unreachable DSN rather than silently falling back to SQLite, matching
+    # this codebase's own "fail loud on config errors" discipline elsewhere
+    # (e.g. digest_notification.py's check=True) -- a silent fallback here
+    # would mean a misconfigured cloud-read test looked like it passed
+    # while actually still reading local SQLite the whole time.
+    if DATA_BACKEND == "postgres" and not hasattr(app.state, "postgres_conn"):
+        if not CLOUD_POSTGRES_DSN:
+            raise RuntimeError("DATA_BACKEND=postgres requires CLOUD_POSTGRES_DSN to be set.")
+        app.state.postgres_conn = await psycopg.AsyncConnection.connect(CLOUD_POSTGRES_DSN)
     if not hasattr(app.state, "trigger_scheduler_task"):
         app.state.trigger_scheduler_task = asyncio.create_task(_trigger_scheduler_loop())
     if not hasattr(app.state, "calendar_sync_task"):
@@ -413,6 +439,9 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, "elevenlabs_client"):
         await app.state.elevenlabs_client.aclose()
         del app.state.elevenlabs_client
+    if hasattr(app.state, "postgres_conn"):
+        await app.state.postgres_conn.close()
+        del app.state.postgres_conn
 
 
 app = FastAPI(title="P Corp OS Backend", lifespan=lifespan)
@@ -634,10 +663,13 @@ async def trading_division_dashboard(_: None = Depends(verify_token)) -> dict:
 
 
 @app.get("/personal/dashboard")
-async def personal_dashboard(_: None = Depends(verify_token)) -> dict:
+async def personal_dashboard(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the desktop "Personal" section -- goals/habits only, see
-    # app/personal_db.py's own docstring for scope.
-    return await personal_dashboard_snapshot()
+    # app/personal_db.py's own docstring for scope. Stage 4 prep: this is
+    # the one route currently wired to the dual-backend proof of concept --
+    # every other route here is untouched and always reads SQLite.
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await personal_dashboard_snapshot(postgres_conn)
 
 
 @app.get("/joshx/dashboard")
