@@ -70,6 +70,7 @@ from app.alpha_mode_db import init_alpha_mode_db
 from app.alpha_mode_supabase import dashboard_snapshot as alpha_mode_dashboard_snapshot
 from app.alpha_mode_tools import ALPHA_MODE_TOOLS, build_alpha_mode_block, execute_alpha_mode_tool_call
 from app.auth import get_or_create_token
+from app.auth_db import create_device_session, init_auth_db, verify_device_session
 from app.agents_registry import list_agents
 from app.audit_db import init_audit_db, record_tool_call
 from app.automations import check_and_fire as check_and_fire_automation
@@ -283,9 +284,22 @@ class ActivityLogRequest(BaseModel):
     app_name: str
 
 
-def verify_token(token: str) -> None:
-    if token != AUTH_TOKEN:
-        raise HTTPException(status_code=403, detail="invalid or missing token")
+class RegisterDeviceRequest(BaseModel):
+    device_name: str
+
+
+async def verify_token(token: str) -> None:
+    # Stage 7 prep (2026-09-10): additive, not a replacement -- today's
+    # real AUTH_TOKEN keeps working unmodified (the desktop/iOS apps
+    # already deployed use it, indefinitely), and a valid per-device
+    # session (auth_db.py) is now ALSO accepted. A request must satisfy
+    # one of the two; neither existing route protection is weakened, nor
+    # is any new route left unprotected.
+    if token == AUTH_TOKEN:
+        return
+    if await verify_device_session(token):
+        return
+    raise HTTPException(status_code=403, detail="invalid or missing token")
 
 
 # Proactive Triggers Layer's scheduler (2026-08-21) -- the first time-based
@@ -396,6 +410,7 @@ async def lifespan(app: FastAPI):
         await init_triggers_db()
         await init_email_db()
         await init_calendar_db()
+        await init_auth_db()
     # A single reused httpx client, not one per /speak call — real bug
     # found and fixed 2026-07-30: creating a fresh AsyncClient() per
     # request meant paying a full DNS+TLS handshake to ElevenLabs every
@@ -549,6 +564,21 @@ async def auth_google_callback(code: str | None = None, state: str | None = None
 @app.get("/auth/google/status")
 async def auth_google_status(_: None = Depends(verify_token)) -> dict[str, bool]:
     return {"connected": google_oauth.is_connected()}
+
+
+@app.post("/auth/register-device")
+async def register_device(body: RegisterDeviceRequest, token: str) -> dict[str, str]:
+    # Stage 7 prep: deliberately gated by today's real AUTH_TOKEN directly,
+    # not Depends(verify_token) -- minting a NEW per-device session can't
+    # itself require an existing device session (nothing to bootstrap
+    # from). Possessing today's one shared secret is what lets you mint a
+    # new, distinct per-device credential going forward -- the exact same
+    # trust boundary that exists today, just the starting point for
+    # something better rather than a new hole.
+    if token != AUTH_TOKEN:
+        raise HTTPException(status_code=403, detail="invalid or missing token")
+    new_token = await create_device_session(body.device_name)
+    return {"token": new_token}
 
 
 @app.get("/connected-apps")
@@ -1018,7 +1048,9 @@ async def speak(request: SpeakRequest, http_request: Request, _: None = Depends(
 async def websocket_chat(websocket: WebSocket) -> None:
     await websocket.accept()
 
-    if websocket.query_params.get("token") != AUTH_TOKEN:
+    # Stage 7 prep: same additive check as verify_token() above.
+    ws_token = websocket.query_params.get("token")
+    if ws_token != AUTH_TOKEN and not await verify_device_session(ws_token or ""):
         await websocket.send_text("[backend error: invalid or missing auth token]")
         await websocket.close()
         return
