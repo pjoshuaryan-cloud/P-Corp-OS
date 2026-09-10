@@ -1328,9 +1328,29 @@ private struct FrankOrb: View {
         ZStack {
             // Soft contact shadow — grounds the cluster so the float reads
             // as floating rather than just sliding up and down in place.
+            //
+            // Real, if partial, CPU fix (2026-09-10): a `sample` profile
+            // taken with FrankOrb's Canvas fully removed from the view
+            // hierarchy (isolating whatever cost was left) showed heavy
+            // SwiftUICore layout-engine churn (sizeThatFits/placeChildren)
+            // -- a strong signal, since animating .frame's actual width/
+            // height (a layout property, not a render one) via a continuous
+            // repeatForever is exactly the kind of thing that forces that.
+            // Fixed width/height plus scaleEffect (a pure render transform)
+            // produces the identical two endpoint sizes -- 72x10 at rest,
+            // 100x14 floating -- without that specific mechanism. Measured
+            // honestly: this alone did NOT move the remaining ~35-40% --
+            // a second profile taken after this fix (with the Canvas still
+            // removed) came back diffuse, no single dominant function, just
+            // general SwiftUI view-diffing/AppKit layout-check/Swift
+            // retain-release overhead. Kept anyway since it's a genuine
+            // anti-pattern fix on its own terms, not because it solved the
+            // remaining cost -- which, as of this writing, is unexplained
+            // and not FrankOrb's.
             Ellipse()
                 .fill(theme.textPrimary.opacity(floatUp ? 0.08 : 0.16))
-                .frame(width: floatUp ? 100 : 72, height: floatUp ? 14 : 10)
+                .frame(width: 72, height: 10)
+                .scaleEffect(x: floatUp ? 100.0 / 72.0 : 1.0, y: floatUp ? 1.4 : 1.0)
                 .blur(radius: 8)
                 .offset(y: 74)
 
@@ -1346,13 +1366,18 @@ private struct FrankOrb: View {
             // tick redrew all 450 particles with a fresh Path+fill each --
             // sustained 85-92% CPU confirmed via `sample`. The motion this
             // produces is a slow shimmer (~12.6s period), so sampling it at
-            // display refresh rate bought nothing visually. 15fps is well
-            // above what's needed to read as smooth for a wave that slow.
-            // Both branches must share one concrete TimelineSchedule type
-            // (a ternary between .animation and .periodic won't typecheck),
-            // so Reduce Motion is expressed as a 1-hour interval -- real
-            // state changes still redraw normally via ordinary SwiftUI
-            // updates, only the decorative ticking goes effectively static.
+            // display refresh rate bought nothing visually. Throttling to
+            // 15fps cut it to ~40% (confirmed 8fps buys nothing further --
+            // stayed at 15fps, no reason to sacrifice smoothness for zero
+            // gain). The remaining ~40% was proven, via a fully-removed-
+            // view diagnostic, to have nothing to do with this Canvas at
+            // all -- see the shadow Ellipse's comment above for where that
+            // led, and its own honest result. Both TimelineView branches
+            // must share one concrete schedule type (a ternary between
+            // .animation and .periodic won't typecheck), so Reduce Motion
+            // is expressed as a 1-hour interval -- real state changes still
+            // redraw normally via ordinary SwiftUI updates, only the
+            // decorative ticking goes effectively static.
             TimelineView(.periodic(from: .now, by: reduceMotion ? 3600 : 1.0 / 15.0)) { timeline in
                 Canvas { context, size in
                     let center = CGPoint(x: size.width / 2, y: size.height / 2)
