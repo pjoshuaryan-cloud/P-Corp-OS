@@ -49,6 +49,7 @@ import urllib.error
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
@@ -177,11 +178,13 @@ from app.db import (
     get_active_conversation_id,
     get_credits_exhausted_since,
     get_focus_objective,
+    get_local_node_last_seen_at,
     init_db,
     list_conversations,
     load_history,
     load_memory_records,
     log_activity,
+    mark_local_node_seen,
     save_message,
     set_active_conversation,
     set_credits_exhausted,
@@ -499,6 +502,24 @@ async def status(_: None = Depends(verify_token)) -> dict:
     luno_schedule = await get_luno_schedule()
     hf_markets_schedule = await get_hf_markets_schedule()
 
+    # Stage 8 prep: "Is the Mac Local Node online?" -- answered here rather
+    # than fabricated. 150s = 2.5x the 60s heartbeat interval
+    # (ActivityTracker.swift), tolerating one missed beat without flapping
+    # to "offline" on ordinary network jitter.
+    #
+    # Real bug found live: SQLite's datetime('now') (used to write
+    # local_node_last_seen_at) returns UTC, not local time -- comparing it
+    # against datetime.now() (local) made "online" false immediately after
+    # a fresh heartbeat on any machine not already at UTC+0. Both sides
+    # must be UTC: naive-UTC now, compared against the naive-UTC string
+    # SQLite actually stored.
+    local_node_last_seen = await get_local_node_last_seen_at()
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    local_node_online = (
+        local_node_last_seen is not None
+        and (now_utc - datetime.fromisoformat(local_node_last_seen)).total_seconds() < 150
+    )
+
     return {
         "backend": "online",
         "database_reachable": database_reachable,
@@ -509,6 +530,10 @@ async def status(_: None = Depends(verify_token)) -> dict:
             "market_movers_snapshot": market_movers_schedule,
             "luno_snapshot": luno_schedule,
             "hf_markets_snapshot": hf_markets_schedule,
+        },
+        "local_node": {
+            "last_seen_at": local_node_last_seen,
+            "online": local_node_online,
         },
     }
 
@@ -879,6 +904,24 @@ async def activity_log_endpoint(body: ActivityLogRequest, _: None = Depends(veri
     # the frontmost app changes, not a Frank tool. See shadow_mode.py's
     # docstring for why capture and recall are split this way.
     await log_activity(body.app_name)
+    # Stage 8 prep: a real activity post is real evidence the Mac Local
+    # Node is alive, same signal the dedicated heartbeat below sends --
+    # free liveness update, no change to this route's own request/
+    # response shape.
+    await mark_local_node_seen()
+    return {"status": "ok"}
+
+
+@app.post("/local-node/heartbeat")
+async def local_node_heartbeat(_: None = Depends(verify_token)) -> dict:
+    # Stage 8 prep (2026-09-10): independent of app-switch events --
+    # /activity/log only fires when the frontmost app actually changes, so
+    # a Mac that's on but idle (no switching) looks identical to a Mac
+    # that's off, from the backend's point of view. This is the real,
+    # schedule-driven signal ActivityTracker.swift's new periodic loop
+    # sends regardless of user activity, answering the audit's own
+    # "Is the Mac Local Node online?" observability question.
+    await mark_local_node_seen()
     return {"status": "ok"}
 
 

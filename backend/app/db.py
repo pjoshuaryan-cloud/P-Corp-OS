@@ -156,6 +156,15 @@ async def init_db() -> None:
         if "credits_exhausted_since" not in columns:
             await db.execute("ALTER TABLE app_state ADD COLUMN credits_exhausted_since TEXT")
 
+        # Migration path: app_state existed before Stage 8's Mac Local Node
+        # liveness signal did (2026-09-10). Nullable -- "never seen" is a
+        # real, honest state (a fresh install, or before this shipped), not
+        # an error. Updated by both the dedicated /local-node/heartbeat
+        # route and /activity/log's existing handler -- either one is real
+        # evidence the Local Node process is alive.
+        if "local_node_last_seen_at" not in columns:
+            await db.execute("ALTER TABLE app_state ADD COLUMN local_node_last_seen_at TEXT")
+
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_records (
@@ -332,6 +341,19 @@ async def set_credits_exhausted() -> None:
 async def clear_credits_exhausted() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE app_state SET credits_exhausted_since = NULL WHERE id = 1")
+        await db.commit()
+
+
+async def get_local_node_last_seen_at() -> str | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT local_node_last_seen_at FROM app_state WHERE id = 1")
+        (last_seen,) = await cursor.fetchone()
+        return last_seen
+
+
+async def mark_local_node_seen() -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE app_state SET local_node_last_seen_at = datetime('now') WHERE id = 1")
         await db.commit()
 
 

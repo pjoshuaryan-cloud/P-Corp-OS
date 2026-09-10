@@ -36,6 +36,29 @@ final class ActivityTracker {
         if let app = NSWorkspace.shared.frontmostApplication, app.isRealApp, let name = app.localizedName {
             logChange(name)
         }
+        startHeartbeat()
+    }
+
+    // Stage 8 prep (2026-09-10): independent of app-switch events on
+    // purpose -- /activity/log above only fires when the frontmost app
+    // actually changes, so a Mac that's on but idle (no switching) would
+    // look identical to a Mac that's off from the backend's point of
+    // view. This loop is the real "Is the Mac Local Node online?" signal,
+    // firing on a schedule for as long as this process runs, regardless
+    // of user activity.
+    private func startHeartbeat() {
+        Task {
+            while true {
+                await postHeartbeat()
+                try? await Task.sleep(nanoseconds: 60_000_000_000) // 60s
+            }
+        }
+    }
+
+    private func postHeartbeat() async {
+        var request = URLRequest(url: BackendHost.url(path: "/local-node/heartbeat"))
+        request.httpMethod = "POST"
+        _ = try? await URLSession.shared.data(for: request)
     }
 
     private func logChange(_ name: String) {
