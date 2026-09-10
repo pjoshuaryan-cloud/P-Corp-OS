@@ -1379,7 +1379,15 @@ async def run_claude_turn(
                 # transcript too.
                 assistant_text += result
             elif block.name in PERSONAL_TOOL_NAMES:
-                result = await execute_personal_tool_call(block.name, block.input)
+                # Stage 5 prep: same app.state.postgres_conn Stage 4's
+                # /personal/dashboard route reads, just reached from the
+                # WebSocket handler instead of a REST route -- WebSocket
+                # exposes .app the same way Request does (both are
+                # Starlette HTTPConnection subclasses).
+                postgres_conn = (
+                    getattr(websocket.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+                )
+                result = await execute_personal_tool_call(block.name, block.input, postgres_conn)
             elif block.name in JOSHX_TOOL_NAMES:
                 result = await execute_joshx_tool_call(block.name, block.input)
             elif block.name in PEOPLE_TOOL_NAMES:

@@ -91,25 +91,33 @@ async def build_personal_block() -> str:
     return f"\n\n## Goals & habits\n{snapshot}"
 
 
-async def execute_personal_tool_call(name: str, tool_input: dict) -> str:
+async def execute_personal_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
+    # Stage 5 prep (2026-09-10): postgres_conn is only ever non-None when
+    # main.py's DATA_BACKEND=postgres -- every real deployment today passes
+    # None here, so this is a pure pass-through with no behavior change
+    # unless that's explicitly configured.
     if name == "add_goal":
-        result = await add_goal(tool_input["title"], tool_input.get("target_date"), tool_input.get("notes"))
+        result = await add_goal(
+            tool_input["title"], tool_input.get("target_date"), tool_input.get("notes"), postgres_conn
+        )
         return f"Added goal: {result}"
     if name == "update_goal_status":
-        updated = await update_goal_status(tool_input["identifier"], tool_input["new_status"])
+        updated = await update_goal_status(tool_input["identifier"], tool_input["new_status"], postgres_conn)
         if updated:
             return f"Updated goal status to {tool_input['new_status']}."
         return f"No matching goal found for \"{tool_input['identifier']}\"."
     if name == "delete_goal":
-        deleted_title = await delete_goal(tool_input["identifier"])
+        deleted_title = await delete_goal(tool_input["identifier"], postgres_conn)
         if deleted_title:
             return f"Deleted goal: {deleted_title}"
         return f"No matching goal found for \"{tool_input['identifier']}\"."
     if name == "add_habit":
-        result = await add_habit(tool_input["title"], tool_input.get("cadence"), tool_input.get("notes"))
+        result = await add_habit(
+            tool_input["title"], tool_input.get("cadence"), tool_input.get("notes"), postgres_conn
+        )
         return f"Added habit: {result}"
     if name == "delete_habit":
-        deleted_title = await delete_habit(tool_input["identifier"])
+        deleted_title = await delete_habit(tool_input["identifier"], postgres_conn)
         if deleted_title:
             return f"Stopped tracking habit: {deleted_title}"
         return f"No matching habit found for \"{tool_input['identifier']}\"."
