@@ -33,6 +33,7 @@ mis-parse), just applied in both directions here.
 
 import asyncio
 import subprocess
+import sys
 from datetime import datetime
 
 DEFAULT_LOOKAHEAD_DAYS = 90
@@ -76,7 +77,18 @@ async def check_calendar_available() -> bool:
     weaker proxy for it. Used to answer "is the Mac Local Node's Calendar
     capability actually available right now" before Frank's approval-
     gated write tools bother asking Josh to approve something that's
-    already known to be impossible to execute."""
+    already known to be impossible to execute.
+
+    Real bug found live (2026-09-10), first Render deploy test: this used
+    to call _run_osascript() unconditionally, which shells out to `open`/
+    `osascript` -- neither exists on a Linux cloud container, so this
+    raised FileNotFoundError and took down the entire /status route with
+    it (no try/except there). Checking the platform first and returning
+    False outright is also the right long-term answer, not just a crash
+    fix: once Frank's brain runs in the cloud with no Local Node bridge
+    reachable, "unavailable" is the honest answer, not a 500."""
+    if sys.platform != "darwin":
+        return False
     ok, _ = await _run_osascript('tell application "Calendar" to get name of calendars')
     return ok
 
