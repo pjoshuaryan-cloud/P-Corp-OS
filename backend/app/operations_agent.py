@@ -37,6 +37,8 @@ decides whether to act on -- not a regression, just routed through the
 one place that tool actually lives.
 """
 
+from typing import Any
+
 from anthropic import AsyncAnthropic
 
 from app.agent_codebase_tools import run_agentic_loop
@@ -124,31 +126,46 @@ OPERATIONS_TOOLS = [ADD_TASK_TOOL, UPDATE_TASK_STATUS_TOOL, DELETE_TASK_TOOL, CO
 OPERATIONS_TOOL_NAMES = {tool["name"] for tool in OPERATIONS_TOOLS}
 
 
-async def build_operations_block() -> str:
-    snapshot = await summarize_open_tasks()
+async def build_operations_block(postgres_conn: Any = None) -> str:
+    # postgres_conn threaded through so Frank's own system-prompt context
+    # reads the same live source as GET /operations/tasks and the write
+    # tools below -- same reasoning as personal_tools.py's
+    # build_personal_block(), fixed after the real cutover found it silently
+    # stale otherwise.
+    snapshot = await summarize_open_tasks(postgres_conn)
     if not snapshot:
         return ""
     return f"\n\n## Current tasks\n{snapshot}"
 
 
-async def execute_operations_tool_call(name: str, tool_input: dict, client: AsyncAnthropic, websocket) -> str:
+async def execute_operations_tool_call(
+    name: str, tool_input: dict, client: AsyncAnthropic, websocket, postgres_conn: Any = None
+) -> str:
     if name == "add_task":
         result = await add_task(
-            tool_input["title"], tool_input.get("area"), tool_input.get("due_date"), tool_input.get("notes")
+            tool_input["title"],
+            tool_input.get("area"),
+            tool_input.get("due_date"),
+            tool_input.get("notes"),
+            postgres_conn,
         )
         return f"Added task: {result}"
     if name == "update_task_status":
-        updated = await update_task_status(tool_input["identifier"], tool_input["new_status"])
+        updated = await update_task_status(tool_input["identifier"], tool_input["new_status"], postgres_conn)
         if updated:
             return f"Updated task status to {tool_input['new_status']}."
         return f"No matching task found for \"{tool_input['identifier']}\"."
     if name == "delete_task":
-        deleted_title = await delete_task(tool_input["identifier"])
+        deleted_title = await delete_task(tool_input["identifier"], postgres_conn)
         if deleted_title:
             return f"Deleted task: {deleted_title}"
         return f"No matching task found for \"{tool_input['identifier']}\"."
     if name == "consult_operations_agent":
-        task_context = await summarize_open_tasks()
+        # postgres_conn threaded through here too -- without it, the
+        # delegated Operations Agent would see stale SQLite task state even
+        # after a real write landed in Postgres, the same class of bug
+        # found live in personal_tools.py's build_personal_block().
+        task_context = await summarize_open_tasks(postgres_conn)
         system_prompt = OPERATIONS_AGENT_SYSTEM_PROMPT
         if task_context:
             system_prompt += f"\n\n{task_context}"

@@ -638,10 +638,11 @@ async def memory(_: None = Depends(verify_token)) -> list[dict]:
 
 
 @app.get("/operations/tasks")
-async def operations_tasks(_: None = Depends(verify_token)) -> list[dict]:
+async def operations_tasks(request: Request, _: None = Depends(verify_token)) -> list[dict]:
     # Makes the "Agents" nav section's task list real, rather than only
     # visible to Frank himself via the system-prompt snapshot.
-    return await list_open_tasks()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await list_open_tasks(postgres_conn)
 
 
 @app.get("/agents")
@@ -1202,7 +1203,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 + ATTACHMENT_CAPABILITY_NOTE
                 + await build_memory_block()
                 + await build_alpha_mode_block()
-                + await build_operations_block()
+                + await build_operations_block(postgres_conn)
                 + await build_personal_block(postgres_conn)
                 + await build_joshx_block()
                 + await build_people_block()
@@ -1421,7 +1422,9 @@ async def run_claude_turn(
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 result = await execute_alpha_mode_tool_call(block.name, block.input, websocket)
             elif block.name in OPERATIONS_TOOL_NAMES:
-                result = await execute_operations_tool_call(block.name, block.input, client, websocket)
+                # postgres_conn computed once near the top of websocket_chat,
+                # reused here -- see that comment for why.
+                result = await execute_operations_tool_call(block.name, block.input, client, websocket, postgres_conn)
                 if block.name == "consult_operations_agent":
                     # This was already streamed live to the websocket
                     # inside execute_operations_tool_call -- append it to
