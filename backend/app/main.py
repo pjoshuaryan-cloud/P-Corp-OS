@@ -1576,6 +1576,22 @@ async def run_claude_turn(
 def run() -> None:
     import uvicorn
 
+    # Cloud mode (2026-09-10): Render (and every similar PaaS) assigns the
+    # listen port dynamically via $PORT and requires binding 0.0.0.0 --
+    # checked first, before any Mac-hosted branching, so the two modes are
+    # mutually exclusive by construction. 0.0.0.0 is correct here even
+    # though SECURITY.md ruled it out for the Mac-hosted case below: an
+    # isolated container's own network boundary is what limits real
+    # exposure, not this bind address, and every route is still gated by
+    # real auth regardless. No hang-watchdog in this mode -- Render
+    # supervises the process itself, and the watchdog's own health-check
+    # URL hardcodes BACKEND_PORT (8731), which would be the wrong port to
+    # check here (the real bound port is $PORT).
+    render_port = os.environ.get("PORT")
+    if render_port:
+        uvicorn.run(app, host="0.0.0.0", port=int(render_port), ws_max_size=WS_MAX_SIZE)
+        return
+
     # 127.0.0.1 always, regardless of Tailscale — the desktop app must keep
     # working with zero dependency on Tailscale being installed, running,
     # or configured. Confirmed decision (2026-07-31): mobile access adds a

@@ -11,6 +11,7 @@ Enclave keypair auth TECH_STACK.md eventually wants for multi-device trust,
 which is a different, larger problem for a different day.
 """
 
+import os
 import secrets
 from pathlib import Path
 
@@ -18,6 +19,15 @@ TOKEN_PATH = Path(__file__).parent.parent / "data" / "auth_token"
 
 
 def get_or_create_token() -> str:
+    # Cloud mode (2026-09-10): a Render web service's filesystem is
+    # ephemeral, so file-based generation below would mint a new,
+    # unknowable token on every restart. An explicit AUTH_TOKEN env var
+    # lets a cloud deployment use a known, fixed value instead -- correct
+    # for any real cloud deployment, not just testing. Unset on the Mac
+    # today, so this is a pure no-op there.
+    env_token = os.environ.get("AUTH_TOKEN")
+    if env_token:
+        return env_token
     TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
     if TOKEN_PATH.exists():
         return TOKEN_PATH.read_text().strip()
