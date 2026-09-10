@@ -34,14 +34,15 @@ from app.market_movers import check_market_movers
 from app.people_db import get_overdue_follow_ups
 from app.supabase_client import select_rows
 from app.triggers_db import (
+    claim_digest_send,
     clear_resolved,
     enabled_rule_thresholds,
     get_digest_schedule,
     items_due_for_notification,
     list_rules,
-    mark_digest_sent,
     mark_notified,
     peek_due_status,
+    revert_digest_claim,
 )
 
 TERMINAL_STAGES = {"delivered", "final_delivered"}
@@ -226,8 +227,8 @@ def _format_digest_body(sections: dict[str, list[dict]]) -> str:
 
 async def run_daily_digest() -> dict:
     """Computes, sends (if there's anything due), and records state. Lets
-    a send failure propagate — the caller (maybe_run_daily_digest) must
-    NOT call mark_digest_sent if this raises, so a failed send is retried
+    a send failure propagate — the caller (maybe_run_daily_digest) reverts
+    its digest_schedule claim if this raises, so a failed send is retried
     on the next scheduler tick instead of silently recorded as done."""
     sections = await compute_due_digest_sections()
     if not sections:
@@ -276,17 +277,35 @@ async def compute_status() -> dict:
     return {"rules": sections, "last_sent_date": schedule["last_sent_date"], "send_hour": schedule["send_hour"]}
 
 
-async def maybe_run_daily_digest() -> dict | None:
+async def maybe_run_daily_digest(postgres_conn: object = None) -> dict | None:
     """Called on every scheduler tick. Runs at most once per calendar day,
     no earlier than the configured send_hour (local time). Returns the
-    run_daily_digest() result if it ran, else None."""
-    schedule = await get_digest_schedule()
+    run_daily_digest() result if it ran, else None.
+
+    Stage 6 prep (2026-09-10): claims the send atomically BEFORE running,
+    not after -- claim_digest_send()'s own docstring explains the real
+    TOCTOU race this closes. Only the caller that wins the claim ever
+    calls run_daily_digest(), so two concurrent schedulers (today's single
+    Mac loop, or a future Mac+cloud-worker overlap) can't both send.
+
+    Claiming before sending would otherwise silently break run_daily_
+    digest()'s own pre-existing contract (a failed send must retry next
+    tick, not be recorded as done) -- a real send failure here reverts the
+    claim via revert_digest_claim() and re-raises, so the outer scheduler
+    loop's existing try/except still sees and logs the same failure it
+    always did, and the next tick sees last_sent_date back to its
+    pre-claim value and retries exactly as before."""
+    schedule = await get_digest_schedule(postgres_conn)
     today = date.today()
     if schedule["last_sent_date"] == today.isoformat():
         return None
     if datetime.now().hour < schedule["send_hour"]:
         return None
+    if not await claim_digest_send(today, postgres_conn):
+        return None  # another worker already claimed today's send
 
-    result = await run_daily_digest()
-    await mark_digest_sent(today)
-    return result
+    try:
+        return await run_daily_digest()
+    except Exception:
+        await revert_digest_claim(schedule["last_sent_date"], postgres_conn)
+        raise

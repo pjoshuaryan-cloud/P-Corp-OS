@@ -302,8 +302,13 @@ TRIGGER_CHECK_INTERVAL_SECONDS = 900
 
 async def _trigger_scheduler_loop() -> None:
     while True:
+        # Stage 6 prep: same guarded app.state.postgres_conn access as
+        # Stage 5's WebSocket call site -- None on every real deployment
+        # today (DATA_BACKEND unset), so this changes nothing unless
+        # that's explicitly configured.
+        postgres_conn = getattr(app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
         try:
-            await maybe_run_daily_digest()
+            await maybe_run_daily_digest(postgres_conn)
         except Exception as exc:
             print(f"[triggers] scheduler tick failed: {exc}")
         try:

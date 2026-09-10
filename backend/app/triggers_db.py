@@ -39,6 +39,7 @@ sibling wearing a different name.
 
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -252,16 +253,71 @@ async def clear_resolved(rule_type: str, still_open_keys: list[str]) -> None:
         await db.commit()
 
 
-async def get_digest_schedule() -> dict:
+async def get_digest_schedule(postgres_conn: Any = None) -> dict:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT last_sent_date, send_hour FROM triggers.digest_schedule WHERE id = 1")
+            row = await cur.fetchone()
+            return {"last_sent_date": row[0], "send_hour": row[1]}
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT last_sent_date, send_hour FROM digest_schedule WHERE id = 1")
         row = await cursor.fetchone()
         return {"last_sent_date": row[0], "send_hour": row[1]}
 
 
-async def mark_digest_sent(sent_date: date) -> None:
+async def claim_digest_send(sent_date: date, postgres_conn: Any = None) -> bool:
+    """Atomically claims today's digest send -- Stage 6 prep (2026-09-10),
+    replacing the old separate check-then-mark_digest_sent sequence, which
+    had a real TOCTOU race: two concurrent schedulers (today's single Mac
+    loop, and a future cloud worker during any migration overlap) could
+    both read last_sent_date != today before either wrote, both send a
+    real duplicate notification, and only then both harmlessly update the
+    flag -- by then the damage is done. A single conditional UPDATE is
+    atomic in both engines; the caller must check the returned rowcount
+    (via this function's return value) BEFORE doing the actual send, not
+    after -- only the winner should ever call run_daily_digest().
+    Returns True if this call won the claim, False if another caller
+    already claimed today's send.
+    """
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE triggers.digest_schedule SET last_sent_date = %s "
+                "WHERE id = 1 AND (last_sent_date IS NULL OR last_sent_date != %s)",
+                (sent_date.isoformat(), sent_date.isoformat()),
+            )
+            won = cur.rowcount == 1
+        await postgres_conn.commit()
+        return won
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE digest_schedule SET last_sent_date = ? WHERE id = 1", (sent_date.isoformat(),))
+        cursor = await db.execute(
+            "UPDATE digest_schedule SET last_sent_date = ? "
+            "WHERE id = 1 AND (last_sent_date IS NULL OR last_sent_date != ?)",
+            (sent_date.isoformat(), sent_date.isoformat()),
+        )
+        won = cursor.rowcount == 1
+        await db.commit()
+        return won
+
+
+async def revert_digest_claim(previous_value: str | None, postgres_conn: Any = None) -> None:
+    """Reverts a claim_digest_send() win back to its pre-claim value --
+    only ever called by the one caller that just won that claim (never a
+    race: nobody else could also be holding it), so this plain
+    unconditional UPDATE needs no WHERE-conditional/rowcount check the way
+    claim_digest_send() does. Exists so a real send failure still retries
+    on the next scheduler tick, exactly like the pre-Stage-6 behavior --
+    reordering the claim to happen before the send (to close the double-
+    send race) would otherwise have silently broken that retry guarantee,
+    since the claim would already be committed by the time the send fails.
+    """
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("UPDATE triggers.digest_schedule SET last_sent_date = %s WHERE id = 1", (previous_value,))
+        await postgres_conn.commit()
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE digest_schedule SET last_sent_date = ? WHERE id = 1", (previous_value,))
         await db.commit()
 
 
