@@ -355,13 +355,17 @@ async def _dashboard_snapshot_postgres(conn: Any) -> dict:
     return {"goals": goals, "habits": habits}
 
 
-async def summarize() -> str:
+async def summarize(postgres_conn: Any = None) -> str:
     """Plain-text snapshot, same style as operations_db.summarize_open_tasks()
-    -- not currently injected into Frank's own system prompt (this stays
-    display-only for now, no consult agent to feed), kept for parity with
-    the other domains' summarize() functions and available if that
-    changes later."""
-    snapshot = await dashboard_snapshot()
+    -- feeds Frank's own system prompt every turn via personal_tools.py's
+    build_personal_block() (a stale claim in this docstring previously said
+    otherwise; corrected 2026-09-10 while fixing the real bug that claim
+    was masking -- see build_personal_block()'s own comment). postgres_conn
+    must be threaded through here for the same reason it's threaded
+    through dashboard_snapshot() -- Frank's own context needs to read the
+    same live source as the dashboard route and the write tools, not
+    silently stay on SQLite after a real cutover."""
+    snapshot = await dashboard_snapshot(postgres_conn)
     if not snapshot["goals"] and not snapshot["habits"]:
         return ""
     lines: list[str] = []

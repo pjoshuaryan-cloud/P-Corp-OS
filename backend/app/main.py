@@ -1119,6 +1119,17 @@ async def websocket_chat(websocket: WebSocket) -> None:
         return
 
     client = AsyncAnthropic(api_key=api_key)
+    # Computed once per connection, not per turn -- app.state.postgres_conn
+    # is set once at startup and never changes for the life of the process,
+    # so there's nothing to re-check on every message. Reused below both
+    # for building Frank's own system-prompt context (build_personal_block)
+    # and for the personal-domain tool-dispatch branch further down --
+    # a real bug found live (2026-09-10): build_personal_block() was
+    # calling summarize() with no connection at all, meaning Frank's own
+    # system-prompt view of his goals/habits stayed on SQLite even after
+    # DATA_BACKEND=postgres went live, silently stale the moment a write
+    # actually landed in Postgres instead.
+    postgres_conn = getattr(websocket.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
     # Whichever conversation is active as of connect time — a client that
     # started a new chat right before reconnecting picks up the fresh one.
     conversation_id = await get_active_conversation_id()
@@ -1192,7 +1203,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 + await build_memory_block()
                 + await build_alpha_mode_block()
                 + await build_operations_block()
-                + await build_personal_block()
+                + await build_personal_block(postgres_conn)
                 + await build_joshx_block()
                 + await build_people_block()
                 + await build_finance_block()
@@ -1470,14 +1481,8 @@ async def run_claude_turn(
                 # transcript too.
                 assistant_text += result
             elif block.name in PERSONAL_TOOL_NAMES:
-                # Stage 5 prep: same app.state.postgres_conn Stage 4's
-                # /personal/dashboard route reads, just reached from the
-                # WebSocket handler instead of a REST route -- WebSocket
-                # exposes .app the same way Request does (both are
-                # Starlette HTTPConnection subclasses).
-                postgres_conn = (
-                    getattr(websocket.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
-                )
+                # postgres_conn computed once near the top of websocket_chat,
+                # reused here -- see that comment for why.
                 result = await execute_personal_tool_call(block.name, block.input, postgres_conn)
             elif block.name in JOSHX_TOOL_NAMES:
                 result = await execute_joshx_tool_call(block.name, block.input)

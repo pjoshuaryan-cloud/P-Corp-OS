@@ -84,8 +84,15 @@ PERSONAL_TOOLS = [ADD_GOAL_TOOL, UPDATE_GOAL_STATUS_TOOL, DELETE_GOAL_TOOL, ADD_
 PERSONAL_TOOL_NAMES = {tool["name"] for tool in PERSONAL_TOOLS}
 
 
-async def build_personal_block() -> str:
-    snapshot = await summarize()
+async def build_personal_block(postgres_conn=None) -> str:
+    # postgres_conn threaded through so Frank's own system-prompt context
+    # reads the same live source as the dashboard route and the write
+    # tools -- a real bug found live (2026-09-10): this always called
+    # summarize() with no connection at all, so Frank's own view of his
+    # goals/habits stayed on SQLite even after a real write landed in
+    # Postgres, silently stale rather than reflecting what actually
+    # happened.
+    snapshot = await summarize(postgres_conn)
     if not snapshot:
         return ""
     return f"\n\n## Goals & habits\n{snapshot}"
