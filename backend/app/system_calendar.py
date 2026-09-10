@@ -68,6 +68,19 @@ async def _run_osascript(script: str) -> tuple[bool, str]:
     return True, stdout.decode("utf-8", errors="replace")
 
 
+async def check_calendar_available() -> bool:
+    """Stage 8, Local Node capability check (2026-09-10): a cheap,
+    read-only probe -- reuses _run_osascript exactly like every real
+    calendar operation in this file, so this proves the same path
+    create_event/update_event/delete_event actually depend on, not a
+    weaker proxy for it. Used to answer "is the Mac Local Node's Calendar
+    capability actually available right now" before Frank's approval-
+    gated write tools bother asking Josh to approve something that's
+    already known to be impossible to execute."""
+    ok, _ = await _run_osascript('tell application "Calendar" to get name of calendars')
+    return ok
+
+
 def _set_date_components(var_name: str, dt: datetime) -> str:
     return (
         f"set {var_name} to current date\n"

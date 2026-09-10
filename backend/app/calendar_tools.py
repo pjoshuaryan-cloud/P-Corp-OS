@@ -43,7 +43,11 @@ from datetime import datetime
 from fastapi import WebSocket
 
 from app.calendar_db import get_cached_events
-from app.system_calendar import create_event, delete_event, update_event
+from app.system_calendar import check_calendar_available, create_event, delete_event, update_event
+
+_CALENDAR_UNAVAILABLE_MESSAGE = (
+    "Mac Calendar isn't reachable right now (Local Node capability unavailable) -- nothing was proposed."
+)
 
 PROPOSE_CREATE_CALENDAR_EVENT_TOOL = {
     "name": "propose_create_calendar_event",
@@ -149,6 +153,8 @@ async def _request_approval(websocket: WebSocket, tool: str, title: str, details
 
 async def execute_calendar_tool_call(name: str, tool_input: dict, websocket: WebSocket) -> str:
     if name == "propose_create_calendar_event":
+        if not await check_calendar_available():
+            return _CALENDAR_UNAVAILABLE_MESSAGE
         try:
             start = _parse_dt(tool_input["start"])
             end = _parse_dt(tool_input["end"])
@@ -170,6 +176,8 @@ async def execute_calendar_tool_call(name: str, tool_input: dict, websocket: Web
         return f"Approved and created \"{tool_input['title']}\" on the calendar." if ok else "Approved, but the event couldn't actually be created."
 
     if name == "propose_update_calendar_event":
+        if not await check_calendar_available():
+            return _CALENDAR_UNAVAILABLE_MESSAGE
         try:
             new_start = _parse_dt(tool_input["new_start"]) if "new_start" in tool_input else None
             new_end = _parse_dt(tool_input["new_end"]) if "new_end" in tool_input else None
@@ -201,6 +209,8 @@ async def execute_calendar_tool_call(name: str, tool_input: dict, websocket: Web
         return f"Approved, but no matching upcoming event was found for \"{tool_input['identifier']}\", or the update was invalid."
 
     if name == "propose_delete_calendar_event":
+        if not await check_calendar_available():
+            return _CALENDAR_UNAVAILABLE_MESSAGE
         approved = await _request_approval(
             websocket, name, tool_input["identifier"], "Cancel this event", None, None
         )

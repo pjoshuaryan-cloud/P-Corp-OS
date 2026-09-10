@@ -122,6 +122,7 @@ from app.finance_db import (
 )
 from app.calendar_tools import CALENDAR_TOOL_NAMES, CALENDAR_TOOLS, execute_calendar_tool_call
 from app.calendar_db import init_calendar_db, sync_calendar_cache
+from app.system_calendar import check_calendar_available
 from app.email_db import init_email_db
 from app.email_tools import EMAIL_TOOL_NAMES, EMAIL_TOOLS, execute_email_tool_call
 from app import google_oauth
@@ -519,6 +520,13 @@ async def status(_: None = Depends(verify_token)) -> dict:
         local_node_last_seen is not None
         and (now_utc - datetime.fromisoformat(local_node_last_seen)).total_seconds() < 150
     )
+    # Second Local Node capability (2026-09-10): a live check each call,
+    # not cached -- it's a local subprocess call (~1s), not a network
+    # round trip, and /status isn't on any hot polling path today
+    # (confirmed during the audit: no Swift-side caller exists yet).
+    # Structured under "capabilities" deliberately, leaving room for
+    # Trading Division/HF Markets to land the same way later.
+    calendar_available = await check_calendar_available()
 
     return {
         "backend": "online",
@@ -534,6 +542,9 @@ async def status(_: None = Depends(verify_token)) -> dict:
         "local_node": {
             "last_seen_at": local_node_last_seen,
             "online": local_node_online,
+            "capabilities": {
+                "calendar": {"available": calendar_available},
+            },
         },
     }
 
