@@ -1464,10 +1464,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                     )
                 else:
                     message = f"\n[backend error: {error}]"
-                try:
-                    await websocket.send_text(message)
-                except Exception:
-                    pass
+                await _safe_send(websocket, message)
                 history.pop()
                 continue
             except Exception as error:
@@ -1477,13 +1474,14 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 # to report the error back over an already-closed socket
                 # would just raise a second, noisier exception, so that
                 # attempt is best-effort only.
-                try:
-                    await websocket.send_text(f"\n[backend error: {error}]")
-                except Exception:
-                    pass
+                await _safe_send(websocket, f"\n[backend error: {error}]")
                 # Don't record a failed/interrupted turn in memory or on
-                # disk — keeps conversation state consistent for the next
-                # message (or the reconnect stopGenerating() makes).
+                # disk — this branch means Claude/the database itself
+                # genuinely failed (not just delivery to a dead socket,
+                # which run_claude_turn's own sends now tolerate without
+                # raising at all) -- keeps conversation state consistent
+                # for the next message (or the reconnect stopGenerating()
+                # makes).
                 history.pop()
                 continue
 
@@ -1499,7 +1497,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 attachments=generated_documents or None,
                 postgres_conn=postgres_conn,
             )
-            await websocket.send_text("\n[done]")
+            await _safe_send(websocket, "\n[done]")
     except WebSocketDisconnect:
         pass
     finally:
@@ -1520,6 +1518,25 @@ async def _websocket_keepalive(websocket: WebSocket, interval_seconds: float = 2
             await asyncio.sleep(interval_seconds)
             await websocket.send_text("\n[ping]")
     except (asyncio.CancelledError, Exception):
+        pass
+
+
+async def _safe_send(websocket: WebSocket, text: str) -> None:
+    """Best-effort delivery to a live socket (2026-09-11) -- swallows any
+    failure so a client that went away (backgrounded/exited the app)
+    never aborts the turn actually generating and being saved. Real gap
+    found live: every send inside run_claude_turn's streaming/tool loop
+    used to raise straight through to websocket_chat's outer generic
+    `except Exception`, which deliberately discards the *entire* turn
+    ("don't record a failed/interrupted turn") -- meaning Josh exiting
+    the app mid-reply threw away Frank's real, otherwise-complete answer
+    instead of just failing to deliver it live. A handful of error-
+    reporting sends already did this exact try/except ad hoc; this is
+    that same pattern, applied uniformly everywhere a dead socket could
+    otherwise cut a turn short."""
+    try:
+        await websocket.send_text(text)
+    except Exception:
         pass
 
 
@@ -1601,7 +1618,7 @@ async def run_claude_turn(
             async for event in stream:
                 if event.type == "text":
                     assistant_text += event.text
-                    await websocket.send_text(event.text)
+                    await _safe_send(websocket, event.text)
                 elif event.type == "content_block_start" and event.content_block.type == "server_tool_use":
                     # Real gap found live (2026-09-06): web_search/web_fetch
                     # are server-executed -- Anthropic runs them and injects
@@ -1616,7 +1633,7 @@ async def run_claude_turn(
                     # indicator purposes -- nothing is dispatched or
                     # executed on this branch.
                     label = SERVER_TOOL_LABELS.get(event.content_block.name, "Searching the web")
-                    await websocket.send_text(f"\n[tool_start]{json.dumps({'label': label})}")
+                    await _safe_send(websocket, f"\n[tool_start]{json.dumps({'label': label})}")
             final_message = await stream.get_final_message()
 
         if final_message.stop_reason != "tool_use":
@@ -1627,7 +1644,7 @@ async def run_claude_turn(
         for block in final_message.content:
             if block.type != "tool_use":
                 continue
-            await websocket.send_text(f"\n[tool_start]{json.dumps({'label': label_for_tool(block.name)})}")
+            await _safe_send(websocket, f"\n[tool_start]{json.dumps({'label': label_for_tool(block.name)})}")
             if block.name in FOCUS_TOOL_NAMES:
                 result = await execute_focus_tool_call(block.name, block.input, postgres_conn)
             elif block.name in DECISION_JOURNAL_TOOL_NAMES:
@@ -1748,35 +1765,35 @@ async def run_claude_turn(
                         "body": block.input.get("title", "New memory saved"),
                     }
                 )
-                await websocket.send_text(f"\n[notify]{notification}")
+                await _safe_send(websocket, f"\n[notify]{notification}")
             elif block.name == "forget_memory" and result.startswith("Forgot:"):
                 notification = json.dumps(
                     {"title": "Frank forgot something", "body": result.removeprefix("Forgot: ")}
                 )
-                await websocket.send_text(f"\n[notify]{notification}")
+                await _safe_send(websocket, f"\n[notify]{notification}")
             elif block.name == "set_focus_objective":
                 notification = json.dumps({"title": "Focus updated", "body": block.input.get("objective", "")})
-                await websocket.send_text(f"\n[notify]{notification}")
+                await _safe_send(websocket, f"\n[notify]{notification}")
             elif block.name == "log_decision":
                 notification = json.dumps({"title": "Decision logged", "body": block.input.get("decision", "")})
-                await websocket.send_text(f"\n[notify]{notification}")
+                await _safe_send(websocket, f"\n[notify]{notification}")
             elif block.name == "link_records" and result.startswith("Linked:"):
                 notification = json.dumps({"title": "Memories linked", "body": result.removeprefix("Linked: ")})
-                await websocket.send_text(f"\n[notify]{notification}")
+                await _safe_send(websocket, f"\n[notify]{notification}")
             elif block.name == "save_to_legacy_vault":
                 notification = json.dumps({"title": "Legacy Vault updated", "body": block.input.get("title", "")})
-                await websocket.send_text(f"\n[notify]{notification}")
+                await _safe_send(websocket, f"\n[notify]{notification}")
             elif block.name == "delete_from_legacy_vault" and result.startswith("Deleted from Legacy Vault:"):
                 notification = json.dumps(
                     {"title": "Legacy Vault entry removed", "body": result.removeprefix("Deleted from Legacy Vault: ")}
                 )
-                await websocket.send_text(f"\n[notify]{notification}")
+                await _safe_send(websocket, f"\n[notify]{notification}")
             elif block.name in ALPHA_MODE_TOOL_NAMES:
                 notification = json.dumps({"title": "Alpha Mode Media updated", "body": result})
-                await websocket.send_text(f"\n[notify]{notification}")
+                await _safe_send(websocket, f"\n[notify]{notification}")
             elif block.name in ("add_task", "update_task_status", "delete_task"):
                 notification = json.dumps({"title": "Task updated", "body": result})
-                await websocket.send_text(f"\n[notify]{notification}")
+                await _safe_send(websocket, f"\n[notify]{notification}")
             elif block.name == "generate_pdf_document" and result.startswith("PDF saved to "):
                 # Real fix (2026-09-09): "viewable & saveable" PDFs -- the
                 # result string is Frank's own context, still just a raw
@@ -1787,8 +1804,9 @@ async def run_claude_turn(
                 document_filename = Path(result.removeprefix("PDF saved to ")).name
                 document_title = block.input.get("title", document_filename)
                 generated_documents.append({"filename": document_filename, "title": document_title})
-                await websocket.send_text(
-                    f"\n[document_generated]{json.dumps({'filename': document_filename, 'title': document_title})}"
+                await _safe_send(
+                    websocket,
+                    f"\n[document_generated]{json.dumps({'filename': document_filename, 'title': document_title})}",
                 )
 
             automation_notification = await check_and_fire_automation(
@@ -1799,7 +1817,7 @@ async def run_claude_turn(
                 # the block above -- this is a rule firing as a real
                 # side effect of the tool call, not the tool call's own
                 # result, and the two shouldn't be conflated in the UI.
-                await websocket.send_text(f"\n[notify]{json.dumps(automation_notification)}")
+                await _safe_send(websocket, f"\n[notify]{json.dumps(automation_notification)}")
         history.append({"role": "user", "content": tool_results})
 
 
