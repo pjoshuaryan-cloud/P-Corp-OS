@@ -28,13 +28,23 @@ COINGECKO_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
 # Josh actually has on Luno. A deliberate, checked mapping -- extend it
 # the same way (confirm the real coin id first) if new xStock holdings
 # show up, don't guess at a pattern.
+#
+# Real bug found live (2026-09-11): these keys were all-uppercase
+# ("AAPLX"), but Luno's real asset codes are mixed-case with a lowercase
+# trailing "x" ("AAPLx") -- confirmed directly against a real balance
+# response. compute_luno_zar_value's `prices.get(asset)` lookup is a
+# plain, case-sensitive dict get, so this silently never matched for any
+# of the 6 xStock holdings -- likely broken since this file was first
+# written, not something this session's other fixes introduced. All six
+# accounted for roughly two-thirds of Josh's real Luno portfolio value,
+# so this alone explains most of "shows me incorrect amounts."
 _ASSET_TO_COINGECKO_ID = {
-    "AAPLX": "apple-xstock",
-    "SPYX": "sp500-xstock",
-    "QQQX": "nasdaq-xstock",
-    "TQQQX": "tqqq-xstock",
-    "GLDX": "gold-xstock",
-    "VTIX": "vanguard-xstock",
+    "AAPLx": "apple-xstock",
+    "SPYx": "sp500-xstock",
+    "QQQx": "nasdaq-xstock",
+    "TQQQx": "tqqq-xstock",
+    "GLDx": "gold-xstock",
+    "VTIx": "vanguard-xstock",
 }
 
 # The full xStock universe CoinGecko tracks, confirmed live (2026-08-24)
