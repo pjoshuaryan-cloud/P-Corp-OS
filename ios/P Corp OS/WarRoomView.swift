@@ -93,7 +93,16 @@ struct WarRoomView: View {
     // photoPickerItem still drives the Photo picker binding, but no longer
     // 1:1 with a single attachment -- on load it appends and resets to nil
     // so the picker can be invoked again for another photo.
-    @State private var photoPickerItem: PhotosPickerItem?
+    // Real complaint, live (2026-09-11): this used to be a single
+    // PhotosPickerItem?, so picking a second photo meant reopening the
+    // picker from scratch each time. Now an array -- same photosPicker
+    // API, just its multi-selection overload, matching how the
+    // Document picker below already allows multiple at once. No client-
+    // side cap: the backend already trims anything past
+    // MAX_ATTACHMENTS_PER_MESSAGE with a clear in-band message
+    // (document_attachments.py), same as an over-large Document
+    // selection already does -- one true limit, not a duplicated one.
+    @State private var photoPickerItems: [PhotosPickerItem] = []
     @State private var showPhotosPicker = false
     @State private var showDocumentImporter = false
     // Real complaint, live (2026-09-11): tapping these two small inline
@@ -264,28 +273,31 @@ struct WarRoomView: View {
                 voiceOutput.speak(reply)
             }
         }
-        .onChange(of: photoPickerItem) { _, newItem in
-            guard let newItem else { return }
+        .onChange(of: photoPickerItems) { _, newItems in
+            guard !newItems.isEmpty else { return }
+            let itemsToLoad = newItems
             Task {
-                guard let data = try? await newItem.loadTransferable(type: Data.self),
-                      UIImage(data: data) != nil
-                else { return }
-                // Real bug found live, fixed as part of generalizing this
-                // to multi-attach (2026-09-05): this used to hardcode
-                // "image/jpeg" regardless of what was actually picked --
-                // derived properly now via the item's own content type,
-                // matching desktop's own (correct, file-extension-based)
-                // behavior.
-                let mediaType = newItem.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
-                await MainActor.run {
-                    pendingAttachments.append(
-                        PendingAttachment(data: data, mediaType: mediaType, filename: "photo", thumbnail: UIImage(data: data))
-                    )
-                    photoPickerItem = nil
+                for item in itemsToLoad {
+                    guard let data = try? await item.loadTransferable(type: Data.self),
+                          UIImage(data: data) != nil
+                    else { continue }
+                    // Real bug found live, fixed as part of generalizing this
+                    // to multi-attach (2026-09-05): this used to hardcode
+                    // "image/jpeg" regardless of what was actually picked --
+                    // derived properly now via the item's own content type,
+                    // matching desktop's own (correct, file-extension-based)
+                    // behavior.
+                    let mediaType = item.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
+                    await MainActor.run {
+                        pendingAttachments.append(
+                            PendingAttachment(data: data, mediaType: mediaType, filename: "photo", thumbnail: UIImage(data: data))
+                        )
+                    }
                 }
+                await MainActor.run { photoPickerItems = [] }
             }
         }
-        .photosPicker(isPresented: $showPhotosPicker, selection: $photoPickerItem, matching: .images)
+        .photosPicker(isPresented: $showPhotosPicker, selection: $photoPickerItems, matching: .images)
         .fileImporter(
             isPresented: $showDocumentImporter,
             allowedContentTypes: Self.documentContentTypes,
