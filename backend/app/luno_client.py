@@ -22,18 +22,36 @@ import httpx
 LUNO_API_URL = "https://api.luno.com/api/1/balance"
 LUNO_TICKERS_URL = "https://api.luno.com/api/1/tickers"
 
+# Temporary diagnostic only (2026-09-11) -- last fetch_balances() failure
+# reason, for live_finance_dashboard's debug field while tracking down why
+# this fails from Render specifically. Remove once diagnosed.
+last_fetch_balances_error: str | None = None
+
 
 async def fetch_balances() -> list[dict]:
+    global last_fetch_balances_error
+    last_fetch_balances_error = None
     key_id = os.environ.get("LUNO_API_KEY_ID")
     key_secret = os.environ.get("LUNO_API_KEY_SECRET")
     if not key_id or not key_secret:
+        last_fetch_balances_error = "LUNO_API_KEY_ID/LUNO_API_KEY_SECRET not set"
         return []
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(LUNO_API_URL, auth=(key_id, key_secret))
             resp.raise_for_status()
             data = resp.json()
-    except Exception:
+    except Exception as exc:
+        # Logged rather than swallowed (2026-09-11) -- this previously
+        # discarded the real reason entirely, same class of bug just
+        # found and fixed in connected_apps.py's Supabase check. Found
+        # live: this call worked from the Mac but came back empty from
+        # Render specifically, and there was no way to tell "wrong
+        # credentials" from "Luno unreachable from this network" without
+        # this.
+        body = getattr(getattr(exc, "response", None), "text", "")
+        last_fetch_balances_error = f"{type(exc).__name__}: {exc} {body[:300]}"
+        print(f"[luno_client] fetch_balances failed: {last_fetch_balances_error}")
         return []
     return data.get("balance", [])
 

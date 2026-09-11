@@ -172,7 +172,9 @@ async def live_finance_dashboard(postgres_conn=None) -> dict:
         snapshot["_debug_live_luno"] = f"raised: {type(exc).__name__}: {exc}"
         return snapshot
     if live_totals is None:
-        snapshot["_debug_live_luno"] = "fetch_balances_returned_empty"
+        from app import luno_client
+
+        snapshot["_debug_live_luno"] = f"fetch_balances_returned_empty: {luno_client.last_fetch_balances_error}"
         return snapshot
     snapshot["_debug_live_luno"] = "ok"
 
