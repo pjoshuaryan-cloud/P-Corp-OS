@@ -162,21 +162,15 @@ async def live_finance_dashboard(postgres_conn=None) -> dict:
     snapshot = await dashboard_snapshot(postgres_conn)
     luno_account = next((a for a in snapshot["accounts"] if a["name"] == "Luno"), None)
     if luno_account is None:
-        snapshot["_debug_live_luno"] = "no_luno_account"
         return snapshot
 
     try:
         live_totals = await _fetch_luno_asset_totals()
     except Exception as exc:
         print(f"[finance] live Luno fetch raised: {type(exc).__name__}: {exc}")
-        snapshot["_debug_live_luno"] = f"raised: {type(exc).__name__}: {exc}"
         return snapshot
     if live_totals is None:
-        from app import luno_client
-
-        snapshot["_debug_live_luno"] = f"fetch_balances_returned_empty: {luno_client.last_fetch_balances_error}"
         return snapshot
-    snapshot["_debug_live_luno"] = "ok"
 
     now = datetime.now(timezone.utc).isoformat()
     merged_holdings = []
