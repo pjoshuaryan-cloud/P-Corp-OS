@@ -292,16 +292,22 @@ class RegisterDeviceRequest(BaseModel):
     device_name: str
 
 
-async def verify_token(token: str) -> None:
+async def verify_token(token: str, request: Request) -> None:
     # Stage 7 prep (2026-09-10): additive, not a replacement -- today's
     # real AUTH_TOKEN keeps working unmodified (the desktop/iOS apps
     # already deployed use it, indefinitely), and a valid per-device
     # session (auth_db.py) is now ALSO accepted. A request must satisfy
     # one of the two; neither existing route protection is weakened, nor
     # is any new route left unprotected.
+    #
+    # request: Request added (2026-09-11, iPhone independence pass) so
+    # this dependency can read app.state.postgres_conn itself -- FastAPI
+    # resolves it automatically for every one of the 44+ Depends(verify_token)
+    # call sites with zero changes needed at any of them.
     if token == AUTH_TOKEN:
         return
-    if await verify_device_session(token):
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    if await verify_device_session(token, postgres_conn):
         return
     raise HTTPException(status_code=403, detail="invalid or missing token")
 
@@ -620,7 +626,7 @@ async def auth_google_status(_: None = Depends(verify_token)) -> dict[str, bool]
 
 
 @app.post("/auth/register-device")
-async def register_device(body: RegisterDeviceRequest, token: str) -> dict[str, str]:
+async def register_device(body: RegisterDeviceRequest, token: str, request: Request) -> dict[str, str]:
     # Stage 7 prep: deliberately gated by today's real AUTH_TOKEN directly,
     # not Depends(verify_token) -- minting a NEW per-device session can't
     # itself require an existing device session (nothing to bootstrap
@@ -630,7 +636,8 @@ async def register_device(body: RegisterDeviceRequest, token: str) -> dict[str, 
     # something better rather than a new hole.
     if token != AUTH_TOKEN:
         raise HTTPException(status_code=403, detail="invalid or missing token")
-    new_token = await create_device_session(body.device_name)
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    new_token = await create_device_session(body.device_name, postgres_conn)
     return {"token": new_token}
 
 
@@ -1164,9 +1171,14 @@ async def speak(request: SpeakRequest, http_request: Request, _: None = Depends(
 async def websocket_chat(websocket: WebSocket) -> None:
     await websocket.accept()
 
-    # Stage 7 prep: same additive check as verify_token() above.
+    # Stage 7 prep: same additive check as verify_token() above. Cheap
+    # getattr, not a new connection -- the real postgres_conn (if any) is
+    # already sitting on websocket.app.state from lifespan(); this is
+    # computed again, identically, further down for the rest of this
+    # function's own use.
     ws_token = websocket.query_params.get("token")
-    if ws_token != AUTH_TOKEN and not await verify_device_session(ws_token or ""):
+    ws_postgres_conn = getattr(websocket.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    if ws_token != AUTH_TOKEN and not await verify_device_session(ws_token or "", ws_postgres_conn):
         await websocket.send_text("[backend error: invalid or missing auth token]")
         await websocket.close()
         return

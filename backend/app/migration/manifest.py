@@ -55,6 +55,15 @@ DOMAINS: tuple[DomainSpec, ...] = (
     DomainSpec("audit", "audit.db", (
         TableSpec("tool_calls", "id", "identity"),
     )),
+    # Added 2026-09-11 as a 13th domain, after the original 12 -- Stage 7's
+    # per-device auth sessions (auth_db.py) were never part of the
+    # original migration inventory. Folding it in makes a device session
+    # minted through either the Mac or a cloud instance valid against
+    # both (they'd share the same real Postgres), and survives Render's
+    # otherwise-ephemeral disk.
+    DomainSpec("auth", "auth.db", (
+        TableSpec("device_sessions", "id", "identity"),
+    )),
     DomainSpec("automations", "automations.db", (
         TableSpec("automation_rules", "id", "plain"),
         TableSpec("automation_runs", "id", "identity"),
