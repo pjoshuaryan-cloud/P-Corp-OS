@@ -30,6 +30,9 @@ struct ContentView: View {
             }
         }
         .environment(\.appTheme, darkModeEnabled ? .dark : .light)
+        .onReceive(NotificationCenter.default.publisher(for: .pcorpDidDisconnect)) { _ in
+            storedToken = ""
+        }
     }
 
     // No exact desktop equivalent -- desktop reads its token from a

@@ -45,3 +45,12 @@ enum KeychainTokenStore {
         SecItemDelete(query as CFDictionary)
     }
 }
+
+extension Notification.Name {
+    // Real device Keychain items outlive an app delete/reinstall (standard
+    // iOS behavior, confirmed the hard way 2026-09-11: a stale/wrong token
+    // has no way to be replaced short of this). SettingsView's Disconnect
+    // row deletes the Keychain item and posts this; ContentView listens so
+    // the token-entry screen comes back without needing a relaunch.
+    static let pcorpDidDisconnect = Notification.Name("PCorpDidDisconnect")
+}

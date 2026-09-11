@@ -27,6 +27,12 @@ struct SettingsView: View {
 
     @StateObject private var connectedAppsClient = ConnectedAppsClient()
 
+    // Added 2026-09-11: the only way to replace a wrong/stale device token
+    // was previously a Mac + Xcode reinstall -- real devices, like the
+    // Simulator, keep Keychain items across an app delete, so uninstalling
+    // never actually cleared it. This is the missing escape hatch.
+    @State private var showDisconnectConfirm = false
+
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -88,6 +94,20 @@ struct SettingsView: View {
                     }
                 }
 
+                SettingsSection(title: "CONNECTION") {
+                    Button {
+                        showDisconnectConfirm = true
+                    } label: {
+                        HStack {
+                            Text("Disconnect")
+                                .font(PCorpFont.body(13, weight: .semibold))
+                                .foregroundStyle(Color.red)
+                            Spacer()
+                        }
+                        .padding(16)
+                    }
+                }
+
                 Spacer(minLength: 0)
             }
             .padding(24)
@@ -97,6 +117,15 @@ struct SettingsView: View {
         .background(theme.background)
         .onAppear {
             Task { await connectedAppsClient.fetch() }
+        }
+        .alert("Disconnect from Frank?", isPresented: $showDisconnectConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Disconnect", role: .destructive) {
+                KeychainTokenStore.delete()
+                NotificationCenter.default.post(name: .pcorpDidDisconnect, object: nil)
+            }
+        } message: {
+            Text("You'll need to paste a new device token to reconnect.")
         }
     }
 
