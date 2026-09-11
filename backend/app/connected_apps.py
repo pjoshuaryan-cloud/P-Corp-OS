@@ -56,8 +56,14 @@ async def _supabase_status() -> dict:
                 # looked identical to a glance at Settings. Matches this
                 # file's own "never launder away a real distinction"
                 # discipline.
-                print(f"[connected_apps] Supabase check failed: {type(exc).__name__}: {exc}")
-                return {"name": "Supabase (Alpha Mode Media)", "connected": False, "last_synced_at": None}
+                reason = f"{type(exc).__name__}: {exc}"
+                print(f"[connected_apps] Supabase check failed: {reason}")
+                return {
+                    "name": "Supabase (Alpha Mode Media)",
+                    "connected": False,
+                    "last_synced_at": None,
+                    "debug_reason": reason,
+                }
             await asyncio.sleep(0.5)
     return {
         "name": "Supabase (Alpha Mode Media)",
