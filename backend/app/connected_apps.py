@@ -48,9 +48,22 @@ async def _supabase_status() -> dict:
         try:
             await select_rows("projects", {"select": "id", "limit": "1"})
             break
-        except Exception:
+        except Exception as exc:
             if attempt == 1:
-                return {"name": "Supabase (Alpha Mode Media)", "connected": False, "last_synced_at": None}
+                # Logged rather than swallowed (2026-09-11) -- this
+                # except previously discarded the real reason entirely,
+                # so a genuine key revocation and a config-loading bug
+                # looked identical to a glance at Settings. Matches this
+                # file's own "never launder away a real distinction"
+                # discipline.
+                reason = f"{type(exc).__name__}: {exc}"
+                print(f"[connected_apps] Supabase check failed: {reason}")
+                return {
+                    "name": "Supabase (Alpha Mode Media)",
+                    "connected": False,
+                    "last_synced_at": None,
+                    "debug_reason": reason,
+                }
             await asyncio.sleep(0.5)
     return {
         "name": "Supabase (Alpha Mode Media)",
