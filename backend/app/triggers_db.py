@@ -37,7 +37,7 @@ against due_date instead, which would just be project_stage_stall's
 sibling wearing a different name.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -467,7 +467,15 @@ async def get_price_change(asset: str, lookback_days: int = 1, postgres_conn: An
             if latest is None:
                 return None
 
-            cutoff = (datetime.now() - timedelta(days=lookback_days)).isoformat()
+            # Real, pre-existing bug found live (2026-09-11), present in
+            # the original SQLite code too, not introduced by this port:
+            # recorded_at is stored as naive UTC in both backends
+            # (SQLite's own datetime('now') default returns UTC, matching
+            # the exact same Stage 8 local_node_last_seen_at bug class),
+            # but this cutoff used Python's local-time datetime.now() --
+            # on any machine not already at UTC+0, "1 day ago" was off by
+            # the local UTC offset, comparing against the wrong snapshot.
+            cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=lookback_days)).isoformat()
             await cur.execute(
                 "SELECT price_zar, recorded_at FROM triggers.market_price_snapshots "
                 "WHERE asset = %s AND recorded_at <= %s "
@@ -495,7 +503,8 @@ async def get_price_change(asset: str, lookback_days: int = 1, postgres_conn: An
         if latest is None:
             return None
 
-        cutoff = (datetime.now() - timedelta(days=lookback_days)).isoformat()
+        # Same naive-UTC fix as the postgres path above.
+        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=lookback_days)).isoformat()
         cursor = await db.execute(
             "SELECT price_zar, recorded_at FROM market_price_snapshots WHERE asset = ? AND recorded_at <= ? "
             "ORDER BY recorded_at DESC LIMIT 1",
