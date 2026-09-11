@@ -58,6 +58,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from app.supabase_storage import upload_document
+
 # Same "backend/data/" convention as every DB_PATH in this codebase
 # (joshx_db.py, finance_db.py, etc.) -- real generated output lives here,
 # not somewhere temporary. Created on first use, not a manual setup step.
@@ -339,7 +341,7 @@ DOCUMENTS_TOOLS = [GENERATE_PDF_DOCUMENT_TOOL]
 DOCUMENTS_TOOL_NAMES = {tool["name"] for tool in DOCUMENTS_TOOLS}
 
 
-async def execute_documents_tool_call(name: str, tool_input: dict) -> str:
+async def execute_documents_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "generate_pdf_document":
         try:
             path = generate_pdf_document(
@@ -353,5 +355,22 @@ async def execute_documents_tool_call(name: str, tool_input: dict) -> str:
             # not swallowed into a fake success. Malformed *content* never
             # reaches here -- _markdown_to_flowables has no failure case.
             return f"Could not generate the PDF: {exc}"
+        # Cloud-mirror upload (2026-09-11, iPhone independence pass): local
+        # disk write above is completely untouched -- this is an additional
+        # step, gated the same way every other domain's Postgres path is,
+        # so a document generated on either backend can be read back by
+        # either. generate_pdf_document() itself stays synchronous
+        # (reportlab is CPU-bound); only this upload needs to be async,
+        # so it happens here rather than inside that function.
+        if postgres_conn is not None:
+            try:
+                filename = Path(path).name
+                await upload_document(filename, Path(path).read_bytes())
+            except Exception as exc:
+                # Local file still exists and was already reported as a
+                # success below -- a failed cloud mirror is a real,
+                # separate problem worth surfacing honestly, not hidden
+                # behind the local save that did work.
+                return f"PDF saved to {path} (warning: cloud copy failed to upload: {exc})"
         return f"PDF saved to {path}"
     return f"Unknown tool: {name}"
