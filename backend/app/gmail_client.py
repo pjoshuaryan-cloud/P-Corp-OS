@@ -50,13 +50,13 @@ async def _get_message(http: httpx.AsyncClient, token: str, message_id: str) -> 
     }
 
 
-async def fetch_recent_messages(max_results: int = 20, query: str | None = None) -> list[dict]:
+async def fetch_recent_messages(max_results: int = 20, query: str | None = None, postgres_conn=None) -> list[dict]:
     """Lists recent message ids, then fetches metadata for each -- Gmail's
     list endpoint doesn't return headers/snippet inline for anything
     beyond the raw id/threadId, so a second call per message is required.
     Returns [] on any failure (no token yet, expired grant, network
     error) rather than raising."""
-    token = await get_valid_access_token()
+    token = await get_valid_access_token(postgres_conn)
     if token is None:
         return []
     async with httpx.AsyncClient(timeout=15.0) as http:

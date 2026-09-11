@@ -143,8 +143,8 @@ async def sync_recent_emails(max_results: int = 20, postgres_conn: Any = None) -
     Joshx clients.email. Returns the count of newly-inserted messages.
     Safe to call repeatedly (on the periodic tick or on demand) -- already-
     seen messages are silently skipped, not re-processed."""
-    messages = await fetch_recent_messages(max_results)
-    if google_oauth.is_connected():
+    messages = await fetch_recent_messages(max_results, postgres_conn=postgres_conn)
+    if await google_oauth.is_connected(postgres_conn):
         await mark_gmail_synced(postgres_conn)
     if not messages:
         return 0

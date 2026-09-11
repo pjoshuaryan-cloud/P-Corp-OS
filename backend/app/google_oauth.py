@@ -27,13 +27,33 @@ has never had anywhere else (every existing secret, including this one's
 own CLIENT_SECRET in .env, is already plaintext on disk). The access/
 refresh tokens themselves are never imported by any *_tools.py file, so
 no Frank tool can ever return one as a result.
+
+**Dual-backend as of 2026-09-11**: real gap found live during the
+iPhone cloud cutover -- this whole module predates the dual-backend
+dispatcher pattern applied to every other domain this session, and the
+local-file storage above genuinely is local to whichever machine
+generated it. A phone (or Render) reading `is_connected()`/
+`get_valid_access_token()` had no way to see a grant made through the
+Mac's own file, so Gmail/Calendar always read as disconnected from the
+cloud. The three functions below now accept `postgres_conn: Any = None`
+and, when set, read/write the shared `pcorp.app_state` row via
+`db.py`'s `get_google_oauth_tokens_postgres`/`set_google_oauth_tokens_postgres`
+instead of the local file -- same shape as every other domain's
+dispatcher, except the SQLite-mode "other side" is the pre-existing file
+rather than a table (see those two functions' own docstring). Neither
+storage is authoritative over the other; whichever backend answers a
+given request is the one whose grant it sees, same as the file always
+was for the Mac alone.
 """
 
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
+
+from app import db
 
 TOKEN_PATH = Path(__file__).parent.parent / "data" / "google_oauth_token.json"
 REDIRECT_URI = "http://127.0.0.1:8731/auth/google/callback"
@@ -71,7 +91,10 @@ def _write_token_file(data: dict) -> None:
     TOKEN_PATH.write_text(json.dumps(data))
 
 
-def is_connected() -> bool:
+async def is_connected(postgres_conn: Any = None) -> bool:
+    if postgres_conn is not None:
+        stored = await db.get_google_oauth_tokens_postgres(postgres_conn)
+        return bool(stored and stored.get("refresh_token"))
     stored = _read_token_file()
     return bool(stored and stored.get("refresh_token"))
 
@@ -93,7 +116,7 @@ def get_authorization_url(state: str) -> str:
     return f"{AUTHORIZATION_ENDPOINT}?{query}"
 
 
-async def exchange_code_for_tokens(code: str) -> bool:
+async def exchange_code_for_tokens(code: str, postgres_conn: Any = None) -> bool:
     async with httpx.AsyncClient(timeout=15.0) as http:
         response = await http.post(
             TOKEN_ENDPOINT,
@@ -108,13 +131,13 @@ async def exchange_code_for_tokens(code: str) -> bool:
     if response.status_code != 200:
         return False
     payload = response.json()
-    _write_token_file(
-        {
-            "refresh_token": payload["refresh_token"],
-            "access_token": payload["access_token"],
-            "expires_at": time.time() + payload["expires_in"],
-        }
-    )
+    refresh_token = payload["refresh_token"]
+    access_token = payload["access_token"]
+    expires_at = time.time() + payload["expires_in"]
+    if postgres_conn is not None:
+        await db.set_google_oauth_tokens_postgres(postgres_conn, refresh_token, access_token, expires_at)
+        return True
+    _write_token_file({"refresh_token": refresh_token, "access_token": access_token, "expires_at": expires_at})
     return True
 
 
@@ -143,13 +166,27 @@ async def _refresh(refresh_token: str) -> dict | None:
     return response.json()
 
 
-async def get_valid_access_token() -> str | None:
+async def get_valid_access_token(postgres_conn: Any = None) -> str | None:
     """The only function gmail_client.py/google_calendar_client.py call --
     refreshes and persists a new access token if the stored one is
     expired or close to it, returns None if Google was never authorized
     at all (rather than raising, so a not-yet-connected state is just
     "no data" to every caller, same fail-soft posture as the rest of this
     module)."""
+    if postgres_conn is not None:
+        stored = await db.get_google_oauth_tokens_postgres(postgres_conn)
+        if stored is None:
+            return None
+        if stored["expires_at"] - _EXPIRY_SAFETY_MARGIN_SECONDS > time.time():
+            return stored["access_token"]
+        refreshed = await _refresh(stored["refresh_token"])
+        if refreshed is None:
+            return None
+        new_access_token = refreshed["access_token"]
+        new_expires_at = time.time() + refreshed["expires_in"]
+        await db.set_google_oauth_tokens_postgres(postgres_conn, stored["refresh_token"], new_access_token, new_expires_at)
+        return new_access_token
+
     stored = _read_token_file()
     if stored is None:
         return None

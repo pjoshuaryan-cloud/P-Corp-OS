@@ -174,6 +174,23 @@ async def init_db() -> None:
         if "local_node_last_seen_at" not in columns:
             await db.execute("ALTER TABLE app_state ADD COLUMN local_node_last_seen_at TEXT")
 
+        # Migration path: app_state existed before Google's OAuth grant
+        # became shared, cloud-visible state (2026-09-11). Previously
+        # lived only in a local JSON file on the Mac's disk
+        # (google_oauth.py's own TOKEN_PATH) -- real gap found live: a
+        # phone pointed at the cloud instance had no way to see it at
+        # all, so Gmail/Calendar always read as disconnected there.
+        # `google_oauth.py`'s SQLite/file path is untouched; these
+        # columns back the new Postgres path only. `google_token_expires_at`
+        # stores the same raw epoch-seconds float google_oauth.py's own
+        # `time.time() + expires_in` already produces -- deliberately not
+        # a formatted timestamp string, sidestepping the exact class of
+        # date-separator bug just found and fixed in get_price_change.
+        if "google_refresh_token" not in columns:
+            await db.execute("ALTER TABLE app_state ADD COLUMN google_refresh_token TEXT")
+            await db.execute("ALTER TABLE app_state ADD COLUMN google_access_token TEXT")
+            await db.execute("ALTER TABLE app_state ADD COLUMN google_token_expires_at REAL")
+
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_records (
@@ -375,6 +392,37 @@ async def mark_gmail_synced(postgres_conn: Any = None) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE app_state SET last_gmail_sync_at = datetime('now') WHERE id = 1")
         await db.commit()
+
+
+async def get_google_oauth_tokens_postgres(conn: Any) -> dict | None:
+    """Postgres-only, deliberately no SQLite sibling here (unlike every
+    other function in this file) -- the SQLite-mode equivalent of this
+    data isn't a row in this table at all, it's google_oauth.py's own
+    pre-existing local JSON file (TOKEN_PATH), which stays completely
+    untouched. This function backs only the new cloud-shared path, same
+    asymmetry calendar_db.py already has between its AppleScript source
+    (Mac-only) and its dispatched cache table."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT google_refresh_token, google_access_token, google_token_expires_at "
+            "FROM pcorp.app_state WHERE id = 1"
+        )
+        row = await cur.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return {"refresh_token": row[0], "access_token": row[1], "expires_at": row[2]}
+
+
+async def set_google_oauth_tokens_postgres(
+    conn: Any, refresh_token: str, access_token: str, expires_at: float
+) -> None:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE pcorp.app_state SET google_refresh_token = %s, google_access_token = %s, "
+            "google_token_expires_at = %s WHERE id = 1",
+            (refresh_token, access_token, expires_at),
+        )
+    await conn.commit()
 
 
 async def get_credits_exhausted_since(postgres_conn: Any = None) -> str | None:

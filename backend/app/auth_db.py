@@ -108,8 +108,19 @@ async def verify_device_session(token: str, postgres_conn: Any = None) -> bool:
             )
             row = await cur.fetchone()
             if row is None:
+                # Real bug found live (2026-09-11): this used to return
+                # without ever committing/rolling back, leaving the one
+                # shared connection sitting in an open transaction --
+                # holding whatever locks that SELECT implied -- for as
+                # long as the connection lived. verify_token() runs this
+                # on nearly every request, so any invalid/expired/revoked
+                # token check (not just this success path) needed to end
+                # its transaction too. Confirmed live: a stuck ALTER
+                # TABLE queued for minutes behind exactly this.
+                await postgres_conn.rollback()
                 return False
             if datetime.fromisoformat(row[1]) < now:
+                await postgres_conn.rollback()
                 return False
             new_expiry = (now + timedelta(days=SESSION_LIFETIME_DAYS)).isoformat()
             await cur.execute(

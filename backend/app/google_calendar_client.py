@@ -20,8 +20,8 @@ from app.google_oauth import get_valid_access_token, google_api_get
 EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 
 
-async def fetch_upcoming_events(days: int = 7) -> list[dict]:
-    token = await get_valid_access_token()
+async def fetch_upcoming_events(days: int = 7, postgres_conn=None) -> list[dict]:
+    token = await get_valid_access_token(postgres_conn)
     if token is None:
         return []
     now = datetime.now(timezone.utc)

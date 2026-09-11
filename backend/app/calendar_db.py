@@ -72,7 +72,7 @@ def _applescript_id(title: str, start: str) -> str:
 
 async def sync_calendar_cache(postgres_conn: Any = None) -> None:
     applescript_events = await list_applescript_events(SYNC_WINDOW_DAYS)
-    google_events = await fetch_upcoming_events(SYNC_WINDOW_DAYS)
+    google_events = await fetch_upcoming_events(SYNC_WINDOW_DAYS, postgres_conn=postgres_conn)
     if postgres_conn is not None:
         await _sync_calendar_cache_postgres(postgres_conn, applescript_events, google_events)
         return

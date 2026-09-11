@@ -79,7 +79,7 @@ async def compute_connected_apps_status(postgres_conn=None) -> list[dict]:
     # google_oauth.py's own _refresh()) -- reusing it here turns this
     # into a genuine liveness check, matching the discipline
     # _supabase_status() above already applies to its own integration.
-    google_connected = await google_oauth.get_valid_access_token() is not None
+    google_connected = await google_oauth.get_valid_access_token(postgres_conn) is not None
     return [
         {
             "name": "Gmail",

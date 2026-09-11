@@ -605,14 +605,17 @@ async def auth_google_start() -> RedirectResponse:
 
 
 @app.get("/auth/google/callback")
-async def auth_google_callback(code: str | None = None, state: str | None = None, error: str | None = None) -> Response:
+async def auth_google_callback(
+    request: Request, code: str | None = None, state: str | None = None, error: str | None = None
+) -> Response:
     global _google_oauth_state
     if error:
         body = f"<html><body><h3>Google sign-in was cancelled or failed: {error}</h3></body></html>"
     elif not code or not state or state != _google_oauth_state:
         body = "<html><body><h3>This sign-in link is invalid or expired -- start again from P Corp OS.</h3></body></html>"
     else:
-        ok = await google_oauth.exchange_code_for_tokens(code)
+        postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+        ok = await google_oauth.exchange_code_for_tokens(code, postgres_conn)
         _google_oauth_state = None
         if ok:
             body = "<html><body><h3>Connected. You can close this tab -- P Corp OS is now connected to Google.</h3></body></html>"
@@ -622,8 +625,9 @@ async def auth_google_callback(code: str | None = None, state: str | None = None
 
 
 @app.get("/auth/google/status")
-async def auth_google_status(_: None = Depends(verify_token)) -> dict[str, bool]:
-    return {"connected": google_oauth.is_connected()}
+async def auth_google_status(request: Request, _: None = Depends(verify_token)) -> dict[str, bool]:
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return {"connected": await google_oauth.is_connected(postgres_conn)}
 
 
 @app.post("/auth/register-device")
