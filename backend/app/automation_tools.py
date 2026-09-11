@@ -101,7 +101,7 @@ async def _request_approval(
         return False
 
 
-async def execute_automation_tool_call(name: str, tool_input: dict, websocket: WebSocket) -> str:
+async def execute_automation_tool_call(name: str, tool_input: dict, websocket: WebSocket, postgres_conn=None) -> str:
     if name != "propose_create_automation":
         return f"Unknown tool: {name}"
 
@@ -131,6 +131,7 @@ async def execute_automation_tool_call(name: str, tool_input: dict, websocket: W
         trigger_tool=trigger_tool,
         agent=agent,
         instruction=tool_input["instruction"],
+        postgres_conn=postgres_conn,
     )
     await websocket.send_text(
         f"\n[notify]{json.dumps({'title': 'Automation created', 'body': tool_input['name']})}"

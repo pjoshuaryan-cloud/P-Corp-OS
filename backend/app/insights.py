@@ -43,13 +43,24 @@ HORIZON_DAYS = 7
 OUTREACH_STALE_AFTER_DAYS = 14
 
 
-async def _overdue_and_upcoming_tasks(today: str, horizon: str) -> list[dict]:
-    async with aiosqlite.connect(OPERATIONS_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT title, area, due_date FROM tasks WHERE status != 'done' AND due_date IS NOT NULL AND deleted_at IS NULL ORDER BY due_date"
-        )
-        rows = await cursor.fetchall()
+async def _overdue_and_upcoming_tasks(today: str, horizon: str, postgres_conn=None) -> list[dict]:
+    # Real bypass fix (2026-09-11, iPhone independence pass): this used to
+    # open its own raw aiosqlite connection straight against
+    # operations.db's local file, completely bypassing DATA_BACKEND.
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT title, area, due_date FROM operations.tasks "
+                "WHERE status != 'done' AND due_date IS NOT NULL AND deleted_at IS NULL ORDER BY due_date"
+            )
+            rows = [{"title": r[0], "area": r[1], "due_date": r[2]} for r in await cur.fetchall()]
+    else:
+        async with aiosqlite.connect(OPERATIONS_DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT title, area, due_date FROM tasks WHERE status != 'done' AND due_date IS NOT NULL AND deleted_at IS NULL ORDER BY due_date"
+            )
+            rows = await cursor.fetchall()
 
     insights = []
     for row in rows:
@@ -70,18 +81,37 @@ async def _overdue_and_upcoming_tasks(today: str, horizon: str) -> list[dict]:
     return insights
 
 
-async def _overdue_and_upcoming_invoices(today: str, horizon: str) -> list[dict]:
-    async with aiosqlite.connect(ALPHA_MODE_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            """
-            SELECT invoices.amount, invoices.due_date, clients.name AS client_name
-            FROM invoices JOIN clients ON invoices.client_id = clients.id
-            WHERE invoices.status != 'paid' AND invoices.due_date IS NOT NULL
-            ORDER BY invoices.due_date
-            """
-        )
-        rows = await cursor.fetchall()
+async def _overdue_and_upcoming_invoices(today: str, horizon: str, postgres_conn=None) -> list[dict]:
+    # Real bypass fix (2026-09-11) -- same as _overdue_and_upcoming_tasks
+    # above, against alpha_mode.db instead of operations.db. Note: these
+    # local invoices/clients tables are pre-existing, known-dead data
+    # (alpha_mode_db.py's own docstring: nothing has written to them since
+    # 2026-08-02, real invoices moved to Supabase) -- that staleness is
+    # unrelated to and unfixed by this change, which only stops the read
+    # from silently ignoring DATA_BACKEND.
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT invoices.amount, invoices.due_date, clients.name
+                FROM alpha_mode.invoices JOIN alpha_mode.clients ON invoices.client_id = clients.id
+                WHERE invoices.status != 'paid' AND invoices.due_date IS NOT NULL
+                ORDER BY invoices.due_date
+                """
+            )
+            rows = [{"amount": r[0], "due_date": r[1], "client_name": r[2]} for r in await cur.fetchall()]
+    else:
+        async with aiosqlite.connect(ALPHA_MODE_DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT invoices.amount, invoices.due_date, clients.name AS client_name
+                FROM invoices JOIN clients ON invoices.client_id = clients.id
+                WHERE invoices.status != 'paid' AND invoices.due_date IS NOT NULL
+                ORDER BY invoices.due_date
+                """
+            )
+            rows = await cursor.fetchall()
 
     insights = []
     for row in rows:
@@ -101,8 +131,8 @@ async def _overdue_and_upcoming_invoices(today: str, horizon: str) -> list[dict]
     return insights
 
 
-async def _clients_needing_outreach() -> list[dict]:
-    stale_clients = await clients_needing_outreach(OUTREACH_STALE_AFTER_DAYS)
+async def _clients_needing_outreach(postgres_conn=None) -> list[dict]:
+    stale_clients = await clients_needing_outreach(OUTREACH_STALE_AFTER_DAYS, postgres_conn)
     insights = []
     for client in stale_clients:
         if client["last_contacted_date"]:
@@ -171,12 +201,12 @@ async def _quotes_needing_followup() -> list[dict]:
     return insights
 
 
-async def _relationship_follow_up_needed() -> list[dict]:
+async def _relationship_follow_up_needed(postgres_conn=None) -> list[dict]:
     # People/Relationships layer (2026-08-27, people_db.py) -- same
     # "relationship going stale" semantic as _clients_needing_outreach
     # above, same category, but over Josh's real personal/professional
     # network rather than Alpha Mode Media clients.
-    overdue = await get_overdue_follow_ups()
+    overdue = await get_overdue_follow_ups(postgres_conn=postgres_conn)
     insights = []
     for person in overdue:
         last = person["last_contact_date"] or "never"
@@ -193,16 +223,16 @@ async def _relationship_follow_up_needed() -> list[dict]:
     return insights
 
 
-async def compute_insights(limit: int = 5) -> list[dict]:
+async def compute_insights(limit: int = 5, postgres_conn=None) -> list[dict]:
     today = date.today().isoformat()
     horizon = (date.today() + timedelta(days=HORIZON_DAYS)).isoformat()
 
-    tasks = await _overdue_and_upcoming_tasks(today, horizon)
-    invoices = await _overdue_and_upcoming_invoices(today, horizon)
-    outreach = await _clients_needing_outreach()
+    tasks = await _overdue_and_upcoming_tasks(today, horizon, postgres_conn)
+    invoices = await _overdue_and_upcoming_invoices(today, horizon, postgres_conn)
+    outreach = await _clients_needing_outreach(postgres_conn)
     leads = await _leads_needing_followup()
     quotes = await _quotes_needing_followup()
-    relationships = await _relationship_follow_up_needed()
+    relationships = await _relationship_follow_up_needed(postgres_conn)
 
     combined = tasks + invoices + outreach + leads + quotes + relationships
     combined.sort(key=lambda item: (item["priority"], item["detail"]))

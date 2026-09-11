@@ -33,13 +33,24 @@ TASK_OVERDUE_DAYS = 14
 OUTREACH_STALE_DAYS = 45
 
 
-async def _severely_overdue_tasks(today: date) -> list[dict]:
-    async with aiosqlite.connect(OPERATIONS_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT title, area, due_date FROM tasks WHERE status != 'done' AND due_date IS NOT NULL AND deleted_at IS NULL"
-        )
-        rows = await cursor.fetchall()
+async def _severely_overdue_tasks(today: date, postgres_conn=None) -> list[dict]:
+    # Real bypass fix (2026-09-11, iPhone independence pass): this used to
+    # open its own raw aiosqlite connection straight against
+    # operations.db's local file, completely bypassing DATA_BACKEND.
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT title, area, due_date FROM operations.tasks "
+                "WHERE status != 'done' AND due_date IS NOT NULL AND deleted_at IS NULL"
+            )
+            rows = [{"title": r[0], "area": r[1], "due_date": r[2]} for r in await cur.fetchall()]
+    else:
+        async with aiosqlite.connect(OPERATIONS_DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT title, area, due_date FROM tasks WHERE status != 'done' AND due_date IS NOT NULL AND deleted_at IS NULL"
+            )
+            rows = await cursor.fetchall()
 
     alerts = []
     for row in rows:
@@ -57,17 +68,32 @@ async def _severely_overdue_tasks(today: date) -> list[dict]:
     return alerts
 
 
-async def _severely_overdue_invoices(today: date) -> list[dict]:
-    async with aiosqlite.connect(ALPHA_MODE_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            """
-            SELECT invoices.amount, invoices.due_date, clients.name AS client_name
-            FROM invoices JOIN clients ON invoices.client_id = clients.id
-            WHERE invoices.status != 'paid' AND invoices.due_date IS NOT NULL
-            """
-        )
-        rows = await cursor.fetchall()
+async def _severely_overdue_invoices(today: date, postgres_conn=None) -> list[dict]:
+    # Real bypass fix (2026-09-11) -- same as _severely_overdue_tasks
+    # above, against alpha_mode.db (pre-existing, known-dead local
+    # invoices/clients data, per alpha_mode_db.py's own docstring -- that
+    # staleness is unrelated to and unfixed by this change).
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT invoices.amount, invoices.due_date, clients.name
+                FROM alpha_mode.invoices JOIN alpha_mode.clients ON invoices.client_id = clients.id
+                WHERE invoices.status != 'paid' AND invoices.due_date IS NOT NULL
+                """
+            )
+            rows = [{"amount": r[0], "due_date": r[1], "client_name": r[2]} for r in await cur.fetchall()]
+    else:
+        async with aiosqlite.connect(ALPHA_MODE_DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT invoices.amount, invoices.due_date, clients.name AS client_name
+                FROM invoices JOIN clients ON invoices.client_id = clients.id
+                WHERE invoices.status != 'paid' AND invoices.due_date IS NOT NULL
+                """
+            )
+            rows = await cursor.fetchall()
 
     alerts = []
     for row in rows:
@@ -84,8 +110,8 @@ async def _severely_overdue_invoices(today: date) -> list[dict]:
     return alerts
 
 
-async def _severely_stale_outreach() -> list[dict]:
-    stale_clients = await clients_needing_outreach(OUTREACH_STALE_DAYS)
+async def _severely_stale_outreach(postgres_conn=None) -> list[dict]:
+    stale_clients = await clients_needing_outreach(OUTREACH_STALE_DAYS, postgres_conn)
     alerts = []
     for client in stale_clients:
         detail = (
@@ -103,7 +129,7 @@ async def _severely_stale_outreach() -> list[dict]:
     return alerts
 
 
-async def _credit_exhausted_alert() -> list[dict]:
+async def _credit_exhausted_alert(postgres_conn=None) -> list[dict]:
     """Reliability pass (2026-09-07): main.py's websocket_chat sets
     app_state.credits_exhausted_since the moment a real Anthropic billing
     error is caught, and clears it the moment a turn next succeeds -- see
@@ -111,7 +137,7 @@ async def _credit_exhausted_alert() -> list[dict]:
     only as the one in-chat error message so it stays visible across both
     apps for as long as it's actually true, not just in the one chat
     bubble that happened to trigger it."""
-    exhausted_since = await get_credits_exhausted_since()
+    exhausted_since = await get_credits_exhausted_since(postgres_conn)
     if exhausted_since is None:
         return []
     return [
@@ -147,11 +173,11 @@ async def _connected_apps_alerts() -> list[dict]:
     ]
 
 
-async def compute_situation_room_alerts() -> list[dict]:
+async def compute_situation_room_alerts(postgres_conn=None) -> list[dict]:
     today = date.today()
-    credits = await _credit_exhausted_alert()
+    credits = await _credit_exhausted_alert(postgres_conn)
     connected_apps = await _connected_apps_alerts()
-    tasks = await _severely_overdue_tasks(today)
-    invoices = await _severely_overdue_invoices(today)
-    outreach = await _severely_stale_outreach()
+    tasks = await _severely_overdue_tasks(today, postgres_conn)
+    invoices = await _severely_overdue_invoices(today, postgres_conn)
+    outreach = await _severely_stale_outreach(postgres_conn)
     return credits + connected_apps + tasks + invoices + outreach

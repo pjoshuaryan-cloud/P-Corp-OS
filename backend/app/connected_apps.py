@@ -62,7 +62,7 @@ async def _supabase_status() -> dict:
     }
 
 
-async def compute_connected_apps_status() -> list[dict]:
+async def compute_connected_apps_status(postgres_conn=None) -> list[dict]:
     # Real gap found live (2026-09-06, systems audit §18 sweep):
     # is_connected() only checks that a refresh-token file exists on
     # disk -- a real revocation (Josh removes access in his Google
@@ -77,12 +77,12 @@ async def compute_connected_apps_status() -> list[dict]:
         {
             "name": "Gmail",
             "connected": google_connected,
-            "last_synced_at": await get_last_gmail_sync_at(),
+            "last_synced_at": await get_last_gmail_sync_at(postgres_conn),
         },
         {
             "name": "Google Calendar",
             "connected": google_connected,
-            "last_synced_at": await get_last_google_calendar_sync_at(),
+            "last_synced_at": await get_last_google_calendar_sync_at(postgres_conn),
         },
         await _supabase_status(),
     ]
@@ -91,7 +91,7 @@ async def compute_connected_apps_status() -> list[dict]:
 _cached_status: list[dict] | None = None
 
 
-async def refresh_connected_apps_cache() -> None:
+async def refresh_connected_apps_cache(postgres_conn=None) -> None:
     """Feeds the Situation Room's disconnection alert (reliability pass,
     2026-09-07) without adding compute_connected_apps_status()'s real
     network cost to Situation Room's own 30s poll cadence -- see
@@ -110,14 +110,14 @@ async def refresh_connected_apps_cache() -> None:
     directly, since that's a deliberate user action that should always see
     fresh truth, not the last cached tick."""
     global _cached_status
-    _cached_status = await compute_connected_apps_status()
+    _cached_status = await compute_connected_apps_status(postgres_conn)
 
 
 def get_cached_connected_apps_status() -> list[dict] | None:
     return _cached_status
 
 
-async def summarize() -> str:
+async def summarize(postgres_conn=None) -> str:
     """Plain-text snapshot, same style as trading_division.py's own
     summarize() -- for a Frank-facing tool, not the /connected-apps REST
     endpoint (which returns the structured list directly to Settings).
@@ -130,7 +130,7 @@ async def summarize() -> str:
     call's latency to every message Frank sends, not just the rare
     "how's everything connected" or executive-summary ask that actually
     needs it. Exposed as an on-demand tool instead (see below)."""
-    rows = await compute_connected_apps_status()
+    rows = await compute_connected_apps_status(postgres_conn)
     lines = []
     for row in rows:
         synced = row["last_synced_at"] or "never"
@@ -155,7 +155,7 @@ CONNECTED_APPS_TOOLS = [CHECK_CONNECTED_APPS_TOOL]
 CONNECTED_APPS_TOOL_NAMES = {tool["name"] for tool in CONNECTED_APPS_TOOLS}
 
 
-async def execute_connected_apps_tool_call(name: str, tool_input: dict) -> str:
+async def execute_connected_apps_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name != "check_connected_apps_status":
         return f"Unknown tool: {name}"
-    return await summarize()
+    return await summarize(postgres_conn)

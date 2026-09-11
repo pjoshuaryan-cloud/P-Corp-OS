@@ -40,10 +40,19 @@ reviewing historical versions matters enough to justify that complexity.
 Deliberately NOT here yet: semantic/vector search over memory_records, an
 "undo"/view-forgotten-records UI, and any context-window management for a
 single conversation that gets very long.
+
+Dual-backend dispatchers (2026-09-10, iPhone independence pass): every
+function gains a postgres_conn: Any = None parameter, same pattern proven
+in personal_db.py/operations_db.py -- SQLite body renamed _<name>_sqlite,
+untouched; a new _<name>_postgres sibling added; the public function
+dispatches on whether postgres_conn is not None. pcorp is the highest-
+priority domain to convert since it holds conversation history and
+memory -- without it, a cloud-hosted Frank has no context at all.
 """
 
 import json
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -262,25 +271,42 @@ async def init_db() -> None:
         await db.commit()
 
 
-async def get_active_conversation_id() -> int:
+async def get_active_conversation_id(postgres_conn: Any = None) -> int:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT active_conversation_id FROM pcorp.app_state WHERE id = 1")
+            (conversation_id,) = await cur.fetchone()
+            return conversation_id
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT active_conversation_id FROM app_state WHERE id = 1")
         (conversation_id,) = await cursor.fetchone()
         return conversation_id
 
 
-async def set_active_conversation(conversation_id: int) -> None:
+async def set_active_conversation(conversation_id: int, postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE pcorp.app_state SET active_conversation_id = %s WHERE id = 1", (conversation_id,)
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE app_state SET active_conversation_id = ? WHERE id = 1", (conversation_id,))
         await db.commit()
 
 
-async def get_focus_objective() -> dict:
+async def get_focus_objective(postgres_conn: Any = None) -> dict:
     """Focus Lock (2026-08-10) -- a real, settable "current objective,"
     deliberately scoped to just this: no on/off mode, no context-switch
     detection, no automatic deprioritization of anything. Joshua can
     always override by asking Frank to change it (or a future direct UI
     affordance) -- there's no enforcement mechanism to override."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT current_objective, objective_set_at FROM pcorp.app_state WHERE id = 1")
+            row = await cur.fetchone()
+            return {"objective": row[0], "set_at": str(row[1]) if row[1] is not None else None}
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT current_objective, objective_set_at FROM app_state WHERE id = 1")
@@ -288,7 +314,15 @@ async def get_focus_objective() -> dict:
         return {"objective": row["current_objective"], "set_at": row["objective_set_at"]}
 
 
-async def set_focus_objective(objective: str) -> None:
+async def set_focus_objective(objective: str, postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE pcorp.app_state SET current_objective = %s, objective_set_at = (now() AT TIME ZONE 'utc') WHERE id = 1",
+                (objective,),
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE app_state SET current_objective = ?, objective_set_at = datetime('now') WHERE id = 1",
@@ -297,40 +331,78 @@ async def set_focus_objective(objective: str) -> None:
         await db.commit()
 
 
-async def get_brief_last_viewed_at() -> str | None:
+async def get_brief_last_viewed_at(postgres_conn: Any = None) -> str | None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT last_brief_viewed_at FROM pcorp.app_state WHERE id = 1")
+            (last_viewed,) = await cur.fetchone()
+            return str(last_viewed) if last_viewed is not None else None
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT last_brief_viewed_at FROM app_state WHERE id = 1")
         (last_viewed,) = await cursor.fetchone()
         return last_viewed
 
 
-async def mark_brief_viewed() -> None:
+async def mark_brief_viewed(postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("UPDATE pcorp.app_state SET last_brief_viewed_at = (now() AT TIME ZONE 'utc') WHERE id = 1")
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE app_state SET last_brief_viewed_at = datetime('now') WHERE id = 1")
         await db.commit()
 
 
-async def get_last_gmail_sync_at() -> str | None:
+async def get_last_gmail_sync_at(postgres_conn: Any = None) -> str | None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT last_gmail_sync_at FROM pcorp.app_state WHERE id = 1")
+            (last_synced,) = await cur.fetchone()
+            return str(last_synced) if last_synced is not None else None
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT last_gmail_sync_at FROM app_state WHERE id = 1")
         (last_synced,) = await cursor.fetchone()
         return last_synced
 
 
-async def mark_gmail_synced() -> None:
+async def mark_gmail_synced(postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("UPDATE pcorp.app_state SET last_gmail_sync_at = (now() AT TIME ZONE 'utc') WHERE id = 1")
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE app_state SET last_gmail_sync_at = datetime('now') WHERE id = 1")
         await db.commit()
 
 
-async def get_credits_exhausted_since() -> str | None:
+async def get_credits_exhausted_since(postgres_conn: Any = None) -> str | None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT credits_exhausted_since FROM pcorp.app_state WHERE id = 1")
+            (exhausted_since,) = await cur.fetchone()
+            return str(exhausted_since) if exhausted_since is not None else None
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT credits_exhausted_since FROM app_state WHERE id = 1")
         (exhausted_since,) = await cursor.fetchone()
         return exhausted_since
 
 
-async def set_credits_exhausted() -> None:
+async def set_credits_exhausted(postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        # now()::text cast required -- COALESCE needs its arguments to be
+        # the same type (credits_exhausted_since is TEXT, matching SQLite);
+        # a plain assignment (column = now()) casts implicitly, but
+        # COALESCE's own type resolution happens before that, found live
+        # here when a plain now() raised DatatypeMismatch.
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE pcorp.app_state SET credits_exhausted_since = COALESCE(credits_exhausted_since, (now() AT TIME ZONE 'utc')::text) "
+                "WHERE id = 1"
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE app_state SET credits_exhausted_since = COALESCE(credits_exhausted_since, datetime('now')) WHERE id = 1"
@@ -338,26 +410,51 @@ async def set_credits_exhausted() -> None:
         await db.commit()
 
 
-async def clear_credits_exhausted() -> None:
+async def clear_credits_exhausted(postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("UPDATE pcorp.app_state SET credits_exhausted_since = NULL WHERE id = 1")
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE app_state SET credits_exhausted_since = NULL WHERE id = 1")
         await db.commit()
 
 
-async def get_local_node_last_seen_at() -> str | None:
+async def get_local_node_last_seen_at(postgres_conn: Any = None) -> str | None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT local_node_last_seen_at FROM pcorp.app_state WHERE id = 1")
+            (last_seen,) = await cur.fetchone()
+            return str(last_seen) if last_seen is not None else None
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT local_node_last_seen_at FROM app_state WHERE id = 1")
         (last_seen,) = await cursor.fetchone()
         return last_seen
 
 
-async def mark_local_node_seen() -> None:
+async def mark_local_node_seen(postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("UPDATE pcorp.app_state SET local_node_last_seen_at = (now() AT TIME ZONE 'utc') WHERE id = 1")
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE app_state SET local_node_last_seen_at = datetime('now') WHERE id = 1")
         await db.commit()
 
 
-async def create_new_conversation() -> int:
+async def create_new_conversation(postgres_conn: Any = None) -> int:
+    if postgres_conn is not None:
+        # created_at supplied explicitly -- same missing-DEFAULT gap found
+        # repeatedly this migration (Stage 3's replicate.py doesn't carry
+        # SQLite DEFAULT clauses into the Postgres DDL).
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("INSERT INTO pcorp.conversations (created_at) VALUES ((now() AT TIME ZONE 'utc')) RETURNING id")
+            (new_id,) = await cur.fetchone()
+            await cur.execute("UPDATE pcorp.app_state SET active_conversation_id = %s WHERE id = 1", (new_id,))
+        await postgres_conn.commit()
+        return new_id
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("INSERT INTO conversations DEFAULT VALUES")
         new_id = cursor.lastrowid
@@ -366,7 +463,7 @@ async def create_new_conversation() -> int:
         return new_id
 
 
-async def list_conversations(query: str | None = None) -> list[dict]:
+async def list_conversations(query: str | None = None, postgres_conn: Any = None) -> list[dict]:
     # Excludes conversations with zero messages — an abandoned "new chat"
     # click (started but never used) would otherwise sit above real
     # conversations in the newest-first ordering, burying the ones that
@@ -380,6 +477,44 @@ async def list_conversations(query: str | None = None) -> list[dict]:
     # message CONTENT across the whole conversation (not just the preview),
     # so "find where I discussed X" actually works, not just matching
     # against whatever happened to be the first message.
+    if postgres_conn is not None:
+        sql = """
+            SELECT
+                c.id,
+                c.created_at,
+                (SELECT content FROM pcorp.messages m WHERE m.conversation_id = c.id
+                 AND m.role = 'user' ORDER BY m.id ASC LIMIT 1) AS first_message,
+                (SELECT COUNT(*) FROM pcorp.messages m WHERE m.conversation_id = c.id) AS message_count,
+                (SELECT MAX(created_at) FROM pcorp.messages m WHERE m.conversation_id = c.id) AS last_message_at
+            FROM pcorp.conversations c
+            WHERE EXISTS (SELECT 1 FROM pcorp.messages m WHERE m.conversation_id = c.id)
+        """
+        params: list[Any] = []
+        if query:
+            # ILIKE, not LIKE -- same case-sensitivity fix already proven
+            # necessary throughout this migration (SQLite's LIKE is
+            # case-insensitive by default; Postgres's is not).
+            sql += """
+                AND EXISTS (
+                    SELECT 1 FROM pcorp.messages m2
+                    WHERE m2.conversation_id = c.id AND m2.content ILIKE %s
+                )
+            """
+            params.append(f"%{query}%")
+        sql += " ORDER BY last_message_at DESC"
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(sql, params)
+            rows = await cur.fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "created_at": str(r[1]) if r[1] is not None else None,
+                    "first_message": r[2],
+                    "message_count": r[3],
+                    "last_message_at": str(r[4]) if r[4] is not None else None,
+                }
+                for r in rows
+            ]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         sql = """
@@ -393,7 +528,7 @@ async def list_conversations(query: str | None = None) -> list[dict]:
             FROM conversations c
             WHERE EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
         """
-        params: list[str] = []
+        params = []
         if query:
             sql += """
                 AND EXISTS (
@@ -418,7 +553,7 @@ async def list_conversations(query: str | None = None) -> list[dict]:
         ]
 
 
-async def load_history(conversation_id: int) -> list[dict]:
+async def load_history(conversation_id: int, postgres_conn: Any = None) -> list[dict]:
     # image_path/attachments are included for the UI (GET /history — the
     # "📎 image attached"/"N files attached" placeholder for a reopened old
     # conversation) but are deliberately stripped back out before this
@@ -429,6 +564,23 @@ async def load_history(conversation_id: int) -> list[dict]:
     # kinds 2026-09-05. `attachments` is only populated for messages sent
     # after that migration -- an older row has `image_path` set instead
     # (still read here, never re-written).
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT role, content, image_path, attachments FROM pcorp.messages "
+                "WHERE conversation_id = %s ORDER BY id ASC",
+                (conversation_id,),
+            )
+            rows = await cur.fetchall()
+            return [
+                {
+                    "role": r[0],
+                    "content": r[1],
+                    "image_path": r[2],
+                    "attachments": json.loads(r[3]) if r[3] else None,
+                }
+                for r in rows
+            ]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -453,7 +605,19 @@ async def save_message(
     content: str,
     image_path: str | None = None,
     attachments: list[dict] | None = None,
+    postgres_conn: Any = None,
 ) -> None:
+    if postgres_conn is not None:
+        # created_at supplied explicitly -- same missing-DEFAULT gap as
+        # create_new_conversation above.
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO pcorp.messages (conversation_id, role, content, image_path, attachments, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, (now() AT TIME ZONE 'utc'))",
+                (conversation_id, role, content, image_path, json.dumps(attachments) if attachments else None),
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO messages (conversation_id, role, content, image_path, attachments) VALUES (?, ?, ?, ?, ?)",
@@ -462,24 +626,36 @@ async def save_message(
         await db.commit()
 
 
-async def find_recent_attachment(conversation_id: int, name_hint: str) -> dict | None:
+async def find_recent_attachment(conversation_id: int, name_hint: str, postgres_conn: Any = None) -> dict | None:
     """Resolves data_analysis.py's `source` argument to a real stored
     attachment dict ({filename, original_name, media_type}) -- the first
     query against messages.attachments beyond the reopened-conversation
     placeholder load_history already does. Mirrors joshx_db.py's own
     fuzzy-identifier convention: exact case-insensitive match first, then
     substring, scanned most-recent-message-first so a re-attached same-name
-    file resolves to the newest copy."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT attachments FROM messages WHERE conversation_id = ? "
-            "AND attachments IS NOT NULL ORDER BY id DESC",
-            (conversation_id,),
-        )
-        rows = await cursor.fetchall()
+    file resolves to the newest copy. The matching itself is plain Python
+    string comparison (not SQL LIKE), so no ILIKE fix is needed here --
+    only the row-fetch mechanism differs between backends."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT attachments FROM pcorp.messages WHERE conversation_id = %s "
+                "AND attachments IS NOT NULL ORDER BY id DESC",
+                (conversation_id,),
+            )
+            rows = await cur.fetchall()
+        candidates = [att for (attachments_json,) in rows for att in json.loads(attachments_json)]
+    else:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT attachments FROM messages WHERE conversation_id = ? "
+                "AND attachments IS NOT NULL ORDER BY id DESC",
+                (conversation_id,),
+            )
+            rows = await cursor.fetchall()
+        candidates = [att for row in rows for att in json.loads(row["attachments"])]
 
-    candidates = [att for row in rows for att in json.loads(row["attachments"])]
     needle = name_hint.strip().lower()
     for att in candidates:
         if att["original_name"].strip().lower() == needle:
@@ -490,11 +666,29 @@ async def find_recent_attachment(conversation_id: int, name_hint: str) -> dict |
     return None
 
 
-async def load_memory_records() -> list[dict]:
+async def load_memory_records(postgres_conn: Any = None) -> list[dict]:
     # Excludes forgotten (soft-deleted) records — both for the system-prompt
     # memory block (app/memory.py's build_memory_block) and the UI list.
     # Forgetting something should mean it stops influencing Frank, not just
     # disappears from a list.
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, type, title, content, sensitive, created_at "
+                "FROM pcorp.memory_records WHERE deleted_at IS NULL ORDER BY id ASC"
+            )
+            rows = await cur.fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "type": r[1],
+                    "title": r[2],
+                    "content": r[3],
+                    "sensitive": bool(r[4]),
+                    "created_at": str(r[5]) if r[5] is not None else None,
+                }
+                for r in rows
+            ]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -516,8 +710,22 @@ async def load_memory_records() -> list[dict]:
 
 
 async def save_memory_record(
-    type: str, title: str, content: str, sensitive: bool = False
+    type: str, title: str, content: str, sensitive: bool = False, postgres_conn: Any = None
 ) -> None:
+    if postgres_conn is not None:
+        # int(sensitive), not the raw bool -- sensitive is BIGINT in
+        # Postgres (matching SQLite's INTEGER-as-boolean column via the
+        # standard INTEGER->BIGINT type mapping); psycopg maps a Python
+        # bool to Postgres boolean, which doesn't implicitly cast to
+        # bigint, found live here as a real DatatypeMismatch.
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO pcorp.memory_records (type, title, content, sensitive, created_at) "
+                "VALUES (%s, %s, %s, %s, (now() AT TIME ZONE 'utc'))",
+                (type, title, content, int(sensitive)),
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO memory_records (type, title, content, sensitive) VALUES (?, ?, ?, ?)",
@@ -526,7 +734,18 @@ async def save_memory_record(
         await db.commit()
 
 
-async def log_decision(decision: str, reasoning: str | None = None, alternatives: str | None = None) -> None:
+async def log_decision(
+    decision: str, reasoning: str | None = None, alternatives: str | None = None, postgres_conn: Any = None
+) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO pcorp.decisions (decision, reasoning, alternatives, created_at) "
+                "VALUES (%s, %s, %s, (now() AT TIME ZONE 'utc'))",
+                (decision, reasoning, alternatives),
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO decisions (decision, reasoning, alternatives) VALUES (?, ?, ?)",
@@ -535,10 +754,28 @@ async def log_decision(decision: str, reasoning: str | None = None, alternatives
         await db.commit()
 
 
-async def list_decisions(limit: int = 100) -> list[dict]:
+async def list_decisions(limit: int = 100, postgres_conn: Any = None) -> list[dict]:
     # Not wired to any endpoint or tool yet -- capture-only first pass,
     # same reasoning as audit_db.list_recent_calls: get real data flowing
     # before deciding what surfaces it (a UI view, a recall tool, both).
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, decision, reasoning, alternatives, created_at "
+                "FROM pcorp.decisions ORDER BY id DESC LIMIT %s",
+                (limit,),
+            )
+            rows = await cur.fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "decision": r[1],
+                    "reasoning": r[2],
+                    "alternatives": r[3],
+                    "created_at": str(r[4]) if r[4] is not None else None,
+                }
+                for r in rows
+            ]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -550,9 +787,27 @@ async def list_decisions(limit: int = 100) -> list[dict]:
         return [dict(row) for row in rows]
 
 
-async def _resolve_memory_id(title: str) -> tuple[int, str] | None:
+async def _resolve_memory_id(title: str, postgres_conn: Any = None) -> tuple[int, str] | None:
     # Same exact-then-substring, most-recent-first matching as
     # forget_memory_by_title -- Frank never sees a memory's raw row ID.
+    # ILIKE, not LIKE -- same case-sensitivity fix proven necessary
+    # throughout this migration.
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, title FROM pcorp.memory_records WHERE deleted_at IS NULL AND title ILIKE %s "
+                "ORDER BY id DESC LIMIT 1",
+                (title,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                await cur.execute(
+                    "SELECT id, title FROM pcorp.memory_records WHERE deleted_at IS NULL AND title ILIKE %s "
+                    "ORDER BY id DESC LIMIT 1",
+                    (f"%{title}%",),
+                )
+                row = await cur.fetchone()
+            return (row[0], row[1]) if row else None
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -569,9 +824,23 @@ async def _resolve_memory_id(title: str) -> tuple[int, str] | None:
         return (row["id"], row["title"]) if row else None
 
 
-async def _resolve_decision_id(text: str) -> tuple[int, str] | None:
+async def _resolve_decision_id(text: str, postgres_conn: Any = None) -> tuple[int, str] | None:
     # Same matching as _resolve_memory_id, against a decision's own
     # wording instead of a title -- decisions have no separate title field.
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, decision FROM pcorp.decisions WHERE decision ILIKE %s ORDER BY id DESC LIMIT 1",
+                (text,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                await cur.execute(
+                    "SELECT id, decision FROM pcorp.decisions WHERE decision ILIKE %s ORDER BY id DESC LIMIT 1",
+                    (f"%{text}%",),
+                )
+                row = await cur.fetchone()
+            return (row[0], row[1]) if row else None
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -588,19 +857,30 @@ async def _resolve_decision_id(text: str) -> tuple[int, str] | None:
         return (row["id"], row["decision"]) if row else None
 
 
-async def link_records(from_type: str, from_text: str, to_type: str, to_text: str, relationship: str) -> str | None:
+async def link_records(
+    from_type: str, from_text: str, to_type: str, to_text: str, relationship: str, postgres_conn: Any = None
+) -> str | None:
     """Resolves both sides by the text Frank already has (a memory's title
     or a decision's own wording), then records the edge. Returns a
     human-readable confirmation of what got linked, or None if either
     side couldn't be resolved."""
     resolve_from = _resolve_memory_id if from_type == "memory" else _resolve_decision_id
     resolve_to = _resolve_memory_id if to_type == "memory" else _resolve_decision_id
-    from_match = await resolve_from(from_text)
-    to_match = await resolve_to(to_text)
+    from_match = await resolve_from(from_text, postgres_conn)
+    to_match = await resolve_to(to_text, postgres_conn)
     if from_match is None or to_match is None:
         return None
     from_id, from_label = from_match
     to_id, to_label = to_match
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO pcorp.memory_links (from_type, from_id, to_type, to_id, relationship, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, (now() AT TIME ZONE 'utc'))",
+                (from_type, from_id, to_type, to_id, relationship),
+            )
+        await postgres_conn.commit()
+        return f'"{from_label}" {relationship} "{to_label}"'
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO memory_links (from_type, from_id, to_type, to_id, relationship) VALUES (?, ?, ?, ?, ?)",
@@ -610,13 +890,27 @@ async def link_records(from_type: str, from_text: str, to_type: str, to_text: st
     return f'"{from_label}" {relationship} "{to_label}"'
 
 
-async def log_activity(app_name: str) -> None:
+async def log_activity(app_name: str, postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO pcorp.activity_log (app_name, started_at) VALUES (%s, (now() AT TIME ZONE 'utc'))", (app_name,)
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT INTO activity_log (app_name) VALUES (?)", (app_name,))
         await db.commit()
 
 
-async def get_recent_activity(limit: int = 20) -> list[dict]:
+async def get_recent_activity(limit: int = 20, postgres_conn: Any = None) -> list[dict]:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT app_name, started_at FROM pcorp.activity_log ORDER BY id DESC LIMIT %s", (limit,)
+            )
+            rows = await cur.fetchall()
+            return [{"app_name": r[0], "started_at": str(r[1]) if r[1] is not None else None} for r in rows]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -627,13 +921,32 @@ async def get_recent_activity(limit: int = 20) -> list[dict]:
         return [dict(row) for row in rows]
 
 
-async def save_legacy_entry(title: str, content: str) -> None:
+async def save_legacy_entry(title: str, content: str, postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO pcorp.legacy_vault (title, content, created_at) VALUES (%s, %s, (now() AT TIME ZONE 'utc'))",
+                (title, content),
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT INTO legacy_vault (title, content) VALUES (?, ?)", (title, content))
         await db.commit()
 
 
-async def list_legacy_entries() -> list[dict]:
+async def list_legacy_entries(postgres_conn: Any = None) -> list[dict]:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, title, content, created_at FROM pcorp.legacy_vault "
+                "WHERE deleted_at IS NULL ORDER BY id ASC"
+            )
+            rows = await cur.fetchall()
+            return [
+                {"id": r[0], "title": r[1], "content": r[2], "created_at": str(r[3]) if r[3] is not None else None}
+                for r in rows
+            ]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -643,9 +956,29 @@ async def list_legacy_entries() -> list[dict]:
         return [dict(row) for row in rows]
 
 
-async def forget_legacy_entry(title: str) -> str | None:
+async def forget_legacy_entry(title: str, postgres_conn: Any = None) -> str | None:
     # Same exact-then-substring, most-recent-first matching as
     # forget_memory_by_title -- Frank never sees a vault entry's raw row ID.
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, title FROM pcorp.legacy_vault WHERE deleted_at IS NULL AND title ILIKE %s "
+                "ORDER BY id DESC LIMIT 1",
+                (title,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                await cur.execute(
+                    "SELECT id, title FROM pcorp.legacy_vault WHERE deleted_at IS NULL AND title ILIKE %s "
+                    "ORDER BY id DESC LIMIT 1",
+                    (f"%{title}%",),
+                )
+                row = await cur.fetchone()
+            if row is None:
+                return None
+            await cur.execute("UPDATE pcorp.legacy_vault SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s", (row[0],))
+        await postgres_conn.commit()
+        return row[1]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -666,9 +999,18 @@ async def forget_legacy_entry(title: str) -> str | None:
         return row["title"]
 
 
-async def forget_memory_by_id(memory_id: int) -> bool:
+async def forget_memory_by_id(memory_id: int, postgres_conn: Any = None) -> bool:
     # Manual path (FrankView's delete affordance) — the UI already has the
     # real ID, no title-matching ambiguity to resolve.
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE pcorp.memory_records SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s AND deleted_at IS NULL",
+                (memory_id,),
+            )
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "UPDATE memory_records SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
@@ -678,12 +1020,32 @@ async def forget_memory_by_id(memory_id: int) -> bool:
         return cursor.rowcount > 0
 
 
-async def forget_memory_by_title(title: str) -> str | None:
+async def forget_memory_by_title(title: str, postgres_conn: Any = None) -> str | None:
     # Frank's forget_memory tool path — he only has the title he originally
     # gave it, not the row ID (never surfaced to him). Exact match preferred;
     # falls back to a substring match, most recent first, since he may not
     # recall the exact original wording. Returns the real title that got
     # forgotten (so he can confirm what happened), or None if nothing matched.
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, title FROM pcorp.memory_records WHERE deleted_at IS NULL AND title ILIKE %s "
+                "ORDER BY id DESC LIMIT 1",
+                (title,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                await cur.execute(
+                    "SELECT id, title FROM pcorp.memory_records WHERE deleted_at IS NULL AND title ILIKE %s "
+                    "ORDER BY id DESC LIMIT 1",
+                    (f"%{title}%",),
+                )
+                row = await cur.fetchone()
+            if row is None:
+                return None
+            await cur.execute("UPDATE pcorp.memory_records SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s", (row[0],))
+        await postgres_conn.commit()
+        return row[1]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(

@@ -28,6 +28,7 @@ follow-on once there's actual data in here to look at, not bundled into
 
 import json
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -58,8 +59,17 @@ async def init_audit_db() -> None:
         await db.commit()
 
 
-async def record_tool_call(tool_name: str, tool_input: dict, result: str) -> None:
+async def record_tool_call(tool_name: str, tool_input: dict, result: str, postgres_conn: Any = None) -> None:
     truncated = result if len(result) <= RESULT_TRUNCATE_LENGTH else result[:RESULT_TRUNCATE_LENGTH] + "…"
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO audit.tool_calls (tool_name, input_json, result, created_at) "
+                "VALUES (%s, %s, %s, (now() AT TIME ZONE 'utc'))",
+                (tool_name, json.dumps(tool_input), truncated),
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO tool_calls (tool_name, input_json, result) VALUES (?, ?, ?)",
@@ -68,7 +78,25 @@ async def record_tool_call(tool_name: str, tool_input: dict, result: str) -> Non
         await db.commit()
 
 
-async def list_recent_calls(limit: int = 100) -> list[dict]:
+async def list_recent_calls(limit: int = 100, postgres_conn: Any = None) -> list[dict]:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, tool_name, input_json, result, created_at FROM audit.tool_calls "
+                "ORDER BY id DESC LIMIT %s",
+                (limit,),
+            )
+            rows = await cur.fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "tool_name": r[1],
+                    "input": json.loads(r[2]),
+                    "result": r[3],
+                    "created_at": str(r[4]) if r[4] is not None else None,
+                }
+                for r in rows
+            ]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(

@@ -80,8 +80,8 @@ FORGET_MEMORY_TOOL = {
 }
 
 
-async def build_memory_block() -> str:
-    records = await load_memory_records()
+async def build_memory_block(postgres_conn=None) -> str:
+    records = await load_memory_records(postgres_conn)
     if not records:
         return ""
     lines = ["\n\n## What you already remember about Joshua"]
@@ -90,17 +90,18 @@ async def build_memory_block() -> str:
     return "\n".join(lines)
 
 
-async def execute_tool_call(name: str, tool_input: dict) -> str:
+async def execute_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "save_memory":
         await save_memory_record(
             type=tool_input["type"],
             title=tool_input["title"],
             content=tool_input["content"],
             sensitive=tool_input.get("sensitive", False),
+            postgres_conn=postgres_conn,
         )
         return "Saved."
     if name == "forget_memory":
-        forgotten_title = await forget_memory_by_title(tool_input["title"])
+        forgotten_title = await forget_memory_by_title(tool_input["title"], postgres_conn)
         if forgotten_title:
             return f"Forgot: {forgotten_title}"
         return "No matching memory found to forget."

@@ -94,17 +94,17 @@ PEOPLE_TOOLS = [ADD_PERSON_TOOL, LOG_INTERACTION_TOOL, UPDATE_FOLLOW_UP_CADENCE_
 PEOPLE_TOOL_NAMES = {tool["name"] for tool in PEOPLE_TOOLS}
 
 
-async def build_people_block() -> str:
-    snapshot = await summarize()
+async def build_people_block(postgres_conn=None) -> str:
+    snapshot = await summarize(postgres_conn)
     if not snapshot:
         return ""
     return f"\n\n## People/Relationships (Josh's personal/professional network -- separate from Joshx and Alpha Mode Media clients)\n{snapshot}"
 
 
-async def execute_people_tool_call(name: str, tool_input: dict) -> str:
+async def execute_people_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "add_person":
         fields = {k: v for k, v in tool_input.items() if k != "name"}
-        result = await add_person(tool_input["name"], **fields)
+        result = await add_person(tool_input["name"], postgres_conn=postgres_conn, **fields)
         return f"Added/updated person: {result}"
     if name == "log_interaction":
         logged = await log_interaction(
@@ -112,17 +112,20 @@ async def execute_people_tool_call(name: str, tool_input: dict) -> str:
             tool_input["interaction_date"],
             tool_input.get("channel"),
             tool_input.get("summary"),
+            postgres_conn,
         )
         if logged:
             return "Logged interaction."
         return f"No matching person found for \"{tool_input['person_identifier']}\"."
     if name == "update_follow_up_cadence":
-        updated = await update_follow_up_cadence(tool_input["person_identifier"], tool_input["cadence_days"])
+        updated = await update_follow_up_cadence(
+            tool_input["person_identifier"], tool_input["cadence_days"], postgres_conn
+        )
         if updated:
             return f"Updated follow-up cadence to every {tool_input['cadence_days']} days."
         return f"No matching person found for \"{tool_input['person_identifier']}\"."
     if name == "get_overdue_follow_ups":
-        overdue = await get_overdue_follow_ups()
+        overdue = await get_overdue_follow_ups(postgres_conn=postgres_conn)
         if not overdue:
             return "Nobody is currently overdue for a follow-up."
         lines = [

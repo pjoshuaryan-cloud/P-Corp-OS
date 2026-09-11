@@ -48,9 +48,9 @@ SHADOW_MODE_TOOLS = [GET_RECENT_ACTIVITY_TOOL]
 SHADOW_MODE_TOOL_NAMES = {tool["name"] for tool in SHADOW_MODE_TOOLS}
 
 
-async def execute_shadow_mode_tool_call(name: str, tool_input: dict) -> str:
+async def execute_shadow_mode_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "get_recent_activity":
-        records = await get_recent_activity(tool_input.get("limit", 20))
+        records = await get_recent_activity(tool_input.get("limit", 20), postgres_conn)
         if not records:
             return "No activity recorded yet."
         return "\n".join(f"{r['started_at']} — {r['app_name']}" for r in records)

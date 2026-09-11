@@ -19,11 +19,20 @@ upserting -- simpler, and correct for a read-only mirror refreshed every
 15 minutes: a deleted event lingering for at most one sync interval is an
 acceptable, bounded staleness for a personal calendar view, not a real
 correctness problem.
+
+Dual-backend dispatchers (2026-09-11, iPhone independence pass): the
+AppleScript half of sync_calendar_cache() only ever runs on the Mac (the
+scheduler loop that calls it is never started in cloud mode -- see
+main.py's run()), but it still needs to write to shared Postgres when
+DATA_BACKEND=postgres so the cloud instance's own reads (GET routes,
+list_calendar_events) see the same fresh data, not a Mac-only-visible
+cache.
 """
 
 import hashlib
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -61,10 +70,16 @@ def _applescript_id(title: str, start: str) -> str:
     return "applescript:" + hashlib.sha256(f"{title}|{start}".encode()).hexdigest()[:16]
 
 
-async def sync_calendar_cache() -> None:
+async def sync_calendar_cache(postgres_conn: Any = None) -> None:
     applescript_events = await list_applescript_events(SYNC_WINDOW_DAYS)
     google_events = await fetch_upcoming_events(SYNC_WINDOW_DAYS)
+    if postgres_conn is not None:
+        await _sync_calendar_cache_postgres(postgres_conn, applescript_events, google_events)
+        return
+    await _sync_calendar_cache_sqlite(applescript_events, google_events)
 
+
+async def _sync_calendar_cache_sqlite(applescript_events: list[dict], google_events: list[dict]) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM calendar_events WHERE source = 'applescript'")
         for e in applescript_events:
@@ -86,6 +101,34 @@ async def sync_calendar_cache() -> None:
         await db.commit()
 
 
+async def _sync_calendar_cache_postgres(conn: Any, applescript_events: list[dict], google_events: list[dict]) -> None:
+    async with conn.cursor() as cur:
+        await cur.execute("DELETE FROM calendar.calendar_events WHERE source = 'applescript'")
+        for e in applescript_events:
+            await cur.execute(
+                "INSERT INTO calendar.calendar_events "
+                "(id, source, title, start, \"end\", calendar_name, location, attendees, synced_at) "
+                "VALUES (%s, 'applescript', %s, %s, %s, %s, NULL, NULL, (now() AT TIME ZONE 'utc')) "
+                "ON CONFLICT (id) DO UPDATE SET "
+                "title = EXCLUDED.title, start = EXCLUDED.start, \"end\" = EXCLUDED.\"end\", "
+                "calendar_name = EXCLUDED.calendar_name, synced_at = EXCLUDED.synced_at",
+                (_applescript_id(e["title"], e["start"]), e["title"], e["start"], e["end"], e["calendar"]),
+            )
+
+        await cur.execute("DELETE FROM calendar.calendar_events WHERE source = 'google'")
+        for e in google_events:
+            await cur.execute(
+                "INSERT INTO calendar.calendar_events "
+                "(id, source, title, start, \"end\", calendar_name, location, attendees, synced_at) "
+                "VALUES (%s, 'google', %s, %s, %s, 'Google Calendar', %s, %s, (now() AT TIME ZONE 'utc')) "
+                "ON CONFLICT (id) DO UPDATE SET "
+                "title = EXCLUDED.title, start = EXCLUDED.start, \"end\" = EXCLUDED.\"end\", "
+                "location = EXCLUDED.location, attendees = EXCLUDED.attendees, synced_at = EXCLUDED.synced_at",
+                ("google:" + e["id"], e["title"], e["start"], e["end"], e["location"], e["attendees"]),
+            )
+    await conn.commit()
+
+
 def _parse_start(value: str) -> datetime | None:
     """Handles all three shapes this table can hold: AppleScript's naive
     local isoformat, Google's RFC3339 dateTime (with a 'Z' or offset), and
@@ -100,13 +143,32 @@ def _parse_start(value: str) -> datetime | None:
         return None
 
 
-async def get_cached_events(days: int = 7) -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT source, title, start, end, calendar_name, location, attendees FROM calendar_events"
-        )
-        rows = [dict(r) for r in await cursor.fetchall()]
+async def get_cached_events(days: int = 7, postgres_conn: Any = None) -> list[dict]:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT source, title, start, \"end\", calendar_name, location, attendees "
+                "FROM calendar.calendar_events"
+            )
+            rows = [
+                {
+                    "source": r[0],
+                    "title": r[1],
+                    "start": r[2],
+                    "end": r[3],
+                    "calendar_name": r[4],
+                    "location": r[5],
+                    "attendees": r[6],
+                }
+                for r in await cur.fetchall()
+            ]
+    else:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT source, title, start, end, calendar_name, location, attendees FROM calendar_events"
+            )
+            rows = [dict(r) for r in await cursor.fetchall()]
 
     cutoff = datetime.now() + timedelta(days=days)
     windowed = []
@@ -119,13 +181,18 @@ async def get_cached_events(days: int = 7) -> list[dict]:
     return [row for _, row in windowed]
 
 
-async def get_last_google_calendar_sync_at() -> str | None:
+async def get_last_google_calendar_sync_at(postgres_conn: Any = None) -> str | None:
     """MAX(synced_at) restricted to source='google' -- the AppleScript
     source's own synced_at isn't a Google signal. Honest edge case, not
     hidden: if Google is connected but genuinely has zero upcoming events
     inside the sync window, sync_calendar_cache() writes no 'google' rows
     to take a MAX of, so this returns None even though a sync attempt just
     ran cleanly -- this table mirrors events, not sync attempts."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT MAX(synced_at) FROM calendar.calendar_events WHERE source = 'google'")
+            (last_synced,) = await cur.fetchone()
+            return str(last_synced) if last_synced is not None else None
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT MAX(synced_at) FROM calendar_events WHERE source = 'google'")
         (last_synced,) = await cursor.fetchone()

@@ -14,6 +14,7 @@ already gives for having its own file separate from pcorp.db.
 """
 
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -61,7 +62,15 @@ async def init_automation_rules_db() -> None:
         await db.commit()
 
 
-async def list_rules() -> list[dict]:
+async def list_rules(postgres_conn: Any = None) -> list[dict]:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, name, description, trigger_tool, agent, instruction, enabled, created_at "
+                "FROM automations.automation_rules ORDER BY created_at ASC"
+            )
+            rows = await cur.fetchall()
+            return [_row_to_dict_postgres(r) for r in rows]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -72,7 +81,16 @@ async def list_rules() -> list[dict]:
         return [_row_to_dict(row) for row in rows]
 
 
-async def list_enabled_rules_for_tool(trigger_tool: str) -> list[dict]:
+async def list_enabled_rules_for_tool(trigger_tool: str, postgres_conn: Any = None) -> list[dict]:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, name, description, trigger_tool, agent, instruction, enabled, created_at "
+                "FROM automations.automation_rules WHERE trigger_tool = %s AND enabled = 1",
+                (trigger_tool,),
+            )
+            rows = await cur.fetchall()
+            return [_row_to_dict_postgres(r) for r in rows]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -85,8 +103,18 @@ async def list_enabled_rules_for_tool(trigger_tool: str) -> list[dict]:
 
 
 async def create_rule(
-    id: str, name: str, description: str, trigger_tool: str, agent: str, instruction: str
+    id: str, name: str, description: str, trigger_tool: str, agent: str, instruction: str, postgres_conn: Any = None
 ) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO automations.automation_rules "
+                "(id, name, description, trigger_tool, agent, instruction, enabled, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, 1, (now() AT TIME ZONE 'utc'))",
+                (id, name, description, trigger_tool, agent, instruction),
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO automation_rules (id, name, description, trigger_tool, agent, instruction, enabled) "
@@ -96,7 +124,14 @@ async def create_rule(
         await db.commit()
 
 
-async def set_rule_enabled(rule_id: str, enabled: bool) -> None:
+async def set_rule_enabled(rule_id: str, enabled: bool, postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE automations.automation_rules SET enabled = %s WHERE id = %s", (1 if enabled else 0, rule_id)
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE automation_rules SET enabled = ? WHERE id = ?", (1 if enabled else 0, rule_id)
@@ -104,11 +139,17 @@ async def set_rule_enabled(rule_id: str, enabled: bool) -> None:
         await db.commit()
 
 
-async def delete_rule(rule_id: str) -> bool:
+async def delete_rule(rule_id: str, postgres_conn: Any = None) -> bool:
     # Hard delete, unlike Joshx's soft-deleted leads/clients/projects -- a
     # rule has no downstream foreign-key dependency that needs it to
     # "still exist": automation_runs.rule_id is a bare string snapshot,
     # not a real FK, so deleting the rule row never orphans a join.
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("DELETE FROM automations.automation_rules WHERE id = %s", (rule_id,))
+            deleted = cur.rowcount > 0
+        await postgres_conn.commit()
+        return deleted
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("DELETE FROM automation_rules WHERE id = ?", (rule_id,))
         await db.commit()
@@ -125,4 +166,17 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
         "instruction": row["instruction"],
         "enabled": bool(row["enabled"]),
         "created_at": row["created_at"],
+    }
+
+
+def _row_to_dict_postgres(row: tuple) -> dict:
+    return {
+        "id": row[0],
+        "name": row[1],
+        "description": row[2],
+        "trigger_tool": row[3],
+        "agent": row[4],
+        "instruction": row[5],
+        "enabled": bool(row[6]),
+        "created_at": str(row[7]) if row[7] is not None else None,
     }

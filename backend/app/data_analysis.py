@@ -42,8 +42,10 @@ class _AnalysisError(Exception):
     and turned into an honest message Frank can relay, never raised past it."""
 
 
-async def _resolve_dataframe(conversation_id: int, source: str) -> tuple[pd.DataFrame, str, str | None]:
-    attachment = await find_recent_attachment(conversation_id, source)
+async def _resolve_dataframe(
+    conversation_id: int, source: str, postgres_conn=None
+) -> tuple[pd.DataFrame, str, str | None]:
+    attachment = await find_recent_attachment(conversation_id, source, postgres_conn)
     if attachment is None:
         raise _AnalysisError(
             f"Couldn't find an attached file matching \"{source}\" in this conversation. "
@@ -212,11 +214,13 @@ DATA_ANALYSIS_TOOLS = [ANALYZE_DATA_TOOL]
 DATA_ANALYSIS_TOOL_NAMES = {tool["name"] for tool in DATA_ANALYSIS_TOOLS}
 
 
-async def execute_data_analysis_tool_call(name: str, tool_input: dict, conversation_id: int) -> str:
+async def execute_data_analysis_tool_call(
+    name: str, tool_input: dict, conversation_id: int, postgres_conn=None
+) -> str:
     if name != "analyze_data":
         return f"Unknown tool: {name}"
     try:
-        df, original_name, dropped_note = await _resolve_dataframe(conversation_id, tool_input["source"])
+        df, original_name, dropped_note = await _resolve_dataframe(conversation_id, tool_input["source"], postgres_conn)
     except _AnalysisError as error:
         return str(error)
     operation = tool_input.get("operation")

@@ -13,6 +13,7 @@ conversations/memory either.
 """
 
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -37,7 +38,18 @@ async def init_automations_db() -> None:
         await db.commit()
 
 
-async def record_run(rule_id: str, rule_name: str, trigger_summary: str | None, result: str) -> None:
+async def record_run(
+    rule_id: str, rule_name: str, trigger_summary: str | None, result: str, postgres_conn: Any = None
+) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO automations.automation_runs (rule_id, rule_name, trigger_summary, result, created_at) "
+                "VALUES (%s, %s, %s, %s, (now() AT TIME ZONE 'utc'))",
+                (rule_id, rule_name, trigger_summary, result),
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO automation_runs (rule_id, rule_name, trigger_summary, result) VALUES (?, ?, ?, ?)",
@@ -46,7 +58,25 @@ async def record_run(rule_id: str, rule_name: str, trigger_summary: str | None, 
         await db.commit()
 
 
-async def list_runs() -> list[dict]:
+async def list_runs(postgres_conn: Any = None) -> list[dict]:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, rule_id, rule_name, trigger_summary, result, created_at "
+                "FROM automations.automation_runs ORDER BY id DESC LIMIT 50"
+            )
+            rows = await cur.fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "rule_id": r[1],
+                    "rule_name": r[2],
+                    "trigger_summary": r[3],
+                    "result": r[4],
+                    "created_at": str(r[5]) if r[5] is not None else None,
+                }
+                for r in rows
+            ]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(

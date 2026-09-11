@@ -24,7 +24,7 @@ from app.hf_markets_client import read_balance as read_hf_markets_balance
 from app.luno_client import fetch_balances, fetch_zar_prices
 
 
-async def maybe_snapshot_luno() -> None:
+async def maybe_snapshot_luno(postgres_conn=None) -> None:
     """Runs at most once per calendar day. Records one balance_snapshots
     row per non-zero asset Luno reports (ZAR cash, XBT, ETH, etc.).
 
@@ -41,7 +41,7 @@ async def maybe_snapshot_luno() -> None:
     exactly one honest snapshot per day: the true total Josh holds in
     that asset across every Luno sub-account, not an arbitrary one of
     them."""
-    schedule = await get_luno_schedule()
+    schedule = await get_luno_schedule(postgres_conn)
     today = date.today().isoformat()
     if schedule["last_snapshot_date"] == today:
         return
@@ -65,9 +65,9 @@ async def maybe_snapshot_luno() -> None:
     for asset, amount in totals.items():
         if amount == 0:
             continue
-        await log_balance("Luno", amount, asset=asset, notes="auto")
+        await log_balance("Luno", amount, asset=asset, notes="auto", postgres_conn=postgres_conn)
 
-    await mark_luno_snapshotted(today)
+    await mark_luno_snapshotted(today, postgres_conn)
 
 
 async def compute_luno_zar_value(holdings: list[dict]) -> dict:
@@ -133,7 +133,7 @@ async def compute_luno_zar_value(holdings: list[dict]) -> dict:
 _ZAR_ACCOUNT_NAMES = {"Liberty Stash", "EasyEquities", "Ashburton Stable Income Fund", "Nasdaq / Markets"}
 
 
-async def compute_concentration_metrics() -> dict:
+async def compute_concentration_metrics(postgres_conn=None) -> dict:
     """Systems audit §4's concentration metric (2026-09-06) -- two
     separate, honestly-labeled views, never merged into one number.
     finance_db.py's own dashboard_snapshot() docstring already declines a
@@ -151,7 +151,7 @@ async def compute_concentration_metrics() -> dict:
       per_asset_zar_value directly rather than a second pricing pass --
       stays self-contained to the one account that estimate was already
       scoped to."""
-    snapshot = await dashboard_snapshot()
+    snapshot = await dashboard_snapshot(postgres_conn)
 
     zar_rows = []
     for account in snapshot["accounts"]:
@@ -197,7 +197,7 @@ async def compute_concentration_metrics() -> dict:
     }
 
 
-async def maybe_snapshot_hf_markets() -> None:
+async def maybe_snapshot_hf_markets(postgres_conn=None) -> None:
     """Runs at most once per calendar day, same cadence as Luno's own
     snapshot. Reads hf_markets_client.py's local file (written by
     PCorpBalanceExport.mq5 running inside Josh's real MT5 terminal) --
@@ -205,7 +205,7 @@ async def maybe_snapshot_hf_markets() -> None:
     file not existing yet (EA not attached/running), which this
     silently no-ops on, same fail-soft posture as the rest of Finance's
     automatic sources."""
-    schedule = await get_hf_markets_schedule()
+    schedule = await get_hf_markets_schedule(postgres_conn)
     today = date.today().isoformat()
     if schedule["last_snapshot_date"] == today:
         return
@@ -223,8 +223,8 @@ async def maybe_snapshot_hf_markets() -> None:
     except (TypeError, ValueError):
         return
 
-    await log_balance("Nasdaq / Markets", amount, asset=currency, notes="auto")
-    await mark_hf_markets_snapshotted(today)
+    await log_balance("Nasdaq / Markets", amount, asset=currency, notes="auto", postgres_conn=postgres_conn)
+    await mark_hf_markets_snapshotted(today, postgres_conn)
 
 
 def get_hf_markets_live_status() -> dict | None:

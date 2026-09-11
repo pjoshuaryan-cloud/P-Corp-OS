@@ -45,12 +45,12 @@ NOTABLE_MOVE_THRESHOLD_PCT = 10.0
 LOOKBACK_DAYS = 1
 
 
-async def maybe_snapshot_market_prices() -> None:
+async def maybe_snapshot_market_prices(postgres_conn=None) -> None:
     """Runs at most once per calendar day, same cadence as Luno/HF
     Markets' own snapshots. Records today's price for every asset in the
     tracked universe, so tomorrow's check has something real to compare
     against."""
-    schedule = await get_market_movers_schedule()
+    schedule = await get_market_movers_schedule(postgres_conn)
     today = date.today().isoformat()
     if schedule["last_snapshot_date"] == today:
         return
@@ -61,11 +61,11 @@ async def maybe_snapshot_market_prices() -> None:
     if not combined:
         return
 
-    await record_price_snapshots(combined)
-    await mark_market_movers_snapshotted(today)
+    await record_price_snapshots(combined, postgres_conn)
+    await mark_market_movers_snapshotted(today, postgres_conn)
 
 
-async def check_market_movers(threshold_days: int | None) -> list[dict]:
+async def check_market_movers(threshold_days: int | None, postgres_conn=None) -> list[dict]:
     """Trigger rule checker (registered in triggers.py's RULE_CHECKERS).
     `threshold_days` is unused -- kept only to match every other
     checker's call signature (RULE_CHECKERS.get(rule_type)(threshold)).
@@ -84,7 +84,7 @@ async def check_market_movers(threshold_days: int | None) -> list[dict]:
     today = date.today().isoformat()
     items: list[dict] = []
     for asset in universe:
-        change = await get_price_change(asset, LOOKBACK_DAYS)
+        change = await get_price_change(asset, LOOKBACK_DAYS, postgres_conn)
         if change is None or change["previous_price"] == 0:
             continue
         pct = (change["current_price"] - change["previous_price"]) / change["previous_price"] * 100

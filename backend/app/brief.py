@@ -55,21 +55,23 @@ def _normalize_situation_alert(alert: dict) -> dict:
     }
 
 
-async def compute_brief() -> dict:
-    last_viewed = await get_brief_last_viewed_at()
-    insights = await compute_insights(limit=INSIGHTS_LIMIT)
-    situation_alerts = [_normalize_situation_alert(a) for a in await compute_situation_room_alerts()]
+async def compute_brief(postgres_conn=None) -> dict:
+    last_viewed = await get_brief_last_viewed_at(postgres_conn)
+    insights = await compute_insights(limit=INSIGHTS_LIMIT, postgres_conn=postgres_conn)
+    situation_alerts = [
+        _normalize_situation_alert(a) for a in await compute_situation_room_alerts(postgres_conn)
+    ]
 
     what_matters = situation_alerts + [item for item in insights if item["category"] == "risk"]
     what_frank_recommends = [item for item in insights if item["category"] == "opportunity"]
     what_can_wait = [item for item in insights if item["category"] == "follow_up"]
 
-    recent_calls = await list_recent_calls(limit=RECENT_CALLS_LIMIT)
+    recent_calls = await list_recent_calls(limit=RECENT_CALLS_LIMIT, postgres_conn=postgres_conn)
     what_changed = (
         recent_calls if last_viewed is None else [c for c in recent_calls if c["created_at"] > last_viewed]
     )
 
-    await mark_brief_viewed()
+    await mark_brief_viewed(postgres_conn)
 
     return {
         "what_matters": what_matters,

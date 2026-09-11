@@ -45,13 +45,13 @@ FINANCE_TOOLS = [LOG_FINANCE_BALANCE_TOOL]
 FINANCE_TOOL_NAMES = {tool["name"] for tool in FINANCE_TOOLS}
 
 
-async def _concentration_summary_lines() -> list[str]:
+async def _concentration_summary_lines(postgres_conn=None) -> list[str]:
     """Composed here, not inside finance_db.py's own summarize() --
     compute_concentration_metrics() lives in finance.py, which already
     imports FROM finance_db.py, so calling it back from there would be a
     real circular import. finance_tools.py sits above both, so this is
     the right layer to combine them for Frank's system prompt."""
-    metrics = await compute_concentration_metrics()
+    metrics = await compute_concentration_metrics(postgres_conn)
     if not metrics["zar_accounts"] and not metrics["luno_holdings"]:
         return []
     lines = ["Finance concentration (two separate views, never blended into one total):"]
@@ -70,9 +70,9 @@ async def _concentration_summary_lines() -> list[str]:
     return lines
 
 
-async def build_finance_block() -> str:
-    snapshot = await summarize()
-    concentration_lines = await _concentration_summary_lines()
+async def build_finance_block(postgres_conn=None) -> str:
+    snapshot = await summarize(postgres_conn)
+    concentration_lines = await _concentration_summary_lines(postgres_conn)
     if not snapshot and not concentration_lines:
         return ""
     body = snapshot
@@ -81,13 +81,14 @@ async def build_finance_block() -> str:
     return f"\n\n## Finance (Josh's personal investments -- track and display only, never advise)\n{body}"
 
 
-async def execute_finance_tool_call(name: str, tool_input: dict) -> str:
+async def execute_finance_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "log_finance_balance":
         matched = await log_balance(
             tool_input["account_name"],
             tool_input["balance"],
             tool_input.get("asset", "ZAR"),
             tool_input.get("notes"),
+            postgres_conn,
         )
         if matched:
             return f"Logged {tool_input['balance']:,.2f} {tool_input.get('asset', 'ZAR')} for {matched}."

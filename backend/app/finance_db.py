@@ -27,9 +27,16 @@ fabricate metrics" discipline as everywhere else in this codebase).
 Own SQLite file (finance.db), same "genuinely separate domain" reasoning
 as joshx.db/personal.db/automations.db. Gitignored like every file under
 backend/data/.
+
+Dual-backend dispatchers (2026-09-11, iPhone independence pass): same
+pattern as every other domain. maybe_snapshot_hf_markets()'s local
+Wine/MT5 file read (finance.py, not this file) is hard Mac-only -- moot
+here since the scheduler that calls it never runs in cloud mode (see
+main.py's run()).
 """
 
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -126,7 +133,35 @@ async def _find_account_id(db: aiosqlite.Connection, identifier: str) -> int | N
     return row[0] if row else None
 
 
-async def log_balance(identifier: str, balance: float, asset: str = "ZAR", notes: str | None = None) -> str | None:
+async def _find_account_id_postgres(conn: Any, identifier: str) -> int | None:
+    # ILIKE, not LIKE -- same case-sensitivity fix proven necessary
+    # throughout this migration.
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT id FROM finance.accounts WHERE name ILIKE %s LIMIT 1", (identifier,))
+        row = await cur.fetchone()
+        if row is None:
+            await cur.execute("SELECT id FROM finance.accounts WHERE name ILIKE %s LIMIT 1", (f"%{identifier}%",))
+            row = await cur.fetchone()
+        return row[0] if row else None
+
+
+async def log_balance(
+    identifier: str, balance: float, asset: str = "ZAR", notes: str | None = None, postgres_conn: Any = None
+) -> str | None:
+    if postgres_conn is not None:
+        account_id = await _find_account_id_postgres(postgres_conn, identifier)
+        if account_id is None:
+            return None
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO finance.balance_snapshots (account_id, asset, balance, notes, recorded_at) "
+                "VALUES (%s, %s, %s, %s, (now() AT TIME ZONE 'utc'))",
+                (account_id, asset.upper(), balance, notes),
+            )
+            await cur.execute("SELECT name FROM finance.accounts WHERE id = %s", (account_id,))
+            (name,) = await cur.fetchone()
+        await postgres_conn.commit()
+        return name
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         account_id = await _find_account_id(db, identifier)
@@ -142,14 +177,26 @@ async def log_balance(identifier: str, balance: float, asset: str = "ZAR", notes
         return row["name"]
 
 
-async def get_luno_schedule() -> dict:
+async def get_luno_schedule(postgres_conn: Any = None) -> dict:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT last_snapshot_date FROM finance.luno_snapshot_schedule WHERE id = 1")
+            (last_snapshot_date,) = await cur.fetchone()
+            return {"last_snapshot_date": last_snapshot_date}
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT last_snapshot_date FROM luno_snapshot_schedule WHERE id = 1")
         row = await cursor.fetchone()
         return {"last_snapshot_date": row[0]}
 
 
-async def mark_luno_snapshotted(snapshot_date: str) -> None:
+async def mark_luno_snapshotted(snapshot_date: str, postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE finance.luno_snapshot_schedule SET last_snapshot_date = %s WHERE id = 1", (snapshot_date,)
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE luno_snapshot_schedule SET last_snapshot_date = ? WHERE id = 1", (snapshot_date,)
@@ -157,14 +204,27 @@ async def mark_luno_snapshotted(snapshot_date: str) -> None:
         await db.commit()
 
 
-async def get_hf_markets_schedule() -> dict:
+async def get_hf_markets_schedule(postgres_conn: Any = None) -> dict:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT last_snapshot_date FROM finance.hf_markets_snapshot_schedule WHERE id = 1")
+            (last_snapshot_date,) = await cur.fetchone()
+            return {"last_snapshot_date": last_snapshot_date}
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT last_snapshot_date FROM hf_markets_snapshot_schedule WHERE id = 1")
         row = await cursor.fetchone()
         return {"last_snapshot_date": row[0]}
 
 
-async def mark_hf_markets_snapshotted(snapshot_date: str) -> None:
+async def mark_hf_markets_snapshotted(snapshot_date: str, postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE finance.hf_markets_snapshot_schedule SET last_snapshot_date = %s WHERE id = 1",
+                (snapshot_date,),
+            )
+        await postgres_conn.commit()
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE hf_markets_snapshot_schedule SET last_snapshot_date = ? WHERE id = 1", (snapshot_date,)
@@ -172,7 +232,7 @@ async def mark_hf_markets_snapshotted(snapshot_date: str) -> None:
         await db.commit()
 
 
-async def dashboard_snapshot() -> dict:
+async def dashboard_snapshot(postgres_conn: Any = None) -> dict:
     """Backs GET /finance/dashboard. For each account, the latest
     snapshot per asset it's ever held, plus the trend versus the
     snapshot before that (up/down/flat) -- real, computed from actual
@@ -180,6 +240,12 @@ async def dashboard_snapshot() -> dict:
     total: an account can hold multiple assets (Luno's ZAR + XBT + ETH),
     and summing those into one number would misrepresent the real
     portfolio, so this deliberately doesn't attempt it."""
+    if postgres_conn is not None:
+        return await _dashboard_snapshot_postgres(postgres_conn)
+    return await _dashboard_snapshot_sqlite()
+
+
+async def _dashboard_snapshot_sqlite() -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -224,8 +290,51 @@ async def dashboard_snapshot() -> dict:
     return {"accounts": accounts}
 
 
+async def _dashboard_snapshot_postgres(conn: Any) -> dict:
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT id, name, account_type, is_automatic FROM finance.accounts ORDER BY id")
+        rows = await cur.fetchall()
+        accounts = [
+            {"id": r[0], "name": r[1], "account_type": r[2], "is_automatic": bool(r[3])} for r in rows
+        ]
+
+        for account in accounts:
+            await cur.execute(
+                "SELECT DISTINCT asset FROM finance.balance_snapshots WHERE account_id = %s", (account["id"],)
+            )
+            assets = [r[0] for r in await cur.fetchall()]
+            holdings = []
+            for asset in assets:
+                await cur.execute(
+                    "SELECT balance, recorded_at FROM finance.balance_snapshots "
+                    "WHERE account_id = %s AND asset = %s ORDER BY recorded_at DESC LIMIT 2",
+                    (account["id"], asset),
+                )
+                snap_rows = await cur.fetchall()
+                latest = snap_rows[0]
+                previous = snap_rows[1] if len(snap_rows) > 1 else None
+                trend = "flat"
+                if previous is not None:
+                    if latest[0] > previous[0]:
+                        trend = "up"
+                    elif latest[0] < previous[0]:
+                        trend = "down"
+                holdings.append(
+                    {
+                        "asset": asset,
+                        "balance": latest[0],
+                        "recorded_at": str(latest[1]) if latest[1] is not None else None,
+                        "trend": trend,
+                        "previous_balance": previous[0] if previous else None,
+                    }
+                )
+            account["holdings"] = holdings
+
+    return {"accounts": accounts}
+
+
 async def get_balance_history(
-    account_id: int, start_date: str | None = None, end_date: str | None = None
+    account_id: int, start_date: str | None = None, end_date: str | None = None, postgres_conn: Any = None
 ) -> list[dict]:
     """Real per-snapshot history for one account (2026-09-06, systems
     audit §4's date-range filtering) -- dashboard_snapshot() above
@@ -235,25 +344,47 @@ async def get_balance_history(
     start_date/end_date are optional 'YYYY-MM-DD' strings (inclusive);
     omitting both returns the full history -- honest given every real
     account here spans barely two weeks so far."""
+    if postgres_conn is not None:
+        query = "SELECT asset, balance, notes, recorded_at FROM finance.balance_snapshots WHERE account_id = %s"
+        params: list[Any] = [account_id]
+        if start_date:
+            query += " AND recorded_at >= %s"
+            params.append(start_date)
+        if end_date:
+            query += " AND recorded_at <= %s"
+            params.append(f"{end_date} 23:59:59")
+        query += " ORDER BY recorded_at DESC"
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(query, params)
+            rows = await cur.fetchall()
+            return [
+                {
+                    "asset": r[0],
+                    "balance": r[1],
+                    "notes": r[2],
+                    "recorded_at": str(r[3]) if r[3] is not None else None,
+                }
+                for r in rows
+            ]
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         query = "SELECT asset, balance, notes, recorded_at FROM balance_snapshots WHERE account_id = ?"
-        params: list = [account_id]
+        params2: list = [account_id]
         if start_date:
             query += " AND recorded_at >= ?"
-            params.append(start_date)
+            params2.append(start_date)
         if end_date:
             query += " AND recorded_at <= ?"
-            params.append(f"{end_date} 23:59:59")
+            params2.append(f"{end_date} 23:59:59")
         query += " ORDER BY recorded_at DESC"
-        cursor = await db.execute(query, params)
+        cursor = await db.execute(query, params2)
         return [dict(r) for r in await cursor.fetchall()]
 
 
-async def summarize() -> str:
+async def summarize(postgres_conn: Any = None) -> str:
     """Folded into Frank's own system prompt (finance_tools.build_finance_block())
     -- same mechanism as build_joshx_block()/build_personal_block()."""
-    snapshot = await dashboard_snapshot()
+    snapshot = await dashboard_snapshot(postgres_conn)
     tracked = [a for a in snapshot["accounts"] if a["holdings"]]
     if not tracked:
         return ""

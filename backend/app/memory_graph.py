@@ -45,7 +45,7 @@ MEMORY_GRAPH_TOOLS = [LINK_RECORDS_TOOL]
 MEMORY_GRAPH_TOOL_NAMES = {tool["name"] for tool in MEMORY_GRAPH_TOOLS}
 
 
-async def execute_memory_graph_tool_call(name: str, tool_input: dict) -> str:
+async def execute_memory_graph_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "link_records":
         result = await link_records(
             tool_input["from_type"],
@@ -53,6 +53,7 @@ async def execute_memory_graph_tool_call(name: str, tool_input: dict) -> str:
             tool_input["to_type"],
             tool_input["to_text"],
             tool_input["relationship"],
+            postgres_conn,
         )
         if result is None:
             return "Couldn't find one or both of those to link -- check the wording matches what was saved."

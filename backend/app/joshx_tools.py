@@ -347,44 +347,44 @@ JOSHX_TOOLS = [
 JOSHX_TOOL_NAMES = {tool["name"] for tool in JOSHX_TOOLS}
 
 
-async def build_joshx_block() -> str:
-    snapshot = await summarize()
+async def build_joshx_block(postgres_conn=None) -> str:
+    snapshot = await summarize(postgres_conn)
     if not snapshot:
         return ""
     return f"\n\n## Joshx (Josh's independent freelance creative business -- separate from Alpha Mode Media)\n{snapshot}"
 
 
-async def execute_joshx_tool_call(name: str, tool_input: dict) -> str:
+async def execute_joshx_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "add_joshx_client":
         fields = {k: v for k, v in tool_input.items() if k != "name"}
-        result = await add_client(tool_input["name"], **fields)
+        result = await add_client(tool_input["name"], postgres_conn, **fields)
         return f"Added Joshx client: {result}"
     if name == "update_joshx_client_status":
-        updated = await update_client_status(tool_input["identifier"], tool_input["new_status"])
+        updated = await update_client_status(tool_input["identifier"], tool_input["new_status"], postgres_conn)
         if updated:
             return f"Updated Joshx client status to {tool_input['new_status']}."
         return f"No matching Joshx client found for \"{tool_input['identifier']}\"."
     if name == "delete_joshx_client":
-        deleted = await delete_client(tool_input["identifier"])
+        deleted = await delete_client(tool_input["identifier"], postgres_conn)
         if deleted:
             return f"Deleted Joshx client: {deleted}."
         return f"No matching Joshx client found for \"{tool_input['identifier']}\"."
     if name == "log_joshx_client_contact":
-        logged = await log_client_contact(tool_input["identifier"], tool_input.get("contact_date"))
+        logged = await log_client_contact(tool_input["identifier"], tool_input.get("contact_date"), postgres_conn)
         if logged:
             return "Logged contact."
         return f"No matching Joshx client found for \"{tool_input['identifier']}\"."
     if name == "add_joshx_lead":
         fields = {k: v for k, v in tool_input.items() if k != "client_name"}
-        result = await add_lead(tool_input["client_name"], **fields)
+        result = await add_lead(tool_input["client_name"], postgres_conn, **fields)
         return f"Added Joshx lead: {result}"
     if name == "update_joshx_lead_stage":
-        updated = await update_lead_stage(tool_input["identifier"], tool_input["new_stage"])
+        updated = await update_lead_stage(tool_input["identifier"], tool_input["new_stage"], postgres_conn)
         if updated:
             return f"Updated Joshx lead stage to {tool_input['new_stage']}."
         return f"No matching Joshx lead found for \"{tool_input['identifier']}\"."
     if name == "delete_joshx_lead":
-        deleted = await delete_lead(tool_input["identifier"])
+        deleted = await delete_lead(tool_input["identifier"], postgres_conn)
         if deleted:
             return f"Deleted Joshx lead: {deleted}."
         return f"No matching Joshx lead found for \"{tool_input['identifier']}\"."
@@ -392,6 +392,7 @@ async def execute_joshx_tool_call(name: str, tool_input: dict) -> str:
         result = await convert_lead_to_project(
             tool_input["lead_identifier"],
             tool_input["project_name"],
+            postgres_conn=postgres_conn,
             **{k: v for k, v in tool_input.items() if k not in ("lead_identifier", "project_name")},
         )
         if result:
@@ -402,52 +403,60 @@ async def execute_joshx_tool_call(name: str, tool_input: dict) -> str:
         return f"No matching Joshx lead found for \"{tool_input['lead_identifier']}\"."
     if name == "add_joshx_project":
         fields = {k: v for k, v in tool_input.items() if k not in ("client_name", "project_name")}
-        result = await add_project(tool_input["client_name"], tool_input["project_name"], **fields)
+        result = await add_project(tool_input["client_name"], tool_input["project_name"], postgres_conn, **fields)
         return f"Added Joshx project: {result}"
     if name == "update_joshx_project_status":
-        updated = await update_project_status(tool_input["identifier"], tool_input["new_status"])
+        updated = await update_project_status(tool_input["identifier"], tool_input["new_status"], postgres_conn)
         if updated:
             return f"Updated Joshx project status to {tool_input['new_status']}."
         return f"No matching Joshx project found for \"{tool_input['identifier']}\"."
     if name == "update_joshx_project_payment_status":
-        updated = await update_project_payment_status(tool_input["identifier"], tool_input["new_payment_status"])
+        updated = await update_project_payment_status(
+            tool_input["identifier"], tool_input["new_payment_status"], postgres_conn
+        )
         if updated:
             return f"Updated Joshx project payment status to {tool_input['new_payment_status']}."
         return f"No matching Joshx project found for \"{tool_input['identifier']}\"."
     if name == "delete_joshx_project":
-        deleted = await delete_project(tool_input["identifier"])
+        deleted = await delete_project(tool_input["identifier"], postgres_conn)
         if deleted:
             return f"Deleted Joshx project: {deleted}."
         return f"No matching Joshx project found for \"{tool_input['identifier']}\"."
     if name == "add_joshx_invoice":
         fields = {k: v for k, v in tool_input.items() if k not in ("project_identifier", "amount")}
-        result = await add_joshx_invoice(tool_input["project_identifier"], tool_input["amount"], **fields)
+        result = await add_joshx_invoice(
+            tool_input["project_identifier"], tool_input["amount"], postgres_conn=postgres_conn, **fields
+        )
         if result:
             return f"Added invoice for R{result['amount']:,.2f} to {result['project_name']} ({result['client_name']})."
         return f"No matching Joshx project found for \"{tool_input['project_identifier']}\"."
     if name == "update_joshx_invoice_status":
-        updated = await update_joshx_invoice_status(tool_input["identifier"], tool_input["new_status"])
+        updated = await update_joshx_invoice_status(tool_input["identifier"], tool_input["new_status"], postgres_conn)
         if updated:
             return f"Updated invoice status to {tool_input['new_status']}."
         return f"No matching Joshx project/invoice found for \"{tool_input['identifier']}\"."
     if name == "record_joshx_invoice_payment":
-        updated = await record_joshx_invoice_payment(tool_input["identifier"], tool_input["amount_paid"])
+        updated = await record_joshx_invoice_payment(
+            tool_input["identifier"], tool_input["amount_paid"], postgres_conn
+        )
         if updated:
             return f"Recorded R{tool_input['amount_paid']:,.2f} paid so far."
         return f"No matching Joshx project/invoice found for \"{tool_input['identifier']}\"."
     if name == "delete_joshx_invoice":
-        deleted = await delete_joshx_invoice(tool_input["identifier"])
+        deleted = await delete_joshx_invoice(tool_input["identifier"], postgres_conn)
         if deleted:
             return f"Deleted the invoice for {deleted['project_name']}."
         return f"No matching Joshx project/invoice found for \"{tool_input['identifier']}\"."
     if name == "log_joshx_project_expense":
         fields = {k: v for k, v in tool_input.items() if k not in ("project_identifier", "amount")}
-        result = await log_joshx_project_expense(tool_input["project_identifier"], tool_input["amount"], **fields)
+        result = await log_joshx_project_expense(
+            tool_input["project_identifier"], tool_input["amount"], postgres_conn=postgres_conn, **fields
+        )
         if result:
             return f"Logged R{result['amount']:,.2f} expense against {result['project_name']} ({result['client_name']})."
         return f"No matching Joshx project found for \"{tool_input['project_identifier']}\"."
     if name == "delete_joshx_project_expense":
-        deleted = await delete_joshx_project_expense(tool_input["identifier"])
+        deleted = await delete_joshx_project_expense(tool_input["identifier"], postgres_conn)
         if deleted:
             return f"Deleted the most recent expense for {deleted['project_name']}."
         return f"No matching Joshx project/expense found for \"{tool_input['identifier']}\"."

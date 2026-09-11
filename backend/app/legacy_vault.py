@@ -72,17 +72,17 @@ LEGACY_VAULT_TOOLS = [SAVE_TO_LEGACY_VAULT_TOOL, LIST_LEGACY_VAULT_TOOL, DELETE_
 LEGACY_VAULT_TOOL_NAMES = {tool["name"] for tool in LEGACY_VAULT_TOOLS}
 
 
-async def execute_legacy_vault_tool_call(name: str, tool_input: dict) -> str:
+async def execute_legacy_vault_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "save_to_legacy_vault":
-        await save_legacy_entry(tool_input["title"], tool_input["content"])
+        await save_legacy_entry(tool_input["title"], tool_input["content"], postgres_conn)
         return f"Saved to Legacy Vault: {tool_input['title']}"
     if name == "list_legacy_vault":
-        entries = await list_legacy_entries()
+        entries = await list_legacy_entries(postgres_conn)
         if not entries:
             return "Legacy Vault is empty."
         return "\n".join(f"[{e['id']}] {e['title']}: {e['content']}" for e in entries)
     if name == "delete_from_legacy_vault":
-        deleted_title = await forget_legacy_entry(tool_input["title"])
+        deleted_title = await forget_legacy_entry(tool_input["title"], postgres_conn)
         if deleted_title:
             return f"Deleted from Legacy Vault: {deleted_title}"
         return "No matching Legacy Vault entry found."

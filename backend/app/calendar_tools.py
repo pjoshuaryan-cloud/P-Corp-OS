@@ -151,7 +151,7 @@ async def _request_approval(websocket: WebSocket, tool: str, title: str, details
         return False
 
 
-async def execute_calendar_tool_call(name: str, tool_input: dict, websocket: WebSocket) -> str:
+async def execute_calendar_tool_call(name: str, tool_input: dict, websocket: WebSocket, postgres_conn=None) -> str:
     if name == "propose_create_calendar_event":
         if not await check_calendar_available():
             return _CALENDAR_UNAVAILABLE_MESSAGE
@@ -220,7 +220,7 @@ async def execute_calendar_tool_call(name: str, tool_input: dict, websocket: Web
         return "Approved and removed the event." if ok else f"Approved, but no matching upcoming event was found for \"{tool_input['identifier']}\"."
 
     if name == "list_calendar_events":
-        events = await get_cached_events(tool_input.get("days", 7))
+        events = await get_cached_events(tool_input.get("days", 7), postgres_conn)
         if not events:
             return "Nothing on the calendar in that window."
         lines = [f"- {e['title']} ({e['calendar_name']}): {e['start']} to {e['end']}" for e in events]

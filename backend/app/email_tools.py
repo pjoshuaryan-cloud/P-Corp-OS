@@ -67,16 +67,16 @@ def _format(emails: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def execute_email_tool_call(name: str, tool_input: dict) -> str:
+async def execute_email_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "get_recent_emails":
-        await sync_recent_emails(max_results=tool_input.get("limit", 10))
-        emails = await get_recent_emails(tool_input.get("limit", 10))
+        await sync_recent_emails(max_results=tool_input.get("limit", 10), postgres_conn=postgres_conn)
+        emails = await get_recent_emails(tool_input.get("limit", 10), postgres_conn)
         if not emails:
             return "No emails found -- either nothing recent, or Gmail isn't connected yet (see /auth/google/start)."
         return _format(emails)
 
     if name == "search_emails":
-        emails = await search_emails(tool_input["query"], tool_input.get("limit", 10))
+        emails = await search_emails(tool_input["query"], tool_input.get("limit", 10), postgres_conn)
         if not emails:
             return f"No synced emails matching \"{tool_input['query']}\"."
         return _format(emails)

@@ -93,7 +93,7 @@ async def _add_goal_postgres(conn: Any, title: str, target_date: str | None, not
     async with conn.cursor() as cur:
         await cur.execute(
             "INSERT INTO personal.goals (title, status, target_date, notes, created_at) "
-            "VALUES (%s, 'active', %s, %s, now())",
+            "VALUES (%s, 'active', %s, %s, (now() AT TIME ZONE 'utc'))",
             (title, target_date, notes),
         )
     await conn.commit()
@@ -191,7 +191,7 @@ async def _delete_goal_postgres(conn: Any, identifier: str) -> str | None:
         await cur.execute("SELECT title FROM personal.goals WHERE id = %s", (goal_id,))
         row = await cur.fetchone()
         # Soft delete, same as the SQLite path -- nothing is ever hard-deleted.
-        await cur.execute("UPDATE personal.goals SET deleted_at = now() WHERE id = %s", (goal_id,))
+        await cur.execute("UPDATE personal.goals SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s", (goal_id,))
     await conn.commit()
     return row[0]
 
@@ -220,7 +220,7 @@ async def _add_habit_postgres(conn: Any, title: str, cadence: str | None, notes:
     # Postgres-side default either).
     async with conn.cursor() as cur:
         await cur.execute(
-            "INSERT INTO personal.habits (title, cadence, notes, created_at) VALUES (%s, %s, %s, now())",
+            "INSERT INTO personal.habits (title, cadence, notes, created_at) VALUES (%s, %s, %s, (now() AT TIME ZONE 'utc'))",
             (title, cadence, notes),
         )
     await conn.commit()
@@ -272,7 +272,7 @@ async def _delete_habit_postgres(conn: Any, identifier: str) -> str | None:
             row = await cur.fetchone()
         if row is None:
             return None
-        await cur.execute("UPDATE personal.habits SET deleted_at = now() WHERE id = %s", (row[0],))
+        await cur.execute("UPDATE personal.habits SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s", (row[0],))
     await conn.commit()
     return row[1]
 

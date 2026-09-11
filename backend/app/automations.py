@@ -90,7 +90,9 @@ _NO_TOOLS_ADDENDUM = (
 )
 
 
-async def check_and_fire(tool_name: str, tool_input: dict, client: AsyncAnthropic, tool_result: str = "") -> dict | None:
+async def check_and_fire(
+    tool_name: str, tool_input: dict, client: AsyncAnthropic, tool_result: str = "", postgres_conn=None
+) -> dict | None:
     """Returns a notification dict ({"title", "body"}) for the LAST rule
     that fired this call, or None if nothing matched. Fires every enabled
     rule whose trigger_tool matches -- v1 still only pushes one [notify]
@@ -113,7 +115,7 @@ async def check_and_fire(tool_name: str, tool_input: dict, client: AsyncAnthropi
     plain string check, not a new mechanism."""
     if tool_result.startswith("Rejected by Josh"):
         return None
-    rules = await list_enabled_rules_for_tool(tool_name)
+    rules = await list_enabled_rules_for_tool(tool_name, postgres_conn)
     last_notification = None
     for rule in rules:
         system_prompt = _AGENT_SYSTEM_PROMPTS.get(rule["agent"])
@@ -122,7 +124,11 @@ async def check_and_fire(tool_name: str, tool_input: dict, client: AsyncAnthropi
             # record a real FAILED run instead of silently skipping, so
             # it's actually visible in the UI's per-rule last-run status.
             await record_run(
-                rule["id"], rule["name"], f"tool: {tool_name}", f"FAILED: agent \"{rule['agent']}\" no longer exists."
+                rule["id"],
+                rule["name"],
+                f"tool: {tool_name}",
+                f"FAILED: agent \"{rule['agent']}\" no longer exists.",
+                postgres_conn,
             )
             continue
 
@@ -152,6 +158,6 @@ async def check_and_fire(tool_name: str, tool_input: dict, client: AsyncAnthropi
         except Exception as error:
             result_text = f"FAILED: {error}"
 
-        await record_run(rule["id"], rule["name"], f"tool: {tool_name}", result_text)
+        await record_run(rule["id"], rule["name"], f"tool: {tool_name}", result_text, postgres_conn)
         last_notification = {"title": rule["name"], "body": result_text[:200]}
     return last_notification

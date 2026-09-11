@@ -36,8 +36,8 @@ FOCUS_TOOLS = [SET_FOCUS_OBJECTIVE_TOOL]
 FOCUS_TOOL_NAMES = {tool["name"] for tool in FOCUS_TOOLS}
 
 
-async def execute_focus_tool_call(name: str, tool_input: dict) -> str:
+async def execute_focus_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "set_focus_objective":
-        await set_focus_objective(tool_input["objective"])
+        await set_focus_objective(tool_input["objective"], postgres_conn)
         return f"Focus set: {tool_input['objective']}"
     return f"Unknown tool: {name}"

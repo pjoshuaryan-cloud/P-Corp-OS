@@ -228,8 +228,8 @@ ALPHA_MODE_TOOLS = [
 ]
 
 
-async def build_alpha_mode_block() -> str:
-    snapshot = await summarize()
+async def build_alpha_mode_block(postgres_conn=None) -> str:
+    snapshot = await summarize(postgres_conn)
     if not snapshot:
         return ""
     return f"\n\n## Alpha Mode Media — current business snapshot\n{snapshot}"
@@ -252,9 +252,9 @@ async def _request_approval(websocket: WebSocket, tool: str, title: str, details
         return False
 
 
-async def execute_alpha_mode_tool_call(name: str, tool_input: dict, websocket: WebSocket) -> str:
+async def execute_alpha_mode_tool_call(name: str, tool_input: dict, websocket: WebSocket, postgres_conn=None) -> str:
     if name == "add_client":
-        result = await add_client(tool_input["name"], tool_input.get("notes"))
+        result = await add_client(tool_input["name"], tool_input.get("notes"), postgres_conn)
         return f"Added client: {result}"
     if name == "add_project":
         fields = {"client": tool_input["client_name"], "project_name": tool_input["project_name"]}
@@ -299,6 +299,7 @@ async def execute_alpha_mode_tool_call(name: str, tool_input: dict, websocket: W
             tool_input["description"],
             tool_input.get("due_date"),
             tool_input.get("status", "pending"),
+            postgres_conn,
         )
         if result is None:
             return f"No project found named \"{tool_input['project_name']}\" — add the project first."
@@ -328,19 +329,20 @@ async def execute_alpha_mode_tool_call(name: str, tool_input: dict, websocket: W
             if result is None:
                 return f"No matching invoice found for \"{identifier}\", or \"{new_status}\" isn't a valid invoice status (not_invoiced/invoiced/paid)."
             return f"Updated invoice for {identifier} to \"{result['status']}\" in Alpha Mode Media Admin."
-        updated = await update_status(entity_type, identifier, new_status)
+        updated = await update_status(entity_type, identifier, new_status, postgres_conn)
         if updated:
             return f"Updated {entity_type} status to {new_status}."
         return f"No matching {entity_type} found for \"{identifier}\"."
     if name == "log_client_contact":
-        result = await log_client_contact(tool_input["client_name"], tool_input.get("contact_date"))
+        result = await log_client_contact(tool_input["client_name"], tool_input.get("contact_date"), postgres_conn)
         return f"Logged contact with {result}"
     if name == "add_crew_member":
         result = await add_crew_member(
-            tool_input["name"], tool_input.get("role"), tool_input.get("contact"), tool_input.get("notes")
+            tool_input["name"], tool_input.get("role"), tool_input.get("contact"), tool_input.get("notes"),
+            postgres_conn,
         )
         return f"Added crew member: {result}"
     if name == "add_equipment":
-        result = await add_equipment(tool_input["name"], tool_input.get("category"), tool_input.get("notes"))
+        result = await add_equipment(tool_input["name"], tool_input.get("category"), tool_input.get("notes"), postgres_conn)
         return f"Added equipment: {result}"
     return f"Unknown tool: {name}"

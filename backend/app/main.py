@@ -333,19 +333,19 @@ async def _trigger_scheduler_loop() -> None:
             # Finance's daily Luno balance snapshot (2026-08-21) rides
             # this same tick rather than starting a second background
             # loop -- see app/finance.py's own docstring.
-            await maybe_snapshot_luno()
+            await maybe_snapshot_luno(postgres_conn)
         except Exception as exc:
             print(f"[finance] Luno snapshot tick failed: {exc}")
         try:
             # HF Markets' daily balance snapshot (2026-08-24) -- same
             # shared-tick reasoning as Luno's above.
-            await maybe_snapshot_hf_markets()
+            await maybe_snapshot_hf_markets(postgres_conn)
         except Exception as exc:
             print(f"[finance] HF Markets snapshot tick failed: {exc}")
         try:
             # Market movers' daily price-history snapshot (2026-08-25) --
             # same shared-tick reasoning as Luno/HF Markets above.
-            await maybe_snapshot_market_prices()
+            await maybe_snapshot_market_prices(postgres_conn)
         except Exception as exc:
             print(f"[triggers] market movers snapshot tick failed: {exc}")
         try:
@@ -353,7 +353,7 @@ async def _trigger_scheduler_loop() -> None:
             # situation_room.py's disconnection alert. Not gated to once a
             # day like the three jobs above -- it re-checks unconditionally
             # every tick, see connected_apps.py's own docstring.
-            await refresh_connected_apps_cache()
+            await refresh_connected_apps_cache(postgres_conn)
         except Exception as exc:
             print(f"[connected_apps] cache refresh tick failed: {exc}")
         await asyncio.sleep(TRIGGER_CHECK_INTERVAL_SECONDS)
@@ -372,8 +372,14 @@ CALENDAR_SYNC_INTERVAL_SECONDS = 900
 
 async def _calendar_sync_loop() -> None:
     while True:
+        # Same guarded app.state access as _trigger_scheduler_loop -- this
+        # loop only ever runs in Mac mode (never started in cloud mode, see
+        # run()), but still writes to shared Postgres when DATA_BACKEND=
+        # postgres so the cloud instance's own reads see the same fresh
+        # calendar data, not a Mac-only-visible cache.
+        postgres_conn = getattr(app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
         try:
-            await sync_calendar_cache()
+            await sync_calendar_cache(postgres_conn)
         except Exception as exc:
             print(f"[calendar] sync tick failed: {exc}")
         await asyncio.sleep(CALENDAR_SYNC_INTERVAL_SECONDS)
@@ -449,10 +455,20 @@ async def lifespan(app: FastAPI):
         if not CLOUD_POSTGRES_DSN:
             raise RuntimeError("DATA_BACKEND=postgres requires CLOUD_POSTGRES_DSN to be set.")
         app.state.postgres_conn = await psycopg.AsyncConnection.connect(CLOUD_POSTGRES_DSN)
-    if not hasattr(app.state, "trigger_scheduler_task"):
-        app.state.trigger_scheduler_task = asyncio.create_task(_trigger_scheduler_loop())
-    if not hasattr(app.state, "calendar_sync_task"):
-        app.state.calendar_sync_task = asyncio.create_task(_calendar_sync_loop())
+    # Cloud mode never runs these loops at all (2026-09-10): there's no
+    # lock of any kind (advisory or otherwise) preventing the Mac and a
+    # cloud instance from both independently running the daily digest,
+    # Luno/HF Markets/market-mover snapshots, and calendar sync against
+    # the same shared Postgres once more domains go live there -- rather
+    # than build new distributed-locking infrastructure, the Mac stays the
+    # sole runner of background jobs, exactly today's behavior. This is
+    # also the only place the digest's Mac-only notification delivery
+    # could run anyway, so it's not a real loss.
+    if not os.environ.get("PORT"):
+        if not hasattr(app.state, "trigger_scheduler_task"):
+            app.state.trigger_scheduler_task = asyncio.create_task(_trigger_scheduler_loop())
+        if not hasattr(app.state, "calendar_sync_task"):
+            app.state.calendar_sync_task = asyncio.create_task(_calendar_sync_loop())
     yield
     if hasattr(app.state, "trigger_scheduler_task"):
         app.state.trigger_scheduler_task.cancel()
@@ -481,7 +497,8 @@ async def health(_: None = Depends(verify_token)) -> dict[str, str]:
 
 
 @app.get("/status")
-async def status(_: None = Depends(verify_token)) -> dict:
+async def status(request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
     # Real observability endpoint (2026-09-09, Infrastructure Independence
     # Stage 2) -- deliberately separate from /health above, not an
     # extension of it: the hang-watchdog calls /health every 30s expecting
@@ -492,16 +509,16 @@ async def status(_: None = Depends(verify_token)) -> dict:
     # status, same discipline connected_apps.py/trading_division.py
     # already apply to their own domains.
     try:
-        await get_active_conversation_id()
+        await get_active_conversation_id(postgres_conn)
         database_reachable = True
     except Exception:
         database_reachable = False
 
-    integrations = await compute_connected_apps_status()
-    digest_schedule = await get_digest_schedule()
-    market_movers_schedule = await get_market_movers_schedule()
-    luno_schedule = await get_luno_schedule()
-    hf_markets_schedule = await get_hf_markets_schedule()
+    integrations = await compute_connected_apps_status(postgres_conn)
+    digest_schedule = await get_digest_schedule(postgres_conn)
+    market_movers_schedule = await get_market_movers_schedule(postgres_conn)
+    luno_schedule = await get_luno_schedule(postgres_conn)
+    hf_markets_schedule = await get_hf_markets_schedule(postgres_conn)
 
     # Stage 8 prep: "Is the Mac Local Node online?" -- answered here rather
     # than fabricated. 150s = 2.5x the 60s heartbeat interval
@@ -514,7 +531,7 @@ async def status(_: None = Depends(verify_token)) -> dict:
     # a fresh heartbeat on any machine not already at UTC+0. Both sides
     # must be UTC: naive-UTC now, compared against the naive-UTC string
     # SQLite actually stored.
-    local_node_last_seen = await get_local_node_last_seen_at()
+    local_node_last_seen = await get_local_node_last_seen_at(postgres_conn)
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     local_node_online = (
         local_node_last_seen is not None
@@ -531,7 +548,7 @@ async def status(_: None = Depends(verify_token)) -> dict:
     return {
         "backend": "online",
         "database_reachable": database_reachable,
-        "credits_exhausted_since": await get_credits_exhausted_since(),
+        "credits_exhausted_since": await get_credits_exhausted_since(postgres_conn),
         "integrations": integrations,
         "background_jobs": {
             "daily_digest": digest_schedule,
@@ -618,23 +635,25 @@ async def register_device(body: RegisterDeviceRequest, token: str) -> dict[str, 
 
 
 @app.get("/connected-apps")
-async def connected_apps_endpoint(_: None = Depends(verify_token)) -> list[dict]:
+async def connected_apps_endpoint(request: Request, _: None = Depends(verify_token)) -> list[dict]:
     # First real UI surface for connection health on Gmail/Calendar/
     # Supabase -- see app/connected_apps.py's docstring for why each
     # row's "connected"/"last synced" means something different per
     # service. Supersedes GET /auth/google/status for UI purposes (that
     # endpoint has had zero Swift call sites since it shipped 2026-08-27);
     # left in place since nothing else calls it either.
-    return await compute_connected_apps_status()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await compute_connected_apps_status(postgres_conn)
 
 
 @app.get("/memory")
-async def memory(_: None = Depends(verify_token)) -> list[dict]:
+async def memory(request: Request, _: None = Depends(verify_token)) -> list[dict]:
     # View of what Frank has saved via the save_memory tool, excluding
     # anything forgotten (app/db.py's deleted_at) — the desktop shell's
     # "Frank" section reads this to make memory visible, rather than it
     # only being inspectable by querying SQLite directly.
-    return await load_memory_records()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await load_memory_records(postgres_conn)
 
 
 @app.get("/operations/tasks")
@@ -654,18 +673,20 @@ async def agents_endpoint(_: None = Depends(verify_token)) -> list[dict]:
 
 
 @app.get("/automations/rules")
-async def automations_rules(_: None = Depends(verify_token)) -> list[dict]:
+async def automations_rules(request: Request, _: None = Depends(verify_token)) -> list[dict]:
     # Backs the "Automations" section's list of configured rules --
     # real, persisted, user-creatable rules (automation_rules_db.py) as
     # of 2026-09-06, not a hardcoded Python list.
-    return await list_automation_rules()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await list_automation_rules(postgres_conn)
 
 
 @app.get("/automations/runs")
-async def automations_runs(_: None = Depends(verify_token)) -> list[dict]:
+async def automations_runs(request: Request, _: None = Depends(verify_token)) -> list[dict]:
     # Backs the "Automations" section's real firing history -- makes
     # automations visible when they happen, not something silent.
-    return await list_automation_runs()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await list_automation_runs(postgres_conn)
 
 
 class AutomationRuleUpdate(BaseModel):
@@ -674,22 +695,26 @@ class AutomationRuleUpdate(BaseModel):
 
 @app.patch("/automations/rules/{rule_id}")
 async def automation_rule_update(
-    rule_id: str, body: AutomationRuleUpdate, _: None = Depends(verify_token)
+    rule_id: str, body: AutomationRuleUpdate, request: Request, _: None = Depends(verify_token)
 ) -> dict:
     # UI-driven pause/resume -- id-based, not fuzzy, same reasoning as
     # Joshx's own UI-driven PATCH endpoints (the UI already knows the
     # exact row it's showing).
-    await set_automation_rule_enabled(rule_id, body.enabled)
-    await record_tool_call("update_automation_rule_ui", {"rule_id": rule_id, "enabled": body.enabled}, "ok")
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    await set_automation_rule_enabled(rule_id, body.enabled, postgres_conn)
+    await record_tool_call(
+        "update_automation_rule_ui", {"rule_id": rule_id, "enabled": body.enabled}, "ok", postgres_conn
+    )
     return {"rule_id": rule_id, "enabled": body.enabled}
 
 
 @app.delete("/automations/rules/{rule_id}")
-async def automation_rule_delete(rule_id: str, _: None = Depends(verify_token)) -> dict:
-    deleted = await delete_automation_rule(rule_id)
+async def automation_rule_delete(rule_id: str, request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    deleted = await delete_automation_rule(rule_id, postgres_conn)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"No automation rule with id {rule_id}")
-    await record_tool_call("delete_automation_rule_ui", {"rule_id": rule_id}, "ok")
+    await record_tool_call("delete_automation_rule_ui", {"rule_id": rule_id}, "ok", postgres_conn)
     return {"rule_id": rule_id, "deleted": True}
 
 
@@ -745,21 +770,23 @@ async def personal_dashboard(request: Request, _: None = Depends(verify_token)) 
 
 
 @app.get("/joshx/dashboard")
-async def joshx_dashboard(_: None = Depends(verify_token)) -> dict:
+async def joshx_dashboard(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the desktop "Joshx" section -- Josh's independent freelance
     # creative business, completely separate from Alpha Mode Media. Phase
     # 1 scope only (clients/leads/projects) -- see app/joshx_db.py's own
     # docstring.
-    return await joshx_dashboard_snapshot()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await joshx_dashboard_snapshot(postgres_conn)
 
 
 @app.get("/joshx/analytics")
-async def joshx_analytics(_: None = Depends(verify_token)) -> dict:
+async def joshx_analytics(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the new performance-metrics tiles (2026-09-06, systems audit
     # §3) -- deliberately a separate endpoint from /joshx/dashboard, not
     # new keys on it, matching compute_performance_metrics()'s own
     # docstring on why that boundary matters.
-    return await joshx_performance_metrics()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await joshx_performance_metrics(postgres_conn)
 
 
 class JoshxProjectStatusUpdate(BaseModel):
@@ -772,7 +799,7 @@ class JoshxProjectPaymentStatusUpdate(BaseModel):
 
 @app.patch("/joshx/projects/{project_id}/status")
 async def joshx_project_status_update(
-    project_id: int, body: JoshxProjectStatusUpdate, _: None = Depends(verify_token)
+    project_id: int, body: JoshxProjectStatusUpdate, request: Request, _: None = Depends(verify_token)
 ) -> dict:
     # Backs the Joshx detail view's status picker (2026-08-31) -- the
     # first UI-driven write in Joshx; every other Joshx write happens via
@@ -782,80 +809,90 @@ async def joshx_project_status_update(
     # path) since the UI already knows the exact row id it's displaying,
     # and validated server-side against the known vocabulary -- the
     # chat-tool path trusts Frank's own judgment, this one can't.
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
     if body.status not in PROJECT_STATUS_VALUES:
         raise HTTPException(status_code=400, detail=f"Invalid status: {body.status!r}")
-    updated = await set_project_status_by_id(project_id, body.status)
+    updated = await set_project_status_by_id(project_id, body.status, postgres_conn)
     if not updated:
         raise HTTPException(status_code=404, detail=f"No project with id {project_id}")
-    await record_tool_call("update_joshx_project_status_ui", {"project_id": project_id, "status": body.status}, "ok")
+    await record_tool_call(
+        "update_joshx_project_status_ui", {"project_id": project_id, "status": body.status}, "ok", postgres_conn
+    )
     return {"project_id": project_id, "status": body.status}
 
 
 @app.patch("/joshx/projects/{project_id}/payment-status")
 async def joshx_project_payment_status_update(
-    project_id: int, body: JoshxProjectPaymentStatusUpdate, _: None = Depends(verify_token)
+    project_id: int, body: JoshxProjectPaymentStatusUpdate, request: Request, _: None = Depends(verify_token)
 ) -> dict:
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
     if body.payment_status not in PROJECT_PAYMENT_STATUS_VALUES:
         raise HTTPException(status_code=400, detail=f"Invalid payment_status: {body.payment_status!r}")
-    updated = await set_project_payment_status_by_id(project_id, body.payment_status)
+    updated = await set_project_payment_status_by_id(project_id, body.payment_status, postgres_conn)
     if not updated:
         raise HTTPException(status_code=404, detail=f"No project with id {project_id}")
     await record_tool_call(
         "update_joshx_project_payment_status_ui",
         {"project_id": project_id, "payment_status": body.payment_status},
         "ok",
+        postgres_conn,
     )
     return {"project_id": project_id, "payment_status": body.payment_status}
 
 
 @app.delete("/joshx/leads/{lead_id}")
-async def joshx_lead_delete(lead_id: int, _: None = Depends(verify_token)) -> dict:
+async def joshx_lead_delete(lead_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the LEADS section's delete action (2026-08-31) -- soft
     # delete (leads.deleted_at), same reasoning as operations_db.py's
     # delete_task: a lead becoming a real project isn't tracked as a
     # link anywhere, so nothing auto-hides it once it's booked; this is
     # the explicit "get it off my list" action for a dormant one.
-    deleted = await delete_lead_by_id(lead_id)
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    deleted = await delete_lead_by_id(lead_id, postgres_conn)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"No lead with id {lead_id}")
-    await record_tool_call("delete_joshx_lead_ui", {"lead_id": lead_id}, "ok")
+    await record_tool_call("delete_joshx_lead_ui", {"lead_id": lead_id}, "ok", postgres_conn)
     return {"lead_id": lead_id, "deleted": True}
 
 
 @app.delete("/joshx/clients/{client_id}")
-async def joshx_client_delete(client_id: int, _: None = Depends(verify_token)) -> dict:
+async def joshx_client_delete(client_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
     # "Everything must be deletable if needed" (2026-08-31) -- same
     # soft-delete shape as the lead/project delete routes.
-    deleted = await delete_client_by_id(client_id)
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    deleted = await delete_client_by_id(client_id, postgres_conn)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"No client with id {client_id}")
-    await record_tool_call("delete_joshx_client_ui", {"client_id": client_id}, "ok")
+    await record_tool_call("delete_joshx_client_ui", {"client_id": client_id}, "ok", postgres_conn)
     return {"client_id": client_id, "deleted": True}
 
 
 @app.delete("/joshx/projects/{project_id}")
-async def joshx_project_delete(project_id: int, _: None = Depends(verify_token)) -> dict:
-    deleted = await delete_project_by_id(project_id)
+async def joshx_project_delete(project_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    deleted = await delete_project_by_id(project_id, postgres_conn)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"No project with id {project_id}")
-    await record_tool_call("delete_joshx_project_ui", {"project_id": project_id}, "ok")
+    await record_tool_call("delete_joshx_project_ui", {"project_id": project_id}, "ok", postgres_conn)
     return {"project_id": project_id, "deleted": True}
 
 
 @app.get("/people/dashboard")
-async def people_dashboard(_: None = Depends(verify_token)) -> dict:
+async def people_dashboard(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the "PEOPLE" section inside Personal -- Josh's real personal/
     # professional relationship network, deliberately separate from
     # Joshx/Alpha Mode Media clients. See app/people_db.py's own docstring.
-    return await people_dashboard_snapshot()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await people_dashboard_snapshot(postgres_conn)
 
 
 @app.get("/finance/dashboard")
-async def finance_dashboard(_: None = Depends(verify_token)) -> dict:
+async def finance_dashboard(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the desktop "Finance" section -- Josh's personal investment
     # tracking, Luno automatic + four manually-logged accounts. See
     # app/finance_db.py's own docstring for scope.
-    snapshot = await finance_dashboard_snapshot()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    snapshot = await finance_dashboard_snapshot(postgres_conn)
     # Real overall Luno value, computed live against Luno's own price
     # feed (2026-08-24) -- see app/finance.py's compute_luno_zar_value()
     # docstring for why this can't just be a naive sum of raw balances.
@@ -871,17 +908,21 @@ async def finance_dashboard(_: None = Depends(verify_token)) -> dict:
 
 
 @app.get("/finance/concentration")
-async def finance_concentration(_: None = Depends(verify_token)) -> dict:
+async def finance_concentration(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the new concentration-bars section (2026-09-06, systems audit
     # §4) -- two separate views (ZAR accounts, Luno holdings), never one
     # blended number. See app/finance.py's compute_concentration_metrics()
     # docstring for why.
-    return await compute_concentration_metrics()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await compute_concentration_metrics(postgres_conn)
 
 
 @app.get("/finance/history")
 async def finance_history(
-    account_id: int, from_: str | None = Query(None, alias="from"), to: str | None = None,
+    account_id: int,
+    request: Request,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = None,
     _: None = Depends(verify_token),
 ) -> list[dict]:
     # Backs the new per-account history drill-down (2026-09-06, systems
@@ -889,7 +930,8 @@ async def finance_history(
     # account, optionally bounded by from/to ('YYYY-MM-DD'). Omitting both
     # returns the full history, honest given real accounts here span
     # barely two weeks so far.
-    return await get_balance_history(account_id, from_, to)
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await get_balance_history(account_id, from_, to, postgres_conn)
 
 
 @app.get("/search")
@@ -902,30 +944,34 @@ async def search_endpoint(q: str, _: None = Depends(verify_token)) -> list[dict]
 
 
 @app.get("/focus")
-async def focus_endpoint(_: None = Depends(verify_token)) -> dict:
+async def focus_endpoint(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the War Room's Mission Status card's "Focus: ..." line --
     # see db.py's get_focus_objective docstring for the deliberately
     # minimal scope (just this one line, no on/off mode, no automatic
     # deprioritization).
-    return await get_focus_objective()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await get_focus_objective(postgres_conn)
 
 
 @app.post("/activity/log")
-async def activity_log_endpoint(body: ActivityLogRequest, _: None = Depends(verify_token)) -> dict:
+async def activity_log_endpoint(
+    body: ActivityLogRequest, request: Request, _: None = Depends(verify_token)
+) -> dict:
     # Shadow Mode's write path -- called by ActivityTracker.swift whenever
     # the frontmost app changes, not a Frank tool. See shadow_mode.py's
     # docstring for why capture and recall are split this way.
-    await log_activity(body.app_name)
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    await log_activity(body.app_name, postgres_conn)
     # Stage 8 prep: a real activity post is real evidence the Mac Local
     # Node is alive, same signal the dedicated heartbeat below sends --
     # free liveness update, no change to this route's own request/
     # response shape.
-    await mark_local_node_seen()
+    await mark_local_node_seen(postgres_conn)
     return {"status": "ok"}
 
 
 @app.post("/local-node/heartbeat")
-async def local_node_heartbeat(_: None = Depends(verify_token)) -> dict:
+async def local_node_heartbeat(request: Request, _: None = Depends(verify_token)) -> dict:
     # Stage 8 prep (2026-09-10): independent of app-switch events --
     # /activity/log only fires when the frontmost app actually changes, so
     # a Mac that's on but idle (no switching) looks identical to a Mac
@@ -933,35 +979,39 @@ async def local_node_heartbeat(_: None = Depends(verify_token)) -> dict:
     # schedule-driven signal ActivityTracker.swift's new periodic loop
     # sends regardless of user activity, answering the audit's own
     # "Is the Mac Local Node online?" observability question.
-    await mark_local_node_seen()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    await mark_local_node_seen(postgres_conn)
     return {"status": "ok"}
 
 
 @app.get("/insights")
-async def insights_endpoint(_: None = Depends(verify_token)) -> list[dict]:
+async def insights_endpoint(request: Request, _: None = Depends(verify_token)) -> list[dict]:
     # Real data behind the right rail's "Frank's Insights" card -- was
     # literal placeholder text before (see app/insights.py's docstring).
-    return await compute_insights()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await compute_insights(postgres_conn=postgres_conn)
 
 
 @app.get("/brief")
-async def brief_endpoint(_: None = Depends(verify_token)) -> dict:
+async def brief_endpoint(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs "The Brief" (Face-Lift item 09) -- see app/brief.py's own
     # docstring. Calling this marks the brief as viewed (updates
     # app_state.last_brief_viewed_at), so this is a real state-changing
     # read, not side-effect-free -- deliberate, since "what changed"
     # always means "since you last actually looked."
-    return await compute_brief()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await compute_brief(postgres_conn)
 
 
 @app.get("/triggers/rules")
-async def trigger_rules_endpoint(_: None = Depends(verify_token)) -> list[dict]:
+async def trigger_rules_endpoint(request: Request, _: None = Depends(verify_token)) -> list[dict]:
     # Read-only visibility into the Proactive Triggers Layer's rule rows
     # (app/triggers_db.py) -- exists so the rule set can be inspected
     # without opening a SQLite file by hand. GET /triggers/status (below)
     # is the richer endpoint the actual Triggers UI uses; this one stays
     # as the plain rule-only view it always was.
-    return await list_trigger_rules()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await list_trigger_rules(postgres_conn)
 
 
 class TriggerRuleUpdate(BaseModel):
@@ -970,35 +1020,38 @@ class TriggerRuleUpdate(BaseModel):
 
 @app.patch("/triggers/rules/{rule_type}")
 async def trigger_rule_update_endpoint(
-    rule_type: str, body: TriggerRuleUpdate, _: None = Depends(verify_token)
+    rule_type: str, body: TriggerRuleUpdate, request: Request, _: None = Depends(verify_token)
 ) -> dict:
     # Backs the Triggers UI's per-rule toggle (2026-08-21) -- the first UI
     # control that mutates trigger_rules directly, rather than Frank being
     # the only way state changes (unlike Personal/Alpha Mode's Frank-only
     # writes, this is plain settings-style state with no reason to route
     # through a conversation).
-    await set_rule_enabled(rule_type, body.enabled)
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    await set_rule_enabled(rule_type, body.enabled, postgres_conn)
     return {"rule_type": rule_type, "enabled": body.enabled}
 
 
 @app.get("/triggers/status")
-async def trigger_status_endpoint(_: None = Depends(verify_token)) -> dict:
+async def trigger_status_endpoint(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the Triggers UI's main view -- every rule plus its currently
     # live-matching items, each flagged with whether it'd actually be in
     # *today's* digest per the decaying cadence (app/triggers.py's
     # compute_status(), entirely read-only -- viewing this can't consume
     # a cadence slot or alter what the next real digest sends).
-    return await compute_trigger_status()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await compute_trigger_status(postgres_conn)
 
 
 @app.post("/triggers/run-now")
-async def trigger_run_now_endpoint(_: None = Depends(verify_token)) -> dict:
+async def trigger_run_now_endpoint(request: Request, _: None = Depends(verify_token)) -> dict:
     # Manual escape hatch for testing the digest without waiting for the
     # scheduler's send_hour gate (app/triggers.py's maybe_run_daily_digest)
     # -- runs the real rule checks and, if anything's due, actually sends
     # the email. Does not touch digest_schedule.last_sent_date, so it
     # won't interfere with the once-a-day scheduled run.
-    return await run_daily_digest()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await run_daily_digest(postgres_conn)
 
 
 @app.get("/alpha-mode/dashboard")
@@ -1009,54 +1062,62 @@ async def alpha_mode_dashboard_endpoint(_: None = Depends(verify_token)) -> dict
 
 
 @app.get("/situation-room")
-async def situation_room_endpoint(_: None = Depends(verify_token)) -> list[dict]:
+async def situation_room_endpoint(request: Request, _: None = Depends(verify_token)) -> list[dict]:
     # Backs War Room's escalated alert banner -- see
     # app/situation_room.py's docstring for how this differs from the
     # routine /insights list.
-    return await compute_situation_room_alerts()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await compute_situation_room_alerts(postgres_conn)
 
 
 @app.delete("/memory/{memory_id}")
-async def forget_memory(memory_id: int, _: None = Depends(verify_token)) -> dict[str, bool]:
+async def forget_memory(memory_id: int, request: Request, _: None = Depends(verify_token)) -> dict[str, bool]:
     # Manual forgetting from the UI — same soft-delete Frank's own
     # forget_memory tool uses, just addressed by ID instead of title since
     # the UI already has it.
-    forgotten = await forget_memory_by_id(memory_id)
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    forgotten = await forget_memory_by_id(memory_id, postgres_conn)
     return {"forgotten": forgotten}
 
 
 @app.get("/history")
-async def history(_: None = Depends(verify_token)) -> list[dict]:
+async def history(request: Request, _: None = Depends(verify_token)) -> list[dict]:
     # The active conversation's transcript — always the most recently
     # created one (app/db.py's get_active_conversation_id). This is what
     # backs the real chat thread built into WarRoomView.
-    conversation_id = await get_active_conversation_id()
-    return await load_history(conversation_id)
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    conversation_id = await get_active_conversation_id(postgres_conn)
+    return await load_history(conversation_id, postgres_conn)
 
 
 @app.post("/conversations")
-async def new_conversation(_: None = Depends(verify_token)) -> dict[str, int]:
+async def new_conversation(request: Request, _: None = Depends(verify_token)) -> dict[str, int]:
     # "New chat" — memory (app/memory.py) still carries continuity forward;
     # this just starts a fresh transcript, and becomes the active one.
-    conversation_id = await create_new_conversation()
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    conversation_id = await create_new_conversation(postgres_conn)
     return {"conversation_id": conversation_id}
 
 
 @app.get("/conversations")
-async def conversations(q: str | None = None, _: None = Depends(verify_token)) -> list[dict]:
+async def conversations(request: Request, q: str | None = None, _: None = Depends(verify_token)) -> list[dict]:
     # Backs the conversation history browser — reopening an older chat
     # needs a way to find it, indefinitely, as history accumulates over
     # time. `q`, when given, searches real message content across each
     # conversation, not just its preview.
-    return await list_conversations(query=q)
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await list_conversations(query=q, postgres_conn=postgres_conn)
 
 
 @app.post("/conversations/{conversation_id}/activate")
-async def activate_conversation(conversation_id: int, _: None = Depends(verify_token)) -> dict[str, int]:
+async def activate_conversation(
+    conversation_id: int, request: Request, _: None = Depends(verify_token)
+) -> dict[str, int]:
     # Reopening an older conversation — makes it active without needing to
     # be the newest row (that's the whole reason app_state exists instead
     # of just "active = newest").
-    await set_active_conversation(conversation_id)
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    await set_active_conversation(conversation_id, postgres_conn)
     return {"conversation_id": conversation_id}
 
 
@@ -1133,7 +1194,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
     postgres_conn = getattr(websocket.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
     # Whichever conversation is active as of connect time — a client that
     # started a new chat right before reconnecting picks up the fresh one.
-    conversation_id = await get_active_conversation_id()
+    conversation_id = await get_active_conversation_id(postgres_conn)
     # image_path is dropped here, deliberately -- load_history() includes it
     # for GET /history's benefit (the UI's "📎 image attached" placeholder for
     # an old message), but Claude's own `messages=` list only accepts
@@ -1141,7 +1202,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
     # attached, not re-send it as real vision context on every reconnect
     # (confirmed decision 2026-08-05 -- see load_history()'s docstring).
     history: list[dict[str, str]] = [
-        {"role": row["role"], "content": row["content"]} for row in await load_history(conversation_id)
+        {"role": row["role"], "content": row["content"]} for row in await load_history(conversation_id, postgres_conn)
     ]
 
     try:
@@ -1196,18 +1257,20 @@ async def websocket_chat(websocket: WebSocket) -> None:
             user_content = [*content_blocks, {"type": "text", "text": user_text}] if content_blocks else user_text
 
             history.append({"role": "user", "content": user_content})
-            await save_message(conversation_id, "user", user_text, attachments=saved_attachments or None)
+            await save_message(
+                conversation_id, "user", user_text, attachments=saved_attachments or None, postgres_conn=postgres_conn
+            )
 
             system_prompt = (
                 SYSTEM_PROMPT
                 + ATTACHMENT_CAPABILITY_NOTE
-                + await build_memory_block()
-                + await build_alpha_mode_block()
+                + await build_memory_block(postgres_conn)
+                + await build_alpha_mode_block(postgres_conn)
                 + await build_operations_block(postgres_conn)
                 + await build_personal_block(postgres_conn)
-                + await build_joshx_block()
-                + await build_people_block()
-                + await build_finance_block()
+                + await build_joshx_block(postgres_conn)
+                + await build_people_block(postgres_conn)
+                + await build_finance_block(postgres_conn)
                 + await build_trading_division_block()
             )
 
@@ -1257,7 +1320,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                     "credit balance" in str(error).lower()
                 )
                 if is_credit_exhaustion:
-                    await set_credits_exhausted()
+                    await set_credits_exhausted(postgres_conn)
                     message = (
                         "Frank is temporarily unavailable — the Anthropic account has run "
                         "out of credits. Add credits at console.anthropic.com/settings/billing, "
@@ -1291,9 +1354,15 @@ async def websocket_chat(websocket: WebSocket) -> None:
             # Reliability pass (2026-09-07): clears any earlier billing
             # alert the moment a turn actually succeeds again -- cheap
             # single-row UPDATE, correct as a no-op when nothing was set.
-            await clear_credits_exhausted()
+            await clear_credits_exhausted(postgres_conn)
             history.append({"role": "assistant", "content": assistant_reply})
-            await save_message(conversation_id, "assistant", assistant_reply, attachments=generated_documents or None)
+            await save_message(
+                conversation_id,
+                "assistant",
+                assistant_reply,
+                attachments=generated_documents or None,
+                postgres_conn=postgres_conn,
+            )
             await websocket.send_text("\n[done]")
     except WebSocketDisconnect:
         pass
@@ -1404,13 +1473,13 @@ async def run_claude_turn(
                 continue
             await websocket.send_text(f"\n[tool_start]{json.dumps({'label': label_for_tool(block.name)})}")
             if block.name in FOCUS_TOOL_NAMES:
-                result = await execute_focus_tool_call(block.name, block.input)
+                result = await execute_focus_tool_call(block.name, block.input, postgres_conn)
             elif block.name in DECISION_JOURNAL_TOOL_NAMES:
-                result = await execute_decision_journal_tool_call(block.name, block.input)
+                result = await execute_decision_journal_tool_call(block.name, block.input, postgres_conn)
             elif block.name in MEMORY_GRAPH_TOOL_NAMES:
-                result = await execute_memory_graph_tool_call(block.name, block.input)
+                result = await execute_memory_graph_tool_call(block.name, block.input, postgres_conn)
             elif block.name in SHADOW_MODE_TOOL_NAMES:
-                result = await execute_shadow_mode_tool_call(block.name, block.input)
+                result = await execute_shadow_mode_tool_call(block.name, block.input, postgres_conn)
             elif block.name in DEBATE_TOOL_NAMES:
                 result = await execute_debate_tool_call(block.name, block.input, client, websocket)
                 # Same reasoning as consult_operations_agent below --
@@ -1418,9 +1487,9 @@ async def run_claude_turn(
                 # transcript too.
                 assistant_text += result
             elif block.name in LEGACY_VAULT_TOOL_NAMES:
-                result = await execute_legacy_vault_tool_call(block.name, block.input)
+                result = await execute_legacy_vault_tool_call(block.name, block.input, postgres_conn)
             elif block.name in ALPHA_MODE_TOOL_NAMES:
-                result = await execute_alpha_mode_tool_call(block.name, block.input, websocket)
+                result = await execute_alpha_mode_tool_call(block.name, block.input, websocket, postgres_conn)
             elif block.name in OPERATIONS_TOOL_NAMES:
                 # postgres_conn computed once near the top of websocket_chat,
                 # reused here -- see that comment for why.
@@ -1488,31 +1557,31 @@ async def run_claude_turn(
                 # reused here -- see that comment for why.
                 result = await execute_personal_tool_call(block.name, block.input, postgres_conn)
             elif block.name in JOSHX_TOOL_NAMES:
-                result = await execute_joshx_tool_call(block.name, block.input)
+                result = await execute_joshx_tool_call(block.name, block.input, postgres_conn)
             elif block.name in PEOPLE_TOOL_NAMES:
-                result = await execute_people_tool_call(block.name, block.input)
+                result = await execute_people_tool_call(block.name, block.input, postgres_conn)
             elif block.name in FINANCE_TOOL_NAMES:
-                result = await execute_finance_tool_call(block.name, block.input)
+                result = await execute_finance_tool_call(block.name, block.input, postgres_conn)
             elif block.name in DOCUMENTS_TOOL_NAMES:
                 result = await execute_documents_tool_call(block.name, block.input)
             elif block.name in CONNECTED_APPS_TOOL_NAMES:
-                result = await execute_connected_apps_tool_call(block.name, block.input)
+                result = await execute_connected_apps_tool_call(block.name, block.input, postgres_conn)
             elif block.name in CALENDAR_TOOL_NAMES:
-                result = await execute_calendar_tool_call(block.name, block.input, websocket)
+                result = await execute_calendar_tool_call(block.name, block.input, websocket, postgres_conn)
             elif block.name in EMAIL_TOOL_NAMES:
-                result = await execute_email_tool_call(block.name, block.input)
+                result = await execute_email_tool_call(block.name, block.input, postgres_conn)
             elif block.name in AUTOMATION_TOOL_NAMES:
-                result = await execute_automation_tool_call(block.name, block.input, websocket)
+                result = await execute_automation_tool_call(block.name, block.input, websocket, postgres_conn)
             elif block.name in DATA_ANALYSIS_TOOL_NAMES:
-                result = await execute_data_analysis_tool_call(block.name, block.input, conversation_id)
+                result = await execute_data_analysis_tool_call(block.name, block.input, conversation_id, postgres_conn)
             else:
-                result = await execute_tool_call(block.name, block.input)
+                result = await execute_tool_call(block.name, block.input, postgres_conn)
             # Real audit trail (2026-08-10, SECURITY.md's flagged gap) --
             # every tool call, regardless of which branch above produced
             # it, logged at this one point so no individual agent module
             # needed touching. See audit_db.py's own docstring for why
             # there's no "who" column.
-            await record_tool_call(block.name, block.input, result)
+            await record_tool_call(block.name, block.input, result, postgres_conn)
             tool_results.append(
                 {"type": "tool_result", "tool_use_id": block.id, "content": result}
             )
@@ -1566,7 +1635,9 @@ async def run_claude_turn(
                     f"\n[document_generated]{json.dumps({'filename': document_filename, 'title': document_title})}"
                 )
 
-            automation_notification = await check_and_fire_automation(block.name, block.input, client, result)
+            automation_notification = await check_and_fire_automation(
+                block.name, block.input, client, result, postgres_conn
+            )
             if automation_notification:
                 # Deliberately a separate notification, not folded into
                 # the block above -- this is a rule firing as a real

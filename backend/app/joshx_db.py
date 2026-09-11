@@ -23,10 +23,21 @@ Kept deliberately small, same philosophy as alpha_mode_db.py's crew/
 equipment tables: one free-text status/stage field per entity, no enums
 enforced at the DB level -- Frank writes plain-English values directly.
 Like every file under backend/data/, this is gitignored.
+
+Dual-backend dispatchers (2026-09-11, iPhone independence pass): same
+pattern as every other domain -- postgres_conn: Any = None, SQLite body
+renamed _<name>_sqlite, Postgres sibling added. One real translation
+issue found here specifically: SQLite's `service IS ? COLLATE NOCASE`
+(a NULL-safe comparison against a bound parameter) has no Postgres
+equivalent via plain IS -- Postgres's IS only accepts NULL/TRUE/FALSE/
+DISTINCT FROM literals, not an arbitrary bound value. The Postgres
+sibling uses `IS NOT DISTINCT FROM %s` instead, which is the real
+NULL-safe equality Postgres does support.
 """
 
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -100,48 +111,13 @@ async def init_joshx_db() -> None:
             )
             """
         )
-        # Migration path: projects existed before payment_status did
-        # (added 2026-08-31 so "has the client paid" can be tracked
-        # separately from `status` -- status also encodes production
-        # stage, so a project sitting at "delivery" or "archived" had no
-        # way to record payment, and a project paid early had no way to
-        # reflect that without wrongly overwriting its real pipeline
-        # stage). Same guarded-ALTER idiom as operations_db.py's
-        # `deleted_at` migration -- CREATE TABLE alone wouldn't touch
-        # Josh's real existing rows in this already-populated file.
         cursor = await db.execute("PRAGMA table_info(projects)")
         columns = {row[1] async for row in cursor}
         if "payment_status" not in columns:
             await db.execute("ALTER TABLE projects ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'unpaid'")
-        # Migration path: added 2026-08-31 alongside convert_lead_to_project
-        # -- gives a project a real, explicit link back to the lead it came
-        # from, replacing add_project's own ambiguous "exactly one open
-        # lead for this client" heuristic for the conversion path. Nullable
-        # and unenforced at the app layer (SQLite doesn't enforce FKs here
-        # by default, consistent with this file's own "no rigid
-        # constraints" convention) -- a project with source_lead_id NULL is
-        # still fully valid (direct-start project, no prior lead, or any
-        # pre-existing row from before this column existed -- there's no
-        # reliable way to reconstruct which lead an old project came from,
-        # and guessing would be worse than an honest NULL).
         if "source_lead_id" not in columns:
             await db.execute("ALTER TABLE projects ADD COLUMN source_lead_id INTEGER REFERENCES leads(id)")
 
-        # Invoices (2026-08-31) -- brand-new table, no existing rows to
-        # migrate. NOT reusing alpha_mode_db.py's own `invoices` table as
-        # a pattern beyond its original pre-migration shape (client_id/
-        # project_id/amount/due_date/status): that table is explicitly
-        # dead code today (see that file's own docstring, "Projects and
-        # invoices moved OUT of here 2026-08-02... nothing writes to
-        # them anymore") -- real Alpha Mode invoices live in the actual
-        # production Supabase app (alpha_mode_supabase.py). Joshx has no
-        # equivalent external app to sync to, so this is Joshx's own
-        # real, first-class invoices table, extended with amount_paid/
-        # issued_date/notes/a richer status vocabulary. project_id is a
-        # genuine FK to an already-existing project row -- unlike
-        # client_name/project_name elsewhere in this file, an invoice
-        # can't exist ahead of the project it belongs to the way a
-        # project can exist with no matching client record.
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS invoices (
@@ -159,20 +135,6 @@ async def init_joshx_db() -> None:
             """
         )
 
-        # Expenses (2026-09-03, P Corp OS systems audit) -- brand-new
-        # table, same "real table, not a lossy single field" reasoning as
-        # invoices: a project accrues multiple real line items (props,
-        # fuel, crew meals) over its life, so a single running-total
-        # column on `projects` couldn't be itemized or corrected without
-        # hand-recomputing a total. `description` is free text, not a
-        # category enum, matching this file's own "no enums enforced at
-        # the DB level" convention. Revenue is deliberately NOT a new
-        # column anywhere in this file -- it's computed as invoice totals
-        # (once real invoices exist) falling back to `budget` otherwise,
-        # same precedence rule _sync_project_payment_status_from_invoices
-        # already established; profit/margin are likewise always computed
-        # from these rows, never stored, so neither can ever drift from
-        # the real data behind it.
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS expenses (
@@ -206,7 +168,42 @@ async def _find_row_id(db: aiosqlite.Connection, table: str, identifier: str, na
     return row[0] if row else None
 
 
-async def add_client(name: str, **fields) -> str:
+async def _find_row_id_postgres(conn: Any, table: str, identifier: str, name_col: str = "name") -> int | None:
+    # ILIKE, not LIKE -- same case-sensitivity fix proven necessary
+    # throughout this migration. table is always one of a small fixed set
+    # of literal strings this file passes itself, never user input, so
+    # f-string interpolation here is the same trust boundary as the
+    # SQLite version above.
+    async with conn.cursor() as cur:
+        await cur.execute(
+            f"SELECT id FROM joshx.{table} WHERE {name_col} ILIKE %s AND deleted_at IS NULL "
+            "ORDER BY id DESC LIMIT 1",
+            (identifier,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            await cur.execute(
+                f"SELECT id FROM joshx.{table} WHERE {name_col} ILIKE %s AND deleted_at IS NULL ORDER BY id DESC LIMIT 1",
+                (f"%{identifier}%",),
+            )
+            row = await cur.fetchone()
+        return row[0] if row else None
+
+
+async def add_client(name: str, postgres_conn: Any = None, **fields) -> str:
+    if postgres_conn is not None:
+        # status/created_at supplied explicitly -- same missing-DEFAULT
+        # gap found repeatedly this migration.
+        columns = ["name", *fields.keys(), "status", "created_at"]
+        value_placeholders = ", ".join("%s" for _ in fields)
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                f"INSERT INTO joshx.clients ({', '.join(columns)}) "
+                f"VALUES (%s{',' + value_placeholders if fields else ''}, 'lead', (now() AT TIME ZONE 'utc'))",
+                (name, *fields.values()),
+            )
+        await postgres_conn.commit()
+        return name
     columns = ["name", *fields.keys()]
     placeholders = ", ".join("?" for _ in columns)
     async with aiosqlite.connect(DB_PATH) as db:
@@ -218,7 +215,15 @@ async def add_client(name: str, **fields) -> str:
     return name
 
 
-async def update_client_status(identifier: str, new_status: str) -> bool:
+async def update_client_status(identifier: str, new_status: str, postgres_conn: Any = None) -> bool:
+    if postgres_conn is not None:
+        client_id = await _find_row_id_postgres(postgres_conn, "clients", identifier)
+        if client_id is None:
+            return False
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("UPDATE joshx.clients SET status = %s WHERE id = %s", (new_status, client_id))
+        await postgres_conn.commit()
+        return True
     async with aiosqlite.connect(DB_PATH) as db:
         client_id = await _find_row_id(db, "clients", identifier)
         if client_id is None:
@@ -228,24 +233,40 @@ async def update_client_status(identifier: str, new_status: str) -> bool:
         return True
 
 
-async def log_client_contact(identifier: str, contact_date: str | None = None) -> bool:
+async def log_client_contact(identifier: str, contact_date: str | None = None, postgres_conn: Any = None) -> bool:
+    date_value = contact_date or date.today().isoformat()
+    if postgres_conn is not None:
+        client_id = await _find_row_id_postgres(postgres_conn, "clients", identifier)
+        if client_id is None:
+            return False
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("UPDATE joshx.clients SET last_contact_date = %s WHERE id = %s", (date_value, client_id))
+        await postgres_conn.commit()
+        return True
     async with aiosqlite.connect(DB_PATH) as db:
         client_id = await _find_row_id(db, "clients", identifier)
         if client_id is None:
             return False
-        await db.execute(
-            "UPDATE clients SET last_contact_date = ? WHERE id = ?",
-            (contact_date or date.today().isoformat(), client_id),
-        )
+        await db.execute("UPDATE clients SET last_contact_date = ? WHERE id = ?", (date_value, client_id))
         await db.commit()
         return True
 
 
-async def delete_client(identifier: str) -> str | None:
+async def delete_client(identifier: str, postgres_conn: Any = None) -> str | None:
     """Soft delete (fuzzy-match, Frank-facing) -- "everything must be
     deletable if needed" (2026-08-31), same reasoning/shape as
     delete_lead. Returns the deleted client's real name, or None if
     nothing matched."""
+    if postgres_conn is not None:
+        client_id = await _find_row_id_postgres(postgres_conn, "clients", identifier)
+        if client_id is None:
+            return None
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT name FROM joshx.clients WHERE id = %s", (client_id,))
+            (name,) = await cur.fetchone()
+            await cur.execute("UPDATE joshx.clients SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s", (client_id,))
+        await postgres_conn.commit()
+        return name
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         client_id = await _find_row_id(db, "clients", identifier)
@@ -258,9 +279,19 @@ async def delete_client(identifier: str) -> str | None:
         return row["name"] if row else None
 
 
-async def delete_client_by_id(client_id: int) -> bool:
+async def delete_client_by_id(client_id: int, postgres_conn: Any = None) -> bool:
     """Id-based, for the UI's own delete action -- same reasoning as
     delete_lead_by_id."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE joshx.clients SET deleted_at = (now() AT TIME ZONE 'utc') "
+                "WHERE id = %s AND deleted_at IS NULL",
+                (client_id,),
+            )
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "UPDATE clients SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL", (client_id,)
@@ -269,7 +300,7 @@ async def delete_client_by_id(client_id: int) -> bool:
         return cursor.rowcount > 0
 
 
-async def add_lead(client_name: str, **fields) -> str:
+async def add_lead(client_name: str, postgres_conn: Any = None, **fields) -> str:
     """Upsert, not a bare INSERT (fixed 2026-08-27) -- same real bug class
     just found and fixed on add_project (confirmed live: two identical
     "Malondie SS26" project rows from Frank being asked to add/update the
@@ -286,6 +317,39 @@ async def add_lead(client_name: str, **fields) -> str:
     reasoning as add_project. On a match, only non-None fields from this
     call are merged in; on no match, a plain INSERT as before.
     """
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            # IS NOT DISTINCT FROM, not IS -- Postgres's IS only accepts
+            # NULL/TRUE/FALSE/DISTINCT FROM literals, not an arbitrary
+            # bound parameter (SQLite's IS ? works fine; Postgres's
+            # equivalent NULL-safe comparison against a bound value is
+            # IS NOT DISTINCT FROM).
+            await cur.execute(
+                "SELECT id FROM joshx.leads WHERE client_name ILIKE %s "
+                "AND service IS NOT DISTINCT FROM %s AND deleted_at IS NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (client_name, fields.get("service")),
+            )
+            existing = await cur.fetchone()
+            if existing is None:
+                columns = ["client_name", *fields.keys(), "stage", "created_at"]
+                value_placeholders = ", ".join("%s" for _ in fields)
+                await cur.execute(
+                    f"INSERT INTO joshx.leads ({', '.join(columns)}) "
+                    f"VALUES (%s{',' + value_placeholders if fields else ''}, 'new', (now() AT TIME ZONE 'utc'))",
+                    (client_name, *fields.values()),
+                )
+            else:
+                lead_id = existing[0]
+                non_null_fields = {k: v for k, v in fields.items() if v is not None}
+                if non_null_fields:
+                    set_clause = ", ".join(f"{col} = %s" for col in non_null_fields)
+                    await cur.execute(
+                        f"UPDATE joshx.leads SET {set_clause} WHERE id = %s",
+                        (*non_null_fields.values(), lead_id),
+                    )
+        await postgres_conn.commit()
+        return client_name
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT id FROM leads WHERE client_name = ? COLLATE NOCASE "
@@ -314,7 +378,15 @@ async def add_lead(client_name: str, **fields) -> str:
     return client_name
 
 
-async def update_lead_stage(identifier: str, new_stage: str) -> bool:
+async def update_lead_stage(identifier: str, new_stage: str, postgres_conn: Any = None) -> bool:
+    if postgres_conn is not None:
+        lead_id = await _find_row_id_postgres(postgres_conn, "leads", identifier, name_col="client_name")
+        if lead_id is None:
+            return False
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("UPDATE joshx.leads SET stage = %s WHERE id = %s", (new_stage, lead_id))
+        await postgres_conn.commit()
+        return True
     async with aiosqlite.connect(DB_PATH) as db:
         lead_id = await _find_row_id(db, "leads", identifier, name_col="client_name")
         if lead_id is None:
@@ -324,18 +396,20 @@ async def update_lead_stage(identifier: str, new_stage: str) -> bool:
         return True
 
 
-async def delete_lead(identifier: str) -> str | None:
+async def delete_lead(identifier: str, postgres_conn: Any = None) -> str | None:
     """Soft delete (fuzzy-match, Frank-facing) -- for a dormant lead Josh
-    wants gone from the list, same reasoning as operations_db.py's
-    delete_task: distinct from update_lead_stage's "booked"/"lost"/etc.,
-    which is for a lead that reached a real outcome. `leads` has no UI
-    concept of "closed stages hide themselves" -- a booked/lost lead
-    stays visible in the LEADS section indefinitely (confirmed live,
-    2026-08-31: "Malondie" stayed listed as a lead well after "Malondie
-    SS26" became a real, in-progress project) since a lead becoming a
-    real project isn't tracked as a link anywhere, so nothing here
-    auto-closes it. Returns the deleted lead's real client_name (so
-    Frank can confirm what happened), or None if nothing matched."""
+    wants gone from the list. Returns the deleted lead's real client_name
+    (so Frank can confirm what happened), or None if nothing matched."""
+    if postgres_conn is not None:
+        lead_id = await _find_row_id_postgres(postgres_conn, "leads", identifier, name_col="client_name")
+        if lead_id is None:
+            return None
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT client_name FROM joshx.leads WHERE id = %s", (lead_id,))
+            (client_name,) = await cur.fetchone()
+            await cur.execute("UPDATE joshx.leads SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s", (lead_id,))
+        await postgres_conn.commit()
+        return client_name
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         lead_id = await _find_row_id(db, "leads", identifier, name_col="client_name")
@@ -348,10 +422,17 @@ async def delete_lead(identifier: str) -> str | None:
         return row["client_name"] if row else None
 
 
-async def delete_lead_by_id(lead_id: int) -> bool:
-    """Id-based, for the UI's own delete action -- same reasoning as
-    set_project_status_by_id: the UI already knows the exact row id it's
-    displaying, so fuzzy name-matching would be a real footgun here."""
+async def delete_lead_by_id(lead_id: int, postgres_conn: Any = None) -> bool:
+    """Id-based, for the UI's own delete action."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE joshx.leads SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s AND deleted_at IS NULL",
+                (lead_id,),
+            )
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "UPDATE leads SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL", (lead_id,)
@@ -369,28 +450,79 @@ async def convert_lead_to_project(
     shoot_date: str | None = None,
     priority: str | None = None,
     deliverables: str | None = None,
+    postgres_conn: Any = None,
 ) -> dict | None:
-    """Explicit lead->project conversion (2026-08-31), replacing the
-    ambiguous "exactly one open lead for this client" guess add_project
-    makes with a real link (source_lead_id) and real field carry-forward
-    -- client_name/project_type/budget/brief/notes come from the lead
-    itself instead of Frank re-typing them from memory. add_project's
-    own heuristic stays as a fallback for a project created directly
-    (no formal lead was ever logged) -- this function is for the case
-    where a tracked lead is the thing actually converting.
+    """Explicit lead->project conversion (2026-08-31) -- real link
+    (source_lead_id) and real field carry-forward from the lead itself.
+    One transaction, one commit. Does NOT soft-delete the lead -- marks
+    it 'booked' instead."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id FROM joshx.leads WHERE client_name ILIKE %s AND deleted_at IS NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (lead_identifier,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                await cur.execute(
+                    "SELECT id FROM joshx.leads WHERE client_name ILIKE %s AND deleted_at IS NULL "
+                    "ORDER BY id DESC LIMIT 1",
+                    (f"%{lead_identifier}%",),
+                )
+                row = await cur.fetchone()
+            if row is None:
+                return None
+            lead_id = row[0]
 
-    One transaction, one commit -- deliberately does NOT call
-    add_project/update_lead_stage (each opens and commits its own
-    connection), since splitting this across multiple transactions
-    would reintroduce the exact "two independent writes for one real
-    event" race this file's own upsert docstrings already warn about.
+            await cur.execute(
+                "SELECT client_name, service, budget, estimated_value, notes, project_description "
+                "FROM joshx.leads WHERE id = %s",
+                (lead_id,),
+            )
+            client_name, service, budget, estimated_value, notes, project_description = await cur.fetchone()
 
-    Unlike add_project's heuristic, this does NOT soft-delete the lead
-    -- marks it 'booked' instead, which already excludes it from the
-    open-leads list (JoshxView.swift's closedLeadStages, this file's own
-    _CLOSED_LEAD_STAGES) without destroying its history. Returns a dict
-    describing the new project, or None if lead_identifier matches
-    nothing."""
+            project_fields = {
+                "project_type": service,
+                "budget": budget if budget is not None else estimated_value,
+                "brief": project_description,
+                "notes": notes,
+                "source_lead_id": lead_id,
+                "start_date": start_date,
+                "due_date": due_date,
+                "shoot_date": shoot_date,
+                "priority": priority,
+                "deliverables": deliverables,
+            }
+            project_fields = {k: v for k, v in project_fields.items() if v is not None}
+            # status/payment_status/created_at supplied explicitly --
+            # payment_status is a NOT NULL column added via SQLite ALTER
+            # TABLE with a DEFAULT that (like every other DEFAULT in this
+            # migration) never made it into the Postgres DDL.
+            columns = ["client_name", "project_name", *project_fields.keys(), "status", "payment_status", "created_at"]
+            value_placeholders = ", ".join("%s" for _ in project_fields)
+            await cur.execute(
+                f"INSERT INTO joshx.projects ({', '.join(columns)}) "
+                f"VALUES (%s, %s{',' + value_placeholders if project_fields else ''}, 'brief', 'unpaid', (now() AT TIME ZONE 'utc')) "
+                f"RETURNING id",
+                (client_name, project_name, *project_fields.values()),
+            )
+            (project_id,) = await cur.fetchone()
+
+            await cur.execute("UPDATE joshx.leads SET stage = 'booked' WHERE id = %s", (lead_id,))
+            await cur.execute(
+                "UPDATE joshx.clients SET status = 'active' WHERE name ILIKE %s AND deleted_at IS NULL",
+                (client_name,),
+            )
+        await postgres_conn.commit()
+
+        return {
+            "project_name": project_name,
+            "client_name": client_name,
+            "lead_id": lead_id,
+            "project_id": project_id,
+        }
+
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         lead_id = await _find_row_id(db, "leads", lead_identifier, name_col="client_name")
@@ -440,51 +572,57 @@ async def convert_lead_to_project(
         }
 
 
-async def add_project(client_name: str, project_name: str, **fields) -> str:
-    """Upsert, not a bare INSERT (fixed 2026-08-27) -- real bug: Frank
-    calling this twice for the same project (e.g. re-confirming a booked
-    job, or a slightly different phrasing of the same request in the same
-    conversation) silently created a second row instead of updating the
-    first, producing exact duplicates in the dashboard/summarize() output
-    (confirmed live: two "Malondie SS26" rows for client_name=Malondie).
+async def add_project(client_name: str, project_name: str, postgres_conn: Any = None, **fields) -> str:
+    """Upsert, not a bare INSERT (fixed 2026-08-27). Keyed on
+    (client_name, project_name), case-insensitive. Two side effects
+    (2026-08-31): matching client's status flips to 'active'; exactly
+    one matching open lead gets auto-closed, only when unambiguous."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id FROM joshx.projects WHERE client_name ILIKE %s "
+                "AND project_name ILIKE %s AND deleted_at IS NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (client_name, project_name),
+            )
+            existing = await cur.fetchone()
+            if existing is None:
+                # status/payment_status/created_at supplied explicitly --
+                # same missing-DEFAULT gap as convert_lead_to_project above.
+                columns = ["client_name", "project_name", *fields.keys(), "status", "payment_status", "created_at"]
+                value_placeholders = ", ".join("%s" for _ in fields)
+                await cur.execute(
+                    f"INSERT INTO joshx.projects ({', '.join(columns)}) "
+                    f"VALUES (%s, %s{',' + value_placeholders if fields else ''}, 'brief', 'unpaid', (now() AT TIME ZONE 'utc'))",
+                    (client_name, project_name, *fields.values()),
+                )
+            else:
+                project_id = existing[0]
+                non_null_fields = {k: v for k, v in fields.items() if v is not None}
+                if non_null_fields:
+                    set_clause = ", ".join(f"{col} = %s" for col in non_null_fields)
+                    await cur.execute(
+                        f"UPDATE joshx.projects SET {set_clause} WHERE id = %s",
+                        (*non_null_fields.values(), project_id),
+                    )
 
-    Keyed on (client_name, project_name), case-insensitive (COLLATE
-    NOCASE) -- matches this file's own existing case-insensitive lookup
-    convention in _find_row_id, and "Malondie ss26" vs "Malondie SS26"
-    should never be treated as two different projects. Soft-deleted rows
-    (deleted_at IS NOT NULL) are excluded from the match, so re-adding a
-    project whose old row was deleted creates a fresh one rather than
-    reviving the deleted row.
+            await cur.execute(
+                "UPDATE joshx.clients SET status = 'active' WHERE name ILIKE %s AND deleted_at IS NULL",
+                (client_name,),
+            )
 
-    On a match, only non-None fields from this call are merged into the
-    existing row (a plain UPDATE ... SET on the changed columns) --
-    fields the caller didn't pass this time are left alone rather than
-    being null'd out, since add_project's **fields already only carries
-    whatever Frank actually supplied. On no match, behaves exactly as
-    before: a plain INSERT.
+            await cur.execute(
+                "SELECT id FROM joshx.leads WHERE client_name ILIKE %s AND deleted_at IS NULL", (client_name,)
+            )
+            open_leads = await cur.fetchall()
+            if len(open_leads) == 1:
+                await cur.execute(
+                    "UPDATE joshx.leads SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s",
+                    (open_leads[0][0],),
+                )
+        await postgres_conn.commit()
+        return project_name
 
-    Two side effects added 2026-08-31, closing a real gap Joshua found
-    live: "Malondie" stayed listed as an open lead well after "Malondie
-    SS26" became a real, in-progress project -- leads/projects/clients
-    are three unlinked tables (client_name is plain text everywhere, no
-    FK) and nothing ever closed a lead out when it converted. Bundled
-    here rather than left to the tool-dispatch layer, same reasoning
-    people_db.py's log_interaction already uses for bundling two related
-    writes into one call -- a caller shouldn't need two separate tool
-    calls for one real event, regardless of which path invokes this.
-      1. The matching client's status flips to 'active', if a clients
-         row for this name exists (best-effort match, same as
-         everywhere else in this file -- a project can exist with no
-         linked client row, which stays a valid, unchanged state). A
-         client with a real project underway is active by definition.
-      2. Exactly one matching open lead gets auto-closed (soft-deleted),
-         and ONLY when unambiguous: if zero or more than one non-deleted
-         lead exists for this client_name, nothing is touched --
-         guessing which of several live leads just converted risks
-         silently destroying a real, unrelated, still-open opportunity.
-         The ambiguous case is what delete_lead/delete_lead_by_id (the
-         explicit, Josh-or-Frank-directed delete) is for instead.
-    """
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT id FROM projects WHERE client_name = ? COLLATE NOCASE "
@@ -528,7 +666,15 @@ async def add_project(client_name: str, project_name: str, **fields) -> str:
     return project_name
 
 
-async def update_project_status(identifier: str, new_status: str) -> bool:
+async def update_project_status(identifier: str, new_status: str, postgres_conn: Any = None) -> bool:
+    if postgres_conn is not None:
+        project_id = await _find_row_id_postgres(postgres_conn, "projects", identifier, name_col="project_name")
+        if project_id is None:
+            return False
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("UPDATE joshx.projects SET status = %s WHERE id = %s", (new_status, project_id))
+        await postgres_conn.commit()
+        return True
     async with aiosqlite.connect(DB_PATH) as db:
         project_id = await _find_row_id(db, "projects", identifier, name_col="project_name")
         if project_id is None:
@@ -538,12 +684,19 @@ async def update_project_status(identifier: str, new_status: str) -> bool:
         return True
 
 
-async def update_project_payment_status(identifier: str, new_payment_status: str) -> bool:
+async def update_project_payment_status(identifier: str, new_payment_status: str, postgres_conn: Any = None) -> bool:
     """Frank-facing, fuzzy-match by name -- mirrors update_project_status
-    exactly. Separate from `status`: that field also encodes production
-    stage, so it can't double as "has the client paid" without either
-    losing pipeline position or being unable to reflect an early
-    payment."""
+    exactly."""
+    if postgres_conn is not None:
+        project_id = await _find_row_id_postgres(postgres_conn, "projects", identifier, name_col="project_name")
+        if project_id is None:
+            return False
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE joshx.projects SET payment_status = %s WHERE id = %s", (new_payment_status, project_id)
+            )
+        await postgres_conn.commit()
+        return True
     async with aiosqlite.connect(DB_PATH) as db:
         project_id = await _find_row_id(db, "projects", identifier, name_col="project_name")
         if project_id is None:
@@ -553,11 +706,21 @@ async def update_project_payment_status(identifier: str, new_payment_status: str
         return True
 
 
-async def delete_project(identifier: str) -> str | None:
-    """Soft delete (fuzzy-match, Frank-facing) -- "everything must be
-    deletable if needed" (2026-08-31), same reasoning/shape as
-    delete_lead/delete_client. Returns the deleted project's real name,
-    or None if nothing matched."""
+async def delete_project(identifier: str, postgres_conn: Any = None) -> str | None:
+    """Soft delete (fuzzy-match, Frank-facing). Returns the deleted
+    project's real name, or None if nothing matched."""
+    if postgres_conn is not None:
+        project_id = await _find_row_id_postgres(postgres_conn, "projects", identifier, name_col="project_name")
+        if project_id is None:
+            return None
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT project_name FROM joshx.projects WHERE id = %s", (project_id,))
+            (project_name,) = await cur.fetchone()
+            await cur.execute(
+                "UPDATE joshx.projects SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s", (project_id,)
+            )
+        await postgres_conn.commit()
+        return project_name
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         project_id = await _find_row_id(db, "projects", identifier, name_col="project_name")
@@ -570,9 +733,18 @@ async def delete_project(identifier: str) -> str | None:
         return row["project_name"] if row else None
 
 
-async def delete_project_by_id(project_id: int) -> bool:
-    """Id-based, for the UI's own delete action -- same reasoning as
-    set_project_status_by_id/delete_lead_by_id."""
+async def delete_project_by_id(project_id: int, postgres_conn: Any = None) -> bool:
+    """Id-based, for the UI's own delete action."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE joshx.projects SET deleted_at = (now() AT TIME ZONE 'utc') "
+                "WHERE id = %s AND deleted_at IS NULL",
+                (project_id,),
+            )
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "UPDATE projects SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL", (project_id,)
@@ -581,12 +753,17 @@ async def delete_project_by_id(project_id: int) -> bool:
         return cursor.rowcount > 0
 
 
-async def set_project_status_by_id(project_id: int, new_status: str) -> bool:
-    """Id-based, for the UI's own PATCH endpoints (main.py) -- deliberately
-    not routed through _find_row_id's fuzzy name-matching, since the UI
-    already knows the exact row id from the dashboard payload it's
-    already displaying. Reusing the fuzzy-match path for a precise click
-    on a specific row would be a real footgun, not a simplification."""
+async def set_project_status_by_id(project_id: int, new_status: str, postgres_conn: Any = None) -> bool:
+    """Id-based, for the UI's own PATCH endpoints."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE joshx.projects SET status = %s WHERE id = %s AND deleted_at IS NULL",
+                (new_status, project_id),
+            )
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "UPDATE projects SET status = ? WHERE id = ? AND deleted_at IS NULL", (new_status, project_id)
@@ -595,7 +772,16 @@ async def set_project_status_by_id(project_id: int, new_status: str) -> bool:
         return cursor.rowcount > 0
 
 
-async def set_project_payment_status_by_id(project_id: int, new_payment_status: str) -> bool:
+async def set_project_payment_status_by_id(project_id: int, new_payment_status: str, postgres_conn: Any = None) -> bool:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE joshx.projects SET payment_status = %s WHERE id = %s AND deleted_at IS NULL",
+                (new_payment_status, project_id),
+            )
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "UPDATE projects SET payment_status = ? WHERE id = ? AND deleted_at IS NULL",
@@ -606,19 +792,8 @@ async def set_project_payment_status_by_id(project_id: int, new_payment_status: 
 
 
 async def _sync_project_payment_status_from_invoices(db: aiosqlite.Connection, project_id: int) -> None:
-    """Called at the end of add_joshx_invoice/update_joshx_invoice_status/
-    record_joshx_invoice_payment/delete_joshx_invoice, same connection/
-    transaction as the write that triggered it -- never runs on a bare
-    read, so it can't silently clobber a manual override
-    (update_joshx_project_payment_status/set_project_payment_status_by_id)
-    between invoice events. Confirmed directly with Josh (2026-08-31):
-    once real invoices exist for a project, invoice totals become the
-    source of truth for payment_status -- a manual override only holds
-    until the next invoice event recomputes it. If no non-deleted
-    invoices exist for this project at all, payment_status is left
-    completely untouched (a project can still be marked paid/unpaid on
-    Frank's own say-so with zero invoices behind it, exactly as it
-    already works today)."""
+    """Called at the end of every invoice-mutating function, same
+    connection/transaction as the write that triggered it."""
     cursor = await db.execute(
         "SELECT COALESCE(SUM(amount), 0), COALESCE(SUM(amount_paid), 0) "
         "FROM invoices WHERE project_id = ? AND deleted_at IS NULL",
@@ -641,12 +816,44 @@ async def _sync_project_payment_status_from_invoices(db: aiosqlite.Connection, p
     await db.execute("UPDATE projects SET payment_status = ? WHERE id = ?", (new_status, project_id))
 
 
+async def _sync_project_payment_status_from_invoices_postgres(conn: Any, cur: Any, project_id: int) -> None:
+    await cur.execute(
+        "SELECT COALESCE(SUM(amount), 0), COALESCE(SUM(amount_paid), 0) "
+        "FROM joshx.invoices WHERE project_id = %s AND deleted_at IS NULL",
+        (project_id,),
+    )
+    total, paid = await cur.fetchone()
+    if total == 0 and paid == 0:
+        await cur.execute(
+            "SELECT COUNT(*) FROM joshx.invoices WHERE project_id = %s AND deleted_at IS NULL", (project_id,)
+        )
+        (count,) = await cur.fetchone()
+        if count == 0:
+            return
+    if paid <= 0:
+        new_status = "unpaid"
+    elif paid >= total:
+        new_status = "paid"
+    else:
+        new_status = "partially_paid"
+    await cur.execute("UPDATE joshx.projects SET payment_status = %s WHERE id = %s", (new_status, project_id))
+
+
 async def _find_latest_invoice_id(db: aiosqlite.Connection, project_id: int) -> int | None:
     cursor = await db.execute(
         "SELECT id FROM invoices WHERE project_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1",
         (project_id,),
     )
     row = await cursor.fetchone()
+    return row[0] if row else None
+
+
+async def _find_latest_invoice_id_postgres(cur: Any, project_id: int) -> int | None:
+    await cur.execute(
+        "SELECT id FROM joshx.invoices WHERE project_id = %s AND deleted_at IS NULL ORDER BY id DESC LIMIT 1",
+        (project_id,),
+    )
+    row = await cur.fetchone()
     return row[0] if row else None
 
 
@@ -659,13 +866,33 @@ async def add_joshx_invoice(
     issued_date: str | None = None,
     due_date: str | None = None,
     notes: str | None = None,
+    postgres_conn: Any = None,
 ) -> dict | None:
-    """Resolves project_identifier via _find_row_id against `projects`
-    (project_name). Plain INSERT, not an upsert-by-name like
-    add_project/add_lead -- a project can legitimately have multiple
-    real invoices over its life (a deposit, then a final invoice), so a
-    repeat call is a genuinely new invoice, not the same event stated
-    twice. Returns None if no project matches."""
+    """Plain INSERT, not an upsert -- a project can legitimately have
+    multiple real invoices over its life."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            project_id = await _find_row_id_postgres(postgres_conn, "projects", project_identifier, name_col="project_name")
+            if project_id is None:
+                return None
+            await cur.execute(
+                "INSERT INTO joshx.invoices "
+                "(project_id, amount, amount_paid, status, issued_date, due_date, notes, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, (now() AT TIME ZONE 'utc')) RETURNING id",
+                (project_id, amount, amount_paid or 0, status or "draft", issued_date, due_date, notes),
+            )
+            (invoice_id,) = await cur.fetchone()
+            await cur.execute("SELECT project_name, client_name FROM joshx.projects WHERE id = %s", (project_id,))
+            project_name, client_name = await cur.fetchone()
+            await _sync_project_payment_status_from_invoices_postgres(postgres_conn, cur, project_id)
+        await postgres_conn.commit()
+        return {
+            "invoice_id": invoice_id,
+            "project_id": project_id,
+            "project_name": project_name,
+            "client_name": client_name,
+            "amount": amount,
+        }
     async with aiosqlite.connect(DB_PATH) as db:
         project_id = await _find_row_id(db, "projects", project_identifier, name_col="project_name")
         if project_id is None:
@@ -689,11 +916,21 @@ async def add_joshx_invoice(
         }
 
 
-async def update_joshx_invoice_status(identifier: str, new_status: str) -> bool:
-    """identifier is the project's name (fuzzy match, same as every
-    other Frank-facing update_* in this file) -- resolves to that
-    project's most recent non-deleted invoice, since Frank will say
-    "mark Acme's invoice paid," not quote an invoice id."""
+async def update_joshx_invoice_status(identifier: str, new_status: str, postgres_conn: Any = None) -> bool:
+    """identifier is the project's name (fuzzy match) -- resolves to that
+    project's most recent non-deleted invoice."""
+    if postgres_conn is not None:
+        project_id = await _find_row_id_postgres(postgres_conn, "projects", identifier, name_col="project_name")
+        if project_id is None:
+            return False
+        async with postgres_conn.cursor() as cur:
+            invoice_id = await _find_latest_invoice_id_postgres(cur, project_id)
+            if invoice_id is None:
+                return False
+            await cur.execute("UPDATE joshx.invoices SET status = %s WHERE id = %s", (new_status, invoice_id))
+            await _sync_project_payment_status_from_invoices_postgres(postgres_conn, cur, project_id)
+        await postgres_conn.commit()
+        return True
     async with aiosqlite.connect(DB_PATH) as db:
         project_id = await _find_row_id(db, "projects", identifier, name_col="project_name")
         if project_id is None:
@@ -707,12 +944,21 @@ async def update_joshx_invoice_status(identifier: str, new_status: str) -> bool:
         return True
 
 
-async def record_joshx_invoice_payment(identifier: str, amount_paid: float) -> bool:
+async def record_joshx_invoice_payment(identifier: str, amount_paid: float, postgres_conn: Any = None) -> bool:
     """Sets amount_paid explicitly (the total paid to date, not an
-    increment) -- "paid R5000 of it" should mean the running total, not
-    add-to, avoiding double-counting if Frank is told the same fact
-    twice. Same most-recent-invoice-for-this-project resolution as
-    update_joshx_invoice_status."""
+    increment)."""
+    if postgres_conn is not None:
+        project_id = await _find_row_id_postgres(postgres_conn, "projects", identifier, name_col="project_name")
+        if project_id is None:
+            return False
+        async with postgres_conn.cursor() as cur:
+            invoice_id = await _find_latest_invoice_id_postgres(cur, project_id)
+            if invoice_id is None:
+                return False
+            await cur.execute("UPDATE joshx.invoices SET amount_paid = %s WHERE id = %s", (amount_paid, invoice_id))
+            await _sync_project_payment_status_from_invoices_postgres(postgres_conn, cur, project_id)
+        await postgres_conn.commit()
+        return True
     async with aiosqlite.connect(DB_PATH) as db:
         project_id = await _find_row_id(db, "projects", identifier, name_col="project_name")
         if project_id is None:
@@ -726,11 +972,25 @@ async def record_joshx_invoice_payment(identifier: str, amount_paid: float) -> b
         return True
 
 
-async def delete_joshx_invoice(identifier: str) -> dict | None:
-    """Soft delete of a project's most recent invoice, same shape as
-    delete_project/delete_lead/delete_client -- "everything must be
-    deletable if needed." Re-syncs payment_status afterward, since
-    removing an invoice changes the real total behind it."""
+async def delete_joshx_invoice(identifier: str, postgres_conn: Any = None) -> dict | None:
+    """Soft delete of a project's most recent invoice. Re-syncs
+    payment_status afterward."""
+    if postgres_conn is not None:
+        project_id = await _find_row_id_postgres(postgres_conn, "projects", identifier, name_col="project_name")
+        if project_id is None:
+            return None
+        async with postgres_conn.cursor() as cur:
+            invoice_id = await _find_latest_invoice_id_postgres(cur, project_id)
+            if invoice_id is None:
+                return None
+            await cur.execute("SELECT project_name FROM joshx.projects WHERE id = %s", (project_id,))
+            (project_name,) = await cur.fetchone()
+            await cur.execute(
+                "UPDATE joshx.invoices SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s", (invoice_id,)
+            )
+            await _sync_project_payment_status_from_invoices_postgres(postgres_conn, cur, project_id)
+        await postgres_conn.commit()
+        return {"invoice_id": invoice_id, "project_id": project_id, "project_name": project_name}
     async with aiosqlite.connect(DB_PATH) as db:
         project_id = await _find_row_id(db, "projects", identifier, name_col="project_name")
         if project_id is None:
@@ -755,6 +1015,15 @@ async def _find_latest_expense_id(db: aiosqlite.Connection, project_id: int) -> 
     return row[0] if row else None
 
 
+async def _find_latest_expense_id_postgres(cur: Any, project_id: int) -> int | None:
+    await cur.execute(
+        "SELECT id FROM joshx.expenses WHERE project_id = %s AND deleted_at IS NULL ORDER BY id DESC LIMIT 1",
+        (project_id,),
+    )
+    row = await cur.fetchone()
+    return row[0] if row else None
+
+
 async def log_joshx_project_expense(
     project_identifier: str,
     amount: float,
@@ -762,11 +1031,31 @@ async def log_joshx_project_expense(
     description: str | None = None,
     incurred_date: str | None = None,
     notes: str | None = None,
+    postgres_conn: Any = None,
 ) -> dict | None:
-    """Plain INSERT, not an upsert -- a project legitimately accrues many
-    real expense line items over its life (props, fuel, crew meals), so a
-    repeat call is a genuinely new expense, not the same event stated
-    twice (same reasoning as add_joshx_invoice)."""
+    """Plain INSERT, not an upsert -- a project accrues many real expense
+    line items over its life."""
+    if postgres_conn is not None:
+        project_id = await _find_row_id_postgres(postgres_conn, "projects", project_identifier, name_col="project_name")
+        if project_id is None:
+            return None
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO joshx.expenses (project_id, amount, description, incurred_date, notes, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, (now() AT TIME ZONE 'utc')) RETURNING id",
+                (project_id, amount, description, incurred_date, notes),
+            )
+            (expense_id,) = await cur.fetchone()
+            await cur.execute("SELECT project_name, client_name FROM joshx.projects WHERE id = %s", (project_id,))
+            project_name, client_name = await cur.fetchone()
+        await postgres_conn.commit()
+        return {
+            "expense_id": expense_id,
+            "project_id": project_id,
+            "project_name": project_name,
+            "client_name": client_name,
+            "amount": amount,
+        }
     async with aiosqlite.connect(DB_PATH) as db:
         project_id = await _find_row_id(db, "projects", project_identifier, name_col="project_name")
         if project_id is None:
@@ -788,9 +1077,23 @@ async def log_joshx_project_expense(
         }
 
 
-async def delete_joshx_project_expense(identifier: str) -> dict | None:
-    """Soft delete of a project's most recent expense -- same shape as
-    delete_joshx_invoice, "everything must be deletable if needed.\""""
+async def delete_joshx_project_expense(identifier: str, postgres_conn: Any = None) -> dict | None:
+    """Soft delete of a project's most recent expense."""
+    if postgres_conn is not None:
+        project_id = await _find_row_id_postgres(postgres_conn, "projects", identifier, name_col="project_name")
+        if project_id is None:
+            return None
+        async with postgres_conn.cursor() as cur:
+            expense_id = await _find_latest_expense_id_postgres(cur, project_id)
+            if expense_id is None:
+                return None
+            await cur.execute("SELECT project_name FROM joshx.projects WHERE id = %s", (project_id,))
+            (project_name,) = await cur.fetchone()
+            await cur.execute(
+                "UPDATE joshx.expenses SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s", (expense_id,)
+            )
+        await postgres_conn.commit()
+        return {"expense_id": expense_id, "project_id": project_id, "project_name": project_name}
     async with aiosqlite.connect(DB_PATH) as db:
         project_id = await _find_row_id(db, "projects", identifier, name_col="project_name")
         if project_id is None:
@@ -812,12 +1115,6 @@ _CLOSED_PROJECT_STATUSES = {"paid", "archived"}
 _CLOSED_LEAD_STAGES = {"booked", "lost"}
 _UPCOMING_SHOOT_WINDOW_DAYS = 14
 
-# The real, full vocabulary for `projects.status`/`payment_status` -- not
-# enforced at the DB level (see this file's own docstring), but Frank's
-# tool descriptions already commit to exactly this set, and the new
-# UI-facing PATCH endpoints (main.py) validate against it server-side --
-# the first Joshx write path not gated by Frank's own judgment, so it
-# earns a guardrail the chat-tool path doesn't need.
 PROJECT_STATUS_VALUES = {
     "brief", "pre_production", "production", "post_production",
     "client_review", "revision", "delivery", "paid", "archived",
@@ -826,28 +1123,16 @@ PROJECT_PAYMENT_STATUS_VALUES = {"unpaid", "partially_paid", "paid"}
 JOSHX_INVOICE_STATUS_VALUES = {"draft", "sent", "partially_paid", "paid", "overdue"}
 
 
-async def dashboard_snapshot() -> dict:
-    """Backs GET /joshx/dashboard. Deliberately does NOT compute a
-    revenue/outstanding stat, even though invoices now exist (2026-08-31)
-    -- this codebase's own rule (Mission Status's fake progress bar,
-    removed 2026-08-20; no fabricated 'Active Missions' stat on the War
-    Room command map) is that a stat only appears once there's real data
-    AND a real UI asking for it; dashboard stat UI for invoicing is an
-    explicit, named follow-on, not built here. The raw `invoices` list
-    is still returned below, same as every other domain -- Frank's own
-    context (summarize()) and any future UI can read it directly.
-    Available-days still has no table at all."""
+async def dashboard_snapshot(postgres_conn: Any = None) -> dict:
+    """Backs GET /joshx/dashboard."""
+    if postgres_conn is not None:
+        return await _dashboard_snapshot_postgres(postgres_conn)
+    return await _dashboard_snapshot_sqlite()
+
+
+async def _dashboard_snapshot_sqlite() -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        # Real bug found live (2026-08-27): these three SELECTs were
-        # under-selecting columns that add_joshx_client/add_joshx_lead/
-        # add_joshx_project can already write -- a client's email/phone/
-        # Instagram, a lead's budget, a project's brief, all genuinely
-        # stored, never once shown on either platform's dashboard because
-        # the gap was here, not in the Swift views (which just render
-        # whatever this function returns). Every column below already
-        # existed in the schema at the top of this file; nothing new was
-        # added to get this data flowing.
         cursor = await db.execute(
             "SELECT id, name, company, contact_name, email, phone, instagram, website, industry, "
             "client_type, lead_source, status, last_contact_date, next_follow_up_date, "
@@ -882,6 +1167,68 @@ async def dashboard_snapshot() -> dict:
         )
         expenses = [dict(r) for r in await cursor.fetchall()]
 
+    return _compute_dashboard_stats(clients, leads, projects, invoices, expenses)
+
+
+async def _dashboard_snapshot_postgres(conn: Any) -> dict:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id, name, company, contact_name, email, phone, instagram, website, industry, "
+            "client_type, lead_source, status, last_contact_date, next_follow_up_date, "
+            "relationship_strength, notes, created_at "
+            "FROM joshx.clients WHERE deleted_at IS NULL ORDER BY id DESC"
+        )
+        client_cols = ["id", "name", "company", "contact_name", "email", "phone", "instagram", "website",
+                       "industry", "client_type", "lead_source", "status", "last_contact_date",
+                       "next_follow_up_date", "relationship_strength", "notes", "created_at"]
+        clients = [_row_to_dict(client_cols, r) for r in await cur.fetchall()]
+
+        await cur.execute(
+            "SELECT id, client_name, project_description, service, estimated_value, budget, "
+            "lead_source, stage, probability, follow_up_date, notes, created_at "
+            "FROM joshx.leads WHERE deleted_at IS NULL ORDER BY id DESC"
+        )
+        lead_cols = ["id", "client_name", "project_description", "service", "estimated_value", "budget",
+                     "lead_source", "stage", "probability", "follow_up_date", "notes", "created_at"]
+        leads = [_row_to_dict(lead_cols, r) for r in await cur.fetchall()]
+
+        await cur.execute(
+            "SELECT id, client_name, project_name, project_type, brief, start_date, due_date, "
+            "shoot_date, budget, priority, status, payment_status, source_lead_id, deliverables, notes, "
+            "created_at FROM joshx.projects WHERE deleted_at IS NULL ORDER BY id DESC"
+        )
+        project_cols = ["id", "client_name", "project_name", "project_type", "brief", "start_date", "due_date",
+                        "shoot_date", "budget", "priority", "status", "payment_status", "source_lead_id",
+                        "deliverables", "notes", "created_at"]
+        projects = [_row_to_dict(project_cols, r) for r in await cur.fetchall()]
+
+        await cur.execute(
+            "SELECT id, project_id, amount, amount_paid, status, issued_date, due_date, notes, created_at "
+            "FROM joshx.invoices WHERE deleted_at IS NULL ORDER BY id DESC"
+        )
+        invoice_cols = ["id", "project_id", "amount", "amount_paid", "status", "issued_date", "due_date",
+                        "notes", "created_at"]
+        invoices = [_row_to_dict(invoice_cols, r) for r in await cur.fetchall()]
+
+        await cur.execute(
+            "SELECT id, project_id, amount, description, incurred_date, notes, created_at "
+            "FROM joshx.expenses WHERE deleted_at IS NULL ORDER BY id DESC"
+        )
+        expense_cols = ["id", "project_id", "amount", "description", "incurred_date", "notes", "created_at"]
+        expenses = [_row_to_dict(expense_cols, r) for r in await cur.fetchall()]
+
+    return _compute_dashboard_stats(clients, leads, projects, invoices, expenses)
+
+
+def _row_to_dict(cols: list[str], row: tuple) -> dict:
+    d = dict(zip(cols, row))
+    if "created_at" in d and d["created_at"] is not None:
+        d["created_at"] = str(d["created_at"])
+    return d
+
+
+def _compute_dashboard_stats(clients: list[dict], leads: list[dict], projects: list[dict],
+                              invoices: list[dict], expenses: list[dict]) -> dict:
     active_projects = sum(1 for p in projects if p["status"] not in _CLOSED_PROJECT_STATUSES)
     open_leads = sum(1 for lead in leads if lead["stage"] not in _CLOSED_LEAD_STAGES)
     shoot_horizon = (date.today() + timedelta(days=_UPCOMING_SHOOT_WINDOW_DAYS)).isoformat()
@@ -904,40 +1251,9 @@ async def dashboard_snapshot() -> dict:
     }
 
 
-async def compute_performance_metrics() -> dict:
-    """Backs GET /joshx/analytics (2026-09-06, systems audit §3: "zero
-    averages, growth rates, repeat-client %, or period-over-period
-    comparisons anywhere"). Deliberately a separate function from
-    dashboard_snapshot() above, not new keys folded into it -- that
-    function's own docstring already drew a real boundary ("deliberately
-    does NOT compute a revenue/outstanding stat"), and blurring it here
-    would undo that.
-
-    Real finding checked directly against backend/data/joshx.db before
-    designing anything, not assumed from the schema: invoices.issued_date,
-    expenses.incurred_date, and projects.start_date/due_date are always
-    NULL in every real row today -- free-text fields Frank can fill in but
-    usually doesn't. shoot_date is sometimes populated but isn't even
-    guaranteed to be a real date string (one real row's value is literally
-    "This Wednesday, 9:30am-12pm"). The only reliably-populated timestamp
-    anywhere in this schema is created_at, a SQL DEFAULT (datetime('now'))
-    -- not something Frank has to remember. Every metric below is chosen
-    because it survives that reality, not because it's the most ambitious
-    thing the audit's own wishlist named.
-
-    Also found: the dedicated `clients` table has zero real rows -- client
-    identity in practice lives entirely in the free-text `client_name`
-    field on leads/projects, never the clients table its own CRUD tools
-    were built for. Repeat-client rate is deliberately keyed off
-    projects.client_name (exact string match, no fuzzy dedup) for exactly
-    this reason -- that's what the business actually runs on today.
-
-    Every rate/average below ships with its own real sample size (n), not
-    just the number -- same "don't let a small sample read as more
-    confident than it is" discipline the executive summary's own Trading
-    Division section already established ("3 trades carries no
-    statistical weight yet")."""
-    snapshot = await dashboard_snapshot()
+async def compute_performance_metrics(postgres_conn: Any = None) -> dict:
+    """Backs GET /joshx/analytics."""
+    snapshot = await dashboard_snapshot(postgres_conn)
     projects = snapshot["projects"]
     leads = snapshot["leads"]
 
@@ -989,13 +1305,9 @@ async def compute_performance_metrics() -> dict:
     }
 
 
-async def summarize() -> str:
-    """Folded into Frank's own system prompt (joshx_tools.build_joshx_block())
-    -- same mechanism as build_alpha_mode_block()/build_operations_block(),
-    so Frank has real context on Josh's freelance business without a
-    delegated specialist relaying it (no consult_joshx_agent -- same "keep
-    it Frank's own voice" call already made for Personal)."""
-    snapshot = await dashboard_snapshot()
+async def summarize(postgres_conn: Any = None) -> str:
+    """Folded into Frank's own system prompt (joshx_tools.build_joshx_block())."""
+    snapshot = await dashboard_snapshot(postgres_conn)
     if not snapshot["clients"] and not snapshot["leads"] and not snapshot["projects"]:
         return ""
     lines: list[str] = []
@@ -1029,16 +1341,6 @@ async def summarize() -> str:
             label = project["project_name"] if project else f"project #{exp['project_id']}"
             desc = f" — {exp['description']}" if exp["description"] else ""
             lines.append(f"  - {label}: R{exp['amount']:,.2f}{desc}")
-    # Per-project profit, computed here rather than stored anywhere (same
-    # "never persist a derived value" discipline this file already
-    # applies to payment_status/revenue) -- deliberately skips any
-    # project with zero real invoice/expense activity, so a project
-    # sitting on just a budget quote never gets a fabricated "100%
-    # margin" nobody has actually verified. This is a smaller, different
-    # thing than the business-wide revenue rollup already declined twice
-    # in this file's own docstrings: "how profitable was this specific
-    # job" is exactly the conversational use case real invoices/expenses
-    # exist for.
     if snapshot["invoices"] or snapshot["expenses"]:
         invoices_by_project: dict[int, list[dict]] = {}
         for inv in snapshot["invoices"]:
@@ -1064,7 +1366,7 @@ async def summarize() -> str:
             lines.append("Joshx project profitability (revenue = invoiced total, or budget if no invoices yet):")
             lines.extend(profit_lines)
 
-    metrics = await compute_performance_metrics()
+    metrics = await compute_performance_metrics(postgres_conn)
     metric_lines = []
     if metrics["repeat_client_rate"] is not None:
         metric_lines.append(

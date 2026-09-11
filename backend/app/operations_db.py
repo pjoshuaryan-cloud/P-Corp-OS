@@ -83,7 +83,7 @@ async def _add_task_postgres(conn: Any, title: str, area: str | None, due_date: 
     async with conn.cursor() as cur:
         await cur.execute(
             "INSERT INTO operations.tasks (title, status, area, due_date, notes, created_at) "
-            "VALUES (%s, 'open', %s, %s, %s, now())",
+            "VALUES (%s, 'open', %s, %s, %s, (now() AT TIME ZONE 'utc'))",
             (title, area, due_date, notes),
         )
     await conn.commit()
@@ -186,7 +186,7 @@ async def _delete_task_postgres(conn: Any, identifier: str) -> str | None:
         await cur.execute("SELECT title FROM operations.tasks WHERE id = %s", (task_id,))
         row = await cur.fetchone()
         # Soft delete, same as the SQLite path -- nothing is ever hard-deleted.
-        await cur.execute("UPDATE operations.tasks SET deleted_at = now() WHERE id = %s", (task_id,))
+        await cur.execute("UPDATE operations.tasks SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s", (task_id,))
     await conn.commit()
     return row[0]
 

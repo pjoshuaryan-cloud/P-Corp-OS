@@ -74,8 +74,31 @@ async def _check_invoice_overdue() -> list[dict]:
     return items
 
 
-async def _check_client_contact_gap(threshold_days: int) -> list[dict]:
+async def _check_client_contact_gap(threshold_days: int, postgres_conn=None) -> list[dict]:
     cutoff = (date.today() - timedelta(days=threshold_days)).isoformat()
+    # Real bypass fix (2026-09-11, iPhone independence pass): this used to
+    # open its own raw aiosqlite connection straight against
+    # alpha_mode.db's local file, completely bypassing DATA_BACKEND --
+    # converting alpha_mode to Postgres alone would not have made this
+    # call site follow along.
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, name, last_contacted_date FROM alpha_mode.clients
+                WHERE status = 'active' AND (last_contacted_date IS NULL OR last_contacted_date < %s)
+                """,
+                (cutoff,),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "item_key": f"client_contact_gap:{r[0]}",
+                "title": r[1],
+                "detail": f"last contact {r[2] or 'never'}",
+            }
+            for r in rows
+        ]
     async with aiosqlite.connect(ALPHA_MODE_DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -122,8 +145,35 @@ async def _check_project_stage_stall() -> list[dict]:
     return items
 
 
-async def _check_deliverable_overdue() -> list[dict]:
+async def _check_deliverable_overdue(postgres_conn=None) -> list[dict]:
     today = date.today().isoformat()
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT deliverables.id, deliverables.description, deliverables.due_date,
+                       projects.name, clients.name
+                FROM alpha_mode.deliverables
+                JOIN alpha_mode.projects ON deliverables.project_id = projects.id
+                JOIN alpha_mode.clients ON projects.client_id = clients.id
+                WHERE deliverables.status = 'pending' AND deliverables.due_date IS NOT NULL
+                  AND deliverables.due_date < %s
+                """,
+                (today,),
+            )
+            rows = await cur.fetchall()
+        items = []
+        for row_id, description, due_date, project_name, client_name in rows:
+            due = date.fromisoformat(due_date)
+            days_overdue = (date.today() - due).days
+            items.append(
+                {
+                    "item_key": f"deliverable_overdue:{row_id}",
+                    "title": f"{description} — {client_name}",
+                    "detail": f"{project_name}, {days_overdue}d overdue (due {due_date})",
+                }
+            )
+        return items
     async with aiosqlite.connect(ALPHA_MODE_DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -153,7 +203,7 @@ async def _check_deliverable_overdue() -> list[dict]:
     return items
 
 
-async def _check_relationship_follow_up_overdue(threshold: int | None) -> list[dict]:
+async def _check_relationship_follow_up_overdue(threshold: int | None, postgres_conn=None) -> list[dict]:
     """Reads people.db, not alpha_mode.db -- the People/Relationships
     layer (people_db.py) is a deliberately separate domain from Alpha
     Mode Media/Joshx clients. Threshold is ignored here: overdue-ness is
@@ -161,7 +211,7 @@ async def _check_relationship_follow_up_overdue(threshold: int | None) -> list[d
     follow_up_cadence_days), not one global cutoff like client_contact_gap's
     21 days -- get_overdue_follow_ups() already encodes that logic, this
     just maps its real rows into the shape this layer expects."""
-    rows = await get_overdue_follow_ups()
+    rows = await get_overdue_follow_ups(postgres_conn=postgres_conn)
     return [
         {
             "item_key": f"relationship_follow_up_overdue:{row['id']}",
@@ -173,10 +223,10 @@ async def _check_relationship_follow_up_overdue(threshold: int | None) -> list[d
 
 
 RULE_CHECKERS = {
-    "invoice_overdue": lambda threshold: _check_invoice_overdue(),
-    "client_contact_gap": lambda threshold: _check_client_contact_gap(threshold or 21),
-    "project_stage_stall": lambda threshold: _check_project_stage_stall(),
-    "deliverable_overdue": lambda threshold: _check_deliverable_overdue(),
+    "invoice_overdue": lambda threshold, postgres_conn=None: _check_invoice_overdue(),
+    "client_contact_gap": lambda threshold, postgres_conn=None: _check_client_contact_gap(threshold or 21, postgres_conn),
+    "project_stage_stall": lambda threshold, postgres_conn=None: _check_project_stage_stall(),
+    "deliverable_overdue": lambda threshold, postgres_conn=None: _check_deliverable_overdue(postgres_conn),
     "relationship_follow_up_overdue": _check_relationship_follow_up_overdue,
     "market_mover": check_market_movers,
 }
@@ -194,21 +244,21 @@ SECTION_TITLES = {
 }
 
 
-async def compute_due_digest_sections() -> dict[str, list[dict]]:
+async def compute_due_digest_sections(postgres_conn=None) -> dict[str, list[dict]]:
     """Runs every enabled rule against live data, retires state for items
     that resolved since last run, and returns only the items actually due
     to be surfaced today per the decaying cadence — keyed by rule_type.
     Does not send or mark anything notified; see run_daily_digest()."""
-    thresholds = await enabled_rule_thresholds()
+    thresholds = await enabled_rule_thresholds(postgres_conn)
     sections: dict[str, list[dict]] = {}
     for rule_type, threshold in thresholds.items():
         checker = RULE_CHECKERS.get(rule_type)
         if checker is None:
             continue
-        items = await checker(threshold)
+        items = await checker(threshold, postgres_conn)
         all_keys = [item["item_key"] for item in items]
-        await clear_resolved(rule_type, all_keys)
-        due_keys = set(await items_due_for_notification(rule_type, all_keys))
+        await clear_resolved(rule_type, all_keys, postgres_conn)
+        due_keys = set(await items_due_for_notification(rule_type, all_keys, postgres_conn))
         due_items = [item for item in items if item["item_key"] in due_keys]
         if due_items:
             sections[rule_type] = due_items
@@ -225,12 +275,12 @@ def _format_digest_body(sections: dict[str, list[dict]]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-async def run_daily_digest() -> dict:
+async def run_daily_digest(postgres_conn=None) -> dict:
     """Computes, sends (if there's anything due), and records state. Lets
     a send failure propagate — the caller (maybe_run_daily_digest) reverts
     its digest_schedule claim if this raises, so a failed send is retried
     on the next scheduler tick instead of silently recorded as done."""
-    sections = await compute_due_digest_sections()
+    sections = await compute_due_digest_sections(postgres_conn)
     if not sections:
         return {"sent": False, "item_count": 0}
 
@@ -239,12 +289,12 @@ async def run_daily_digest() -> dict:
     send_digest_notification(f"Frank's Daily Brief — {item_count} item(s)", body)
 
     for rule_type, items in sections.items():
-        await mark_notified([item["item_key"] for item in items])
+        await mark_notified([item["item_key"] for item in items], postgres_conn)
 
     return {"sent": True, "item_count": item_count}
 
 
-async def compute_status() -> dict:
+async def compute_status(postgres_conn=None) -> dict:
     """Read-only live view for the Triggers UI (2026-08-21): every rule
     (enabled or not), and for enabled rules, every currently-matching item
     with a `due` flag showing whether it'd be in *today's* digest per the
@@ -252,8 +302,8 @@ async def compute_status() -> dict:
     Disabled rules report an empty item list rather than skipping the
     live check, so the UI can show "this would still be flagging N
     things" even while a rule's turned off."""
-    rules = await list_rules()
-    schedule = await get_digest_schedule()
+    rules = await list_rules(postgres_conn)
+    schedule = await get_digest_schedule(postgres_conn)
     sections = []
     for rule in rules:
         rule_type = rule["rule_type"]
@@ -261,8 +311,8 @@ async def compute_status() -> dict:
         if rule["enabled"]:
             checker = RULE_CHECKERS.get(rule_type)
             if checker:
-                items = await checker(rule["threshold_days"])
-                due_map = await peek_due_status(rule_type, [i["item_key"] for i in items])
+                items = await checker(rule["threshold_days"], postgres_conn)
+                due_map = await peek_due_status(rule_type, [i["item_key"] for i in items], postgres_conn)
                 for item in items:
                     item["due"] = due_map.get(item["item_key"], True)
         sections.append(
@@ -305,7 +355,7 @@ async def maybe_run_daily_digest(postgres_conn: object = None) -> dict | None:
         return None  # another worker already claimed today's send
 
     try:
-        return await run_daily_digest()
+        return await run_daily_digest(postgres_conn)
     except Exception:
         await revert_digest_claim(schedule["last_sent_date"], postgres_conn)
         raise

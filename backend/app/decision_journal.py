@@ -35,8 +35,10 @@ DECISION_JOURNAL_TOOLS = [LOG_DECISION_TOOL]
 DECISION_JOURNAL_TOOL_NAMES = {tool["name"] for tool in DECISION_JOURNAL_TOOLS}
 
 
-async def execute_decision_journal_tool_call(name: str, tool_input: dict) -> str:
+async def execute_decision_journal_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "log_decision":
-        await log_decision(tool_input["decision"], tool_input.get("reasoning"), tool_input.get("alternatives"))
+        await log_decision(
+            tool_input["decision"], tool_input.get("reasoning"), tool_input.get("alternatives"), postgres_conn
+        )
         return f"Decision logged: {tool_input['decision']}"
     return f"Unknown tool: {name}"
