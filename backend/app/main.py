@@ -393,6 +393,56 @@ async def _calendar_sync_loop() -> None:
         await asyncio.sleep(CALENDAR_SYNC_INTERVAL_SECONDS)
 
 
+POSTGRES_HEALTH_CHECK_INTERVAL_SECONDS = 20
+
+
+async def _postgres_health_check_loop(app: FastAPI) -> None:
+    """Real self-healing for the one shared Postgres connection (2026-09-11
+    outage) -- TCP keepalives on the connection itself reduce how often it
+    dies, but don't guarantee it never will, and there was previously no
+    recovery path at all short of a human manually restarting the process.
+    A cheap `SELECT 1` every 20s is the actual liveness proof (a closed-but-
+    not-yet-noticed connection can still *look* fine to a plain attribute
+    check); on failure, closes the dead connection (best-effort -- it may
+    already be unusable) and opens a fresh one with the same keepalive
+    settings, replacing `app.state.postgres_conn` in place. Every other
+    call site reads that attribute fresh via `getattr()` per request, never
+    caches it locally, so the very next request after a silent reconnect
+    picks up the new connection automatically -- no other code needs to
+    know this happened."""
+    while True:
+        await asyncio.sleep(POSTGRES_HEALTH_CHECK_INTERVAL_SECONDS)
+        conn = getattr(app.state, "postgres_conn", None)
+        if conn is None:
+            continue
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT 1")
+            # Real bug found and fixed elsewhere tonight (auth_db.py's
+            # verify_device_session): a plain SELECT under this
+            # non-autocommit connection leaves a transaction open unless
+            # explicitly closed. This loop runs forever, so it must not
+            # itself become a slow, recurring version of that same leak.
+            await conn.rollback()
+        except Exception as exc:
+            print(f"[postgres_health_check] connection unhealthy ({type(exc).__name__}: {exc}), reconnecting")
+            try:
+                await conn.close()
+            except Exception:
+                pass
+            try:
+                app.state.postgres_conn = await psycopg.AsyncConnection.connect(
+                    CLOUD_POSTGRES_DSN,
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=3,
+                )
+                print("[postgres_health_check] reconnected successfully")
+            except Exception as reconnect_exc:
+                print(f"[postgres_health_check] reconnect failed, will retry next tick: {reconnect_exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Real bug found live during the reliability pass (2026-09-07): adding
@@ -483,6 +533,16 @@ async def lifespan(app: FastAPI):
             keepalives_interval=10,
             keepalives_count=3,
         )
+    # Self-healing, not just harder to kill (2026-09-11): TCP keepalives
+    # above reduce how often the shared connection dies, but don't
+    # guarantee it never will -- a Postgres-side restart/eviction, or a
+    # network drop keepalives didn't catch in time, would otherwise leave
+    # every request needing this connection 500ing until a human manually
+    # restarted the process, exactly what happened live tonight. Runs on
+    # BOTH the Mac and cloud, deliberately unlike the scheduler loops
+    # below (Render is exactly where the real outage happened).
+    if DATA_BACKEND == "postgres" and not hasattr(app.state, "postgres_health_check_task"):
+        app.state.postgres_health_check_task = asyncio.create_task(_postgres_health_check_loop(app))
     # Cloud mode never runs these loops at all (2026-09-10): there's no
     # lock of any kind (advisory or otherwise) preventing the Mac and a
     # cloud instance from both independently running the daily digest,
@@ -504,6 +564,9 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, "calendar_sync_task"):
         app.state.calendar_sync_task.cancel()
         del app.state.calendar_sync_task
+    if hasattr(app.state, "postgres_health_check_task"):
+        app.state.postgres_health_check_task.cancel()
+        del app.state.postgres_health_check_task
     if hasattr(app.state, "elevenlabs_client"):
         await app.state.elevenlabs_client.aclose()
         del app.state.elevenlabs_client
