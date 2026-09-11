@@ -475,7 +475,22 @@ async def get_price_change(asset: str, lookback_days: int = 1, postgres_conn: An
             # but this cutoff used Python's local-time datetime.now() --
             # on any machine not already at UTC+0, "1 day ago" was off by
             # the local UTC offset, comparing against the wrong snapshot.
-            cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=lookback_days)).isoformat()
+            #
+            # Second bug, found and fixed together (2026-09-11):
+            # recorded_at is compared as plain TEXT in both backends (the
+            # column is TEXT in SQLite and stayed TEXT through the
+            # migration to Postgres too), but `.isoformat()` defaults to a
+            # "T" date/time separator while both backends actually store
+            # a space -- e.g. "2026-09-10 22:14:17". Since " " < "T"
+            # ASCII-wise, any same-calendar-day snapshot string-sorted as
+            # "older than" the cutoff regardless of its actual time,
+            # silently picking a too-recent "previous" price and
+            # understating real day-over-day moves. `sep=" "` matches the
+            # stored format exactly, restoring correct lexicographic (and
+            # therefore chronological) ordering.
+            cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=lookback_days)).isoformat(
+                sep=" "
+            )
             await cur.execute(
                 "SELECT price_zar, recorded_at FROM triggers.market_price_snapshots "
                 "WHERE asset = %s AND recorded_at <= %s "
@@ -503,8 +518,10 @@ async def get_price_change(asset: str, lookback_days: int = 1, postgres_conn: An
         if latest is None:
             return None
 
-        # Same naive-UTC fix as the postgres path above.
-        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=lookback_days)).isoformat()
+        # Same naive-UTC and separator fixes as the postgres path above.
+        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=lookback_days)).isoformat(
+            sep=" "
+        )
         cursor = await db.execute(
             "SELECT price_zar, recorded_at FROM market_price_snapshots WHERE asset = ? AND recorded_at <= ? "
             "ORDER BY recorded_at DESC LIMIT 1",
