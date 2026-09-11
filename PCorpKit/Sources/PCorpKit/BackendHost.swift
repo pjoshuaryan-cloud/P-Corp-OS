@@ -1,13 +1,13 @@
 import Foundation
 
 /// Which real backend a client talks to (2026-09-09, Infrastructure
-/// Independence Phase 1, Stage 2). `.staging`/`.production` are
-/// placeholders on the reserved `.invalid` TLD (RFC 2606 -- guaranteed to
-/// never resolve to a real domain) since no cloud backend exists yet;
-/// selecting either today will just fail to connect, which is the honest,
-/// correct behavior for an environment that doesn't exist, not a bug to
-/// work around. Once real cloud hosting is provisioned, these two cases'
-/// `host` values become the only change needed here.
+/// Independence Phase 1, Stage 2). `.production` became real (2026-09-11)
+/// once the actual Render Web Service existed and all 13 domains were
+/// live on the shared Postgres it and the Mac both read/write -- see
+/// CHANGELOG.md's iPhone-independence entries. `.staging` stays a
+/// placeholder on the reserved `.invalid` TLD (RFC 2606 -- guaranteed to
+/// never resolve to a real domain); nothing has needed a distinct staging
+/// target yet.
 public enum PCorpEnvironment {
     case local
     case staging
@@ -17,7 +17,7 @@ public enum PCorpEnvironment {
         switch self {
         case .local: return BackendHost.localHost
         case .staging: return "staging.pcorp.invalid"
-        case .production: return "api.pcorp.invalid"
+        case .production: return "p-corp-os.onrender.com"
         }
     }
 

@@ -13,11 +13,24 @@ struct P_Corp_OSApp: App {
         // 2026-08-12 -- replaced the first pass's UserDefaults storage,
         // a flagged scope cut, not an oversight).
         //
-        // localHost, not host (2026-09-09, Infrastructure Independence
-        // Stage 2): this is what BackendHost.environment == .local
-        // resolves to on this platform -- same value, same mechanism,
-        // renamed once a real .staging/.production also became possible.
+        // localHost kept set for an easy manual revert (comment out the
+        // line below to fall back to the Mac over Tailscale) -- but no
+        // longer what iOS actually uses day to day.
+        //
+        // .production is real now (2026-09-11, iPhone independence): all
+        // 13 domains are live on the shared Postgres the real Render
+        // deployment and the Mac both read/write, so the phone no longer
+        // needs the Mac on at all for its own real backend calls -- see
+        // CHANGELOG.md. The one real credential change this needs: the
+        // token in Keychain must be a per-device session (POST /auth/
+        // register-device), not the Mac's own plaintext AUTH_TOKEN file
+        // contents -- that value was never valid against Render's
+        // separate AUTH_TOKEN in the first place. Four capabilities stay
+        // structurally Mac-only regardless (AppleScript Calendar writes,
+        // Trading Division, HF Markets, the digest's macOS notification)
+        // -- an accepted, disclosed tradeoff, not a bug.
         BackendHost.localHost = "100.93.170.24"
+        BackendHost.environment = .production
         AuthToken.provider = {
             KeychainTokenStore.load()
         }

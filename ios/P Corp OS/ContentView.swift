@@ -36,12 +36,20 @@ struct ContentView: View {
     // local file automatically, no entry screen exists there at all.
     // Same fonts/theme colors as everything else regardless, for visual
     // consistency across the app.
+    //
+    // Copy updated (2026-09-11, iPhone independence): this now connects
+    // to the real cloud backend (BackendHost.environment == .production),
+    // not the Mac directly -- the token pasted here needs to be a real
+    // per-device session (minted via POST /auth/register-device against
+    // the cloud instance), not the Mac's own backend/data/auth_token file
+    // contents, which was never valid against Render's separate
+    // AUTH_TOKEN to begin with.
     private var tokenEntryView: some View {
         VStack(spacing: 16) {
             Text("Connect to Frank")
                 .font(PCorpFont.display(20))
                 .foregroundStyle(darkModeEnabled ? AppTheme.dark.textPrimary : AppTheme.light.textPrimary)
-            Text("Paste the auth token from your Mac's backend/data/auth_token file.")
+            Text("Paste the device token Frank gave you for this phone.")
                 .font(PCorpFont.body(13))
                 .foregroundStyle(darkModeEnabled ? AppTheme.dark.textSecondary : AppTheme.light.textSecondary)
                 .multilineTextAlignment(.center)
