@@ -57,6 +57,7 @@ struct TradingDivisionView: View {
                 }
                 .padding(24)
             }
+            .refreshable { await client.fetch() }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
@@ -74,12 +75,7 @@ struct TradingDivisionView: View {
                     .foregroundStyle(theme.textSecondary)
             }
             Spacer()
-            Button {
-                Task { await client.fetch() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.icon)
+            RefreshIconButton { await client.fetch() }
         }
         .padding(24)
     }

@@ -49,12 +49,7 @@ struct FrankView: View {
                     .foregroundStyle(theme.textSecondary)
             }
             Spacer()
-            Button {
-                Task { await client.fetch() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.icon)
+            RefreshIconButton { await client.fetch() }
         }
         .padding(20)
     }
@@ -86,6 +81,7 @@ struct FrankView: View {
                 }
                 .padding(20)
             }
+            .refreshable { await client.fetch() }
         }
     }
 

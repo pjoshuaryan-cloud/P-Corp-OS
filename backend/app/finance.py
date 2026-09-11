@@ -9,7 +9,7 @@ principle (alpha_mode_db.py's docstring: "added complexity should wait
 until real usage actually calls for it").
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from app.coingecko_client import fetch_xstock_zar_prices
 from app.finance_db import (
@@ -24,32 +24,22 @@ from app.hf_markets_client import read_balance as read_hf_markets_balance
 from app.luno_client import fetch_balances, fetch_zar_prices
 
 
-async def maybe_snapshot_luno(postgres_conn=None) -> None:
-    """Runs at most once per calendar day. Records one balance_snapshots
-    row per non-zero asset Luno reports (ZAR cash, XBT, ETH, etc.).
-
-    Real thing discovered live (2026-08-24, first real test against
-    Josh's actual account): Luno splits each asset across multiple
-    sub-accounts -- Transactional, Staking, Bundle, Earn, Prediction --
-    so one asset like ADA can appear as three separate balance entries
-    (e.g. 0, 0, 11.004303) in the same API response. Logging each one as
-    its own snapshot would corrupt the trend math in finance_db.py's
-    dashboard_snapshot() (which only looks at the two most recent rows
-    per asset) -- whichever sub-account happened to be inserted last
-    would silently become "the" balance, and the others would vanish
-    from the trend entirely. Summed by asset first so each asset gets
-    exactly one honest snapshot per day: the true total Josh holds in
-    that asset across every Luno sub-account, not an arbitrary one of
-    them."""
-    schedule = await get_luno_schedule(postgres_conn)
-    today = date.today().isoformat()
-    if schedule["last_snapshot_date"] == today:
-        return
-
+async def _fetch_luno_asset_totals() -> dict[str, float] | None:
+    """Shared by the daily snapshot writer below and `live_finance_dashboard`
+    -- both need the exact same real thing discovered live (2026-08-24,
+    first real test against Josh's actual account): Luno splits each asset
+    across multiple sub-accounts -- Transactional, Staking, Bundle, Earn,
+    Prediction -- so one asset like ADA can appear as three separate
+    balance entries (e.g. 0, 0, 11.004303) in the same API response.
+    Summed by asset first so callers get exactly one honest total per
+    asset: the true amount Josh holds across every Luno sub-account, not
+    an arbitrary one of them. Returns None (not {}) on a fetch failure,
+    so callers can distinguish "Luno unreachable right now" from
+    "genuinely holds nothing" -- fail-soft, matching every other external
+    integration in this codebase."""
     balances = await fetch_balances()
     if not balances:
-        return
-
+        return None
     totals: dict[str, float] = {}
     for entry in balances:
         asset = entry.get("asset")
@@ -61,6 +51,23 @@ async def maybe_snapshot_luno(postgres_conn=None) -> None:
         except (TypeError, ValueError):
             continue
         totals[asset] = totals.get(asset, 0.0) + amount
+    return totals
+
+
+async def maybe_snapshot_luno(postgres_conn=None) -> None:
+    """Runs at most once per calendar day. Records one balance_snapshots
+    row per non-zero asset Luno reports (ZAR cash, XBT, ETH, etc.) --
+    purely historical record-keeping (trend math, the daily digest), not
+    what the Finance tab actually displays as "current" holdings anymore;
+    see `live_finance_dashboard` below for why that distinction is real."""
+    schedule = await get_luno_schedule(postgres_conn)
+    today = date.today().isoformat()
+    if schedule["last_snapshot_date"] == today:
+        return
+
+    totals = await _fetch_luno_asset_totals()
+    if not totals:
+        return
 
     for asset, amount in totals.items():
         if amount == 0:
@@ -133,6 +140,75 @@ async def compute_luno_zar_value(holdings: list[dict]) -> dict:
 _ZAR_ACCOUNT_NAMES = {"Liberty Stash", "EasyEquities", "Ashburton Stable Income Fund", "Nasdaq / Markets"}
 
 
+async def live_finance_dashboard(postgres_conn=None) -> dict:
+    """Real gap found live (2026-09-11): the Finance tab's Luno holdings
+    only ever reflected the once-a-day, Mac-scheduler-only snapshot
+    (`maybe_snapshot_luno` above) -- genuinely fine back when the Mac was
+    always the one thing running this app, but wrong the moment the
+    phone stopped needing the Mac on at all: a closed laptop means that
+    daily tick simply never fires, and the displayed balance can
+    silently drift a day or more stale (confirmed live: the real last
+    snapshot was ~24h old the moment Josh reported "incorrect amounts").
+    Prices were already fetched live per request (`compute_luno_zar_value`
+    above); balances are now too -- the same fix applied one level up.
+    The daily snapshot itself is untouched and still runs (real
+    historical record for trend math and the digest); this only changes
+    what's *displayed* as "right now."
+
+    Fails soft to the last snapshot, not a broken tab, if Luno's API is
+    briefly unreachable -- a slightly-stale number beats no Finance tab
+    at all. Only Luno is touched; every other account (manually-logged,
+    or HF Markets' own separate live-status mechanism) is untouched."""
+    snapshot = await dashboard_snapshot(postgres_conn)
+    luno_account = next((a for a in snapshot["accounts"] if a["name"] == "Luno"), None)
+    if luno_account is None:
+        return snapshot
+
+    live_totals = await _fetch_luno_asset_totals()
+    if live_totals is None:
+        return snapshot
+
+    now = datetime.now(timezone.utc).isoformat()
+    merged_holdings = []
+    seen_assets: set[str] = set()
+    # Existing assets first, in their existing order -- keeps the tab's
+    # layout stable rather than reshuffling on every refresh. Trend is
+    # now live-balance-vs-last-snapshot, the same "up/down/flat" meaning
+    # as before, just compared against a fresher current value.
+    for previous in luno_account["holdings"]:
+        asset = previous["asset"]
+        live_balance = live_totals.get(asset)
+        if not live_balance:  # None (not held live) or 0 (sold out) -- drop from "current," matching
+            continue          # maybe_snapshot_luno's own "don't log a zero" convention.
+        trend = "flat"
+        if live_balance > previous["balance"]:
+            trend = "up"
+        elif live_balance < previous["balance"]:
+            trend = "down"
+        merged_holdings.append(
+            {
+                "asset": asset,
+                "balance": live_balance,
+                "recorded_at": now,
+                "trend": trend,
+                "previous_balance": previous["balance"],
+            }
+        )
+        seen_assets.add(asset)
+    # Any asset Luno reports live that has no prior snapshot at all yet
+    # (Josh bought something new since the last daily tick) -- shown with
+    # no trend, same honest "nothing to compare against yet" shape
+    # dashboard_snapshot() itself already uses for a brand-new asset.
+    for asset, live_balance in live_totals.items():
+        if asset in seen_assets or not live_balance:
+            continue
+        merged_holdings.append(
+            {"asset": asset, "balance": live_balance, "recorded_at": now, "trend": "flat", "previous_balance": None}
+        )
+    luno_account["holdings"] = merged_holdings
+    return snapshot
+
+
 async def compute_concentration_metrics(postgres_conn=None) -> dict:
     """Systems audit §4's concentration metric (2026-09-06) -- two
     separate, honestly-labeled views, never merged into one number.
@@ -151,7 +227,7 @@ async def compute_concentration_metrics(postgres_conn=None) -> dict:
       per_asset_zar_value directly rather than a second pricing pass --
       stays self-contained to the one account that estimate was already
       scoped to."""
-    snapshot = await dashboard_snapshot(postgres_conn)
+    snapshot = await live_finance_dashboard(postgres_conn)
 
     zar_rows = []
     for account in snapshot["accounts"]:

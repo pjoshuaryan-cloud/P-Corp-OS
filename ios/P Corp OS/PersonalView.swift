@@ -79,6 +79,10 @@ struct PersonalView: View {
                 }
                 .padding(24)
             }
+            .refreshable {
+                await client.fetch()
+                await peopleClient.fetch()
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
@@ -99,15 +103,10 @@ struct PersonalView: View {
                     .foregroundStyle(theme.textSecondary)
             }
             Spacer()
-            Button {
-                Task {
-                    await client.fetch()
-                    await peopleClient.fetch()
-                }
-            } label: {
-                Image(systemName: "arrow.clockwise")
+            RefreshIconButton {
+                await client.fetch()
+                await peopleClient.fetch()
             }
-            .buttonStyle(.icon)
         }
         .padding(24)
     }

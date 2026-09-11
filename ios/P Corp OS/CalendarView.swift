@@ -34,12 +34,7 @@ struct CalendarView: View {
                     .foregroundStyle(theme.textSecondary)
             }
             Spacer()
-            Button {
-                Task { await load() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.icon)
+            RefreshIconButton { await load() }
         }
         .padding(20)
     }
@@ -67,6 +62,7 @@ struct CalendarView: View {
                 }
                 .padding(20)
             }
+            .refreshable { await load() }
         }
     }
 

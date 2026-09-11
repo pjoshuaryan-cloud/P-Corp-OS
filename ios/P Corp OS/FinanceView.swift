@@ -39,6 +39,7 @@ struct FinanceView: View {
                 }
                 .padding(20)
             }
+            .refreshable { await client.fetch() }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
@@ -59,12 +60,7 @@ struct FinanceView: View {
                     .foregroundStyle(theme.textSecondary)
             }
             Spacer()
-            Button {
-                Task { await client.fetch() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.icon)
+            RefreshIconButton { await client.fetch() }
         }
         .padding(20)
     }

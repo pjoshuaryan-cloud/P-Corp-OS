@@ -96,6 +96,14 @@ struct WarRoomView: View {
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var showPhotosPicker = false
     @State private var showDocumentImporter = false
+    // Real complaint, live (2026-09-11): tapping these two small inline
+    // refresh icons (Insights/Situation Room) looked identical whether
+    // they were working or not -- these use a custom small/plain style
+    // that doesn't match RefreshIconButton's `.icon`-styled circle, so
+    // each gets its own local spinner state instead of reusing that
+    // shared component here.
+    @State private var isInsightsRefreshing = false
+    @State private var isSituationRoomRefreshing = false
     @FocusState private var isInputFocused: Bool
     @Environment(\.appTheme) private var theme
 
@@ -207,7 +215,11 @@ struct WarRoomView: View {
                 // the messages makes the whole thing one continuous
                 // scrollable region -- the header just scrolls out of the
                 // way instead of permanently reserving space.
-                ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming, runningTool: backend.runningTool) {
+                ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming, runningTool: backend.runningTool, onRefresh: {
+                    await focusClient.fetch()
+                    await insightsClient.fetch()
+                    await situationRoomClient.fetch()
+                }) {
                     dashboardHeader
                 }
             }
@@ -396,13 +408,25 @@ struct WarRoomView: View {
                         .foregroundStyle(theme.textTertiary)
                 }
                 Button {
-                    Task { await insightsClient.fetch() }
+                    guard !isInsightsRefreshing else { return }
+                    isInsightsRefreshing = true
+                    Task {
+                        await insightsClient.fetch()
+                        isInsightsRefreshing = false
+                    }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.textSecondary)
+                    if isInsightsRefreshing {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .frame(width: 11, height: 11)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(theme.textSecondary)
+                    }
                 }
                 .buttonStyle(.plain)
+                .disabled(isInsightsRefreshing)
             }
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(insightsClient.insights) { insight in
@@ -451,13 +475,25 @@ struct WarRoomView: View {
                         .foregroundStyle(theme.statusRisk.opacity(0.7))
                 }
                 Button {
-                    Task { await situationRoomClient.fetch() }
+                    guard !isSituationRoomRefreshing else { return }
+                    isSituationRoomRefreshing = true
+                    Task {
+                        await situationRoomClient.fetch()
+                        isSituationRoomRefreshing = false
+                    }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(theme.statusRisk.opacity(0.8))
+                    if isSituationRoomRefreshing {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .frame(width: 10, height: 10)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(theme.statusRisk.opacity(0.8))
+                    }
                 }
                 .buttonStyle(.plain)
+                .disabled(isSituationRoomRefreshing)
             }
             ForEach(situationRoomClient.alerts) { alert in
                 Text("\(alert.title) — \(alert.detail)")
@@ -744,6 +780,12 @@ private struct ChatThreadView<Header: View>: View {
     let messages: [ChatMessage]
     let isStreaming: Bool
     let runningTool: String?
+    // Pull-to-refresh (2026-09-11, real request live) -- refreshes the
+    // dashboard data inside `header()` (Focus/Insights/Situation Room),
+    // not the chat thread itself: there's no "refresh" concept for a live
+    // WebSocket conversation, and the header is what's actually stale
+    // data a pull-down gesture should update.
+    let onRefresh: () async -> Void
     @ViewBuilder var header: () -> Header
     @Environment(\.appTheme) private var theme
 
@@ -769,6 +811,7 @@ private struct ChatThreadView<Header: View>: View {
                     .padding(.vertical, 12)
                 }
             }
+            .refreshable { await onRefresh() }
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: messages.count) { _, _ in scrollToEnd(proxy) }
             .onChange(of: messages.last?.content) { _, _ in scrollToEnd(proxy) }

@@ -115,7 +115,6 @@ from app.joshx_tools import JOSHX_TOOL_NAMES, JOSHX_TOOLS, build_joshx_block, ex
 from app.people_db import dashboard_snapshot as people_dashboard_snapshot, init_people_db
 from app.people_tools import PEOPLE_TOOL_NAMES, PEOPLE_TOOLS, build_people_block, execute_people_tool_call
 from app.finance_db import (
-    dashboard_snapshot as finance_dashboard_snapshot,
     get_balance_history,
     get_hf_markets_schedule,
     get_luno_schedule,
@@ -134,6 +133,7 @@ from app.finance import (
     compute_concentration_metrics,
     compute_luno_zar_value,
     get_hf_markets_live_status,
+    live_finance_dashboard,
     maybe_snapshot_hf_markets,
     maybe_snapshot_luno,
 )
@@ -1003,7 +1003,12 @@ async def finance_dashboard(request: Request, _: None = Depends(verify_token)) -
     # tracking, Luno automatic + four manually-logged accounts. See
     # app/finance_db.py's own docstring for scope.
     postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
-    snapshot = await finance_dashboard_snapshot(postgres_conn)
+    # Real gap fixed live (2026-09-11): Luno's balances used to only ever
+    # reflect the once-a-day, Mac-scheduler-only snapshot -- live_finance_dashboard
+    # (app/finance.py) fetches the current real balance at request time
+    # instead, same freshness compute_luno_zar_value below already gives
+    # prices. See its own docstring for the full incident.
+    snapshot = await live_finance_dashboard(postgres_conn)
     # Real overall Luno value, computed live against Luno's own price
     # feed (2026-08-24) -- see app/finance.py's compute_luno_zar_value()
     # docstring for why this can't just be a naive sum of raw balances.

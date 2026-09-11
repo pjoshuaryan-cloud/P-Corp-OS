@@ -22,6 +22,10 @@ struct AgentsView: View {
                 }
                 .padding(20)
             }
+            .refreshable {
+                await agentsClient.fetch()
+                await opsClient.fetch()
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
@@ -42,15 +46,10 @@ struct AgentsView: View {
                     .foregroundStyle(theme.textSecondary)
             }
             Spacer()
-            Button {
-                Task {
-                    await agentsClient.fetch()
-                    await opsClient.fetch()
-                }
-            } label: {
-                Image(systemName: "arrow.clockwise")
+            RefreshIconButton {
+                await agentsClient.fetch()
+                await opsClient.fetch()
             }
-            .buttonStyle(.icon)
         }
         .padding(20)
     }
