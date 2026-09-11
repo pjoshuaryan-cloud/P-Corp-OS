@@ -17,11 +17,16 @@ import SwiftUI
 /// shipped on desktop, so only this row is being ported here.
 struct WarRoomCommandMap: View {
     @Environment(\.appTheme) private var theme
-    @StateObject private var agentsClient = AgentsClient()
     // Reliability pass (2026-09-07): was its own @StateObject InsightsClient,
     // fetching GET /insights a second time on every cold launch alongside
     // WarRoomView's own instance -- passed in from the parent instead, so
     // this row just observes the same already-fetched data reactively.
+    // agentsClient got the same treatment (2026-09-11) for the same
+    // reason -- as a private @StateObject here it was unreachable from
+    // WarRoomView's pull-to-refresh, so a failed fetch could leave
+    // "AGENTS ONLINE" stuck at 0 with no way to retry short of a full
+    // app relaunch.
+    @ObservedObject var agentsClient: AgentsClient
     @ObservedObject var insightsClient: InsightsClient
 
     private var opportunityCount: Int {
@@ -39,9 +44,6 @@ struct WarRoomCommandMap: View {
             statItem(label: "OPPORTUNITIES", value: opportunityCount)
             statDivider
             statItem(label: "RISKS", value: riskCount)
-        }
-        .task {
-            await agentsClient.fetch()
         }
     }
 

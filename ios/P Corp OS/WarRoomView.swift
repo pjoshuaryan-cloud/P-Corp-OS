@@ -77,6 +77,12 @@ struct WarRoomView: View {
     @ObservedObject var situationRoomClient: SituationRoomClient
     @StateObject private var focusClient = FocusClient()
     @StateObject private var insightsClient = InsightsClient()
+    // Lifted up from WarRoomCommandMap (2026-09-11), same reasoning as
+    // insightsClient's own 2026-09-07 move: this used to be a private
+    // @StateObject there, unreachable from pull-to-refresh above it --
+    // "AGENTS ONLINE" could be stuck showing 0 after a failed fetch with
+    // no way to force a retry short of a full app relaunch.
+    @StateObject private var agentsClient = AgentsClient()
     @StateObject private var voiceInput = VoiceInput()
     // iOS parity port (2026-08-27) of desktop's own VoiceOutput -- the
     // output half of "talking to Frank" that iOS never had. Same "only
@@ -228,6 +234,7 @@ struct WarRoomView: View {
                     await focusClient.fetch()
                     await insightsClient.fetch()
                     await situationRoomClient.fetch()
+                    await agentsClient.fetch()
                 }) {
                     dashboardHeader
                 }
@@ -260,6 +267,7 @@ struct WarRoomView: View {
         .task {
             await focusClient.fetch()
             await insightsClient.fetch()
+            await agentsClient.fetch()
         }
         .onChange(of: backend.isStreaming) { _, isStreaming in
             // isStreaming going true -> false is the real signal a turn
@@ -372,7 +380,7 @@ struct WarRoomView: View {
             // visible layout doesn't have in this spot; placing it right
             // after the greeting, before the cards, is the closest honest
             // analog -- quiet ambient info ahead of the actionable cards.
-            WarRoomCommandMap(insightsClient: insightsClient)
+            WarRoomCommandMap(agentsClient: agentsClient, insightsClient: insightsClient)
             missionStatusCard
             if !insightsClient.insights.isEmpty {
                 insightsCard
