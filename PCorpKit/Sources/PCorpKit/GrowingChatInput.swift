@@ -235,15 +235,21 @@ private struct ChatTextViewRepresentable: UIViewRepresentable {
         /// Only ever sees the ON-SCREEN keyboard's Return here -- hardware
         /// Return (with or without Shift/Cmd/Ctrl) is claimed first by
         /// ChatUITextView's own keyCommands below, so it never reaches
-        /// this delegate method at all. The software keyboard has no
-        /// physical Shift key, so treating a bare "\n" here as "always
-        /// send" is the correct, honest behavior for that case (see
-        /// GrowingChatInput's own doc comment on the iOS limitation this
-        /// implies).
+        /// this delegate method at all.
+        ///
+        /// Changed 2026-09-11 (real complaint, live): this used to treat a
+        /// bare "\n" here as "always send," on the reasoning that the
+        /// software keyboard has no physical Shift key to distinguish
+        /// send-vs-newline the way a hardware Return can. Confirmed with
+        /// Josh directly that this reads as broken, not "the honest
+        /// tradeoff" -- there's already a dedicated Send button (the
+        /// up-arrow circle next to this input) for sending, so Return can
+        /// simply insert a newline unconditionally here, matching what he
+        /// actually wants. Hardware-keyboard behavior is untouched --
+        /// plain/Cmd/Ctrl+Return still send there, via keyCommands below,
+        /// a completely separate path this method never sees.
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
-            guard text == "\n" else { return true }
-            (textView as? ChatUITextView)?.onPlainReturn?()
-            return false
+            true
         }
     }
 }

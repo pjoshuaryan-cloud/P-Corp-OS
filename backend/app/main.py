@@ -462,7 +462,27 @@ async def lifespan(app: FastAPI):
     if DATA_BACKEND == "postgres" and not hasattr(app.state, "postgres_conn"):
         if not CLOUD_POSTGRES_DSN:
             raise RuntimeError("DATA_BACKEND=postgres requires CLOUD_POSTGRES_DSN to be set.")
-        app.state.postgres_conn = await psycopg.AsyncConnection.connect(CLOUD_POSTGRES_DSN)
+        # Real outage found live (2026-09-11): this one long-lived
+        # connection can go silently dead -- a NAT/firewall/load-balancer
+        # somewhere on the real network path between Render and the
+        # Postgres host drops a TCP connection that's been idle a while,
+        # with neither side sending a FIN the client would notice. The
+        # next real query then raises (confirmed live: /health and
+        # /agents both 500'd, while a *fresh* connection to the same
+        # Postgres succeeded immediately), and nothing here reconnects.
+        # TCP keepalives are the standard fix for exactly this class of
+        # "looks open, is actually dead" problem -- libpq/psycopg send a
+        # real probe packet on an idle connection, which either keeps a
+        # path-level idle timer from firing at all, or surfaces the dead
+        # connection quickly instead of silently. Values are conservative
+        # (idle 30s, 3x10s probes) -- cheap relative to an outage.
+        app.state.postgres_conn = await psycopg.AsyncConnection.connect(
+            CLOUD_POSTGRES_DSN,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=3,
+        )
     # Cloud mode never runs these loops at all (2026-09-10): there's no
     # lock of any kind (advisory or otherwise) preventing the Mac and a
     # cloud instance from both independently running the daily digest,
@@ -1238,6 +1258,21 @@ async def websocket_chat(websocket: WebSocket) -> None:
         {"role": row["role"], "content": row["content"]} for row in await load_history(conversation_id, postgres_conn)
     ]
 
+    # Real gap found live (2026-09-11): nothing on either side sent any
+    # traffic while the socket just sat waiting for Josh to type --
+    # harmless on the Mac's old direct Tailscale connection (nothing in
+    # between to time it out), but the real public-internet path to
+    # Render almost certainly has a reverse proxy that drops an idle
+    # WebSocket after some timeout, with no clean close frame the client
+    # would recognize -- confirmed live as "endless connection errors"
+    # the moment the app sat idle a while. A periodic keepalive keeps the
+    # connection looking active to any intermediary. `[ping]` needs an
+    # explicit, dedicated case on the client (BackendClient.swift) --
+    # confirmed by reading it that any *unrecognized* bracketed text
+    # falls into the same branch that appends to the visible reply *and*
+    # clears `runningTool`, so a plain no-op text would both pollute the
+    # transcript and wrongly hide the tool-running indicator mid-call.
+    keepalive_task = asyncio.create_task(_websocket_keepalive(websocket))
     try:
         while True:
             raw_message = await websocket.receive_text()
@@ -1398,6 +1433,25 @@ async def websocket_chat(websocket: WebSocket) -> None:
             )
             await websocket.send_text("\n[done]")
     except WebSocketDisconnect:
+        pass
+    finally:
+        keepalive_task.cancel()
+
+
+async def _websocket_keepalive(websocket: WebSocket, interval_seconds: float = 20.0) -> None:
+    """Sends a `[ping]` text frame on a fixed interval for the life of one
+    /ws connection -- pure keepalive traffic, ignored by the client (see
+    BackendClient.swift's dedicated `\\n[ping]` case), just here to stop an
+    intermediary on the real Render network path from treating a socket
+    that's idle between messages as dead. Exits cleanly on cancellation
+    (the connection's own `finally` above) or once the socket is actually
+    gone (`send_text` raises once the connection is closed, same as any
+    other send after disconnect elsewhere in this handler)."""
+    try:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            await websocket.send_text("\n[ping]")
+    except (asyncio.CancelledError, Exception):
         pass
 
 

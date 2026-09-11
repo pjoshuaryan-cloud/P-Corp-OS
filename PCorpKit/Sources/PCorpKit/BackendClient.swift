@@ -738,6 +738,7 @@ public final class BackendClient: ObservableObject {
     private static let alphaModeApprovalRequestPrefix = "\n[alpha_mode_approval_request]"
     private static let toolStartPrefix = "\n[tool_start]"
     private static let documentGeneratedPrefix = "\n[document_generated]"
+    private static let pingSentinel = "\n[ping]"
 
     private func listen() {
         guard let task else { return }
@@ -826,6 +827,14 @@ public final class BackendClient: ObservableObject {
                                     GeneratedDocument(filename: payload.filename, title: payload.title)
                                 )
                             }
+                        } else if text == Self.pingSentinel {
+                            // Pure keepalive (2026-09-11) -- the backend
+                            // sends this periodically so an idle socket on
+                            // the real Render network path doesn't look
+                            // dead to whatever's in between. A true no-op:
+                            // must NOT fall into the `else` below, which
+                            // would both show "[ping]" in the transcript
+                            // and wrongly clear runningTool mid-tool-call.
                         } else {
                             // Real text (or a "\n[backend error: ...]" string,
                             // which has no recognized prefix and lands here
