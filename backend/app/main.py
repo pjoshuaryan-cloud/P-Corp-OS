@@ -51,6 +51,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import anthropic
 import httpx
@@ -1308,7 +1309,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
 
             try:
                 assistant_reply, generated_documents = await run_claude_turn(
-                    client, system_prompt, history, websocket, conversation_id, attachments=content_blocks
+                    client, system_prompt, history, websocket, conversation_id, postgres_conn, attachments=content_blocks
                 )
             except WebSocketDisconnect:
                 # Real bug found live (2026-08-27): the socket can now die
@@ -1406,6 +1407,7 @@ async def run_claude_turn(
     history: list,
     websocket: WebSocket,
     conversation_id: int,
+    postgres_conn: Any = None,
     attachments: list[dict] | None = None,
 ) -> tuple[str, list[dict]]:
     """Runs one user turn to completion, including any save_memory round
