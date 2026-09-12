@@ -1312,12 +1312,16 @@ async def speak(request: SpeakRequest, http_request: Request, _: None = Depends(
     # network) falls through silently from Frank's perspective — he still
     # speaks, just via the fallback voice — logged server-side so it's
     # debuggable without being surfaced as a hard error to the UI.
+    debug_reason = None
     if ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
         try:
             audio = await _speak_via_elevenlabs(http_request.app.state.elevenlabs_client, request.text)
             return Response(content=audio, media_type="audio/mpeg")
         except Exception as error:
             print(f"[speak] ElevenLabs failed, falling back to Piper: {error}")
+            debug_reason = f"ElevenLabs failed: {error}"
+    else:
+        debug_reason = f"ElevenLabs not configured (key set: {bool(ELEVENLABS_API_KEY)}, voice_id set: {bool(ELEVENLABS_VOICE_ID)})"
 
     # Real bug found live (2026-09-12): Piper's voice model is a ~115MB
     # file downloaded once onto this Mac's disk (data/piper_voices/,
@@ -1338,7 +1342,10 @@ async def speak(request: SpeakRequest, http_request: Request, _: None = Depends(
         return Response(content=audio, media_type="audio/wav")
     except Exception as error:
         print(f"[speak] Piper also failed (no voice available at all): {error}")
-        raise HTTPException(status_code=503, detail="Frank's voice is unavailable right now.") from error
+        raise HTTPException(
+            status_code=503,
+            detail=f"Frank's voice is unavailable right now. DEBUG: {debug_reason} | Piper: {error}",
+        ) from error
 
 
 @app.websocket("/ws")
