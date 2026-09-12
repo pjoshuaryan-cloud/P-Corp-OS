@@ -191,6 +191,29 @@ async def init_db() -> None:
             await db.execute("ALTER TABLE app_state ADD COLUMN google_access_token TEXT")
             await db.execute("ALTER TABLE app_state ADD COLUMN google_token_expires_at REAL")
 
+        # Migration path: app_state existed before HF Markets' live P&L
+        # became shared, cloud-visible state (2026-09-12). Previously only
+        # ever read straight from hf_markets_client.py's local MT5 file --
+        # real gap found live: a phone pointed at the cloud instance saw
+        # only the once-a-day snapshot, never live floating P&L, since
+        # that file only exists on Josh's Mac disk. These columns back the
+        # new Postgres push-from-Mac path only; hf_markets_client.py's own
+        # local-file read is untouched and still wins whenever it's
+        # actually available (i.e. running on the Mac itself).
+        # hf_markets_live_updated_at is an opaque passthrough of whatever
+        # the MT5 Expert Advisor's own JSON puts there -- never parsed,
+        # same as get_hf_markets_live_status() already does today.
+        # hf_markets_live_synced_at is this server's own UTC write time
+        # (same naive-UTC-string style as local_node_last_seen_at, not a
+        # native timestamptz) -- what staleness is actually measured
+        # against, not the EA's own clock.
+        if "hf_markets_live_balance" not in columns:
+            await db.execute("ALTER TABLE app_state ADD COLUMN hf_markets_live_balance REAL")
+            await db.execute("ALTER TABLE app_state ADD COLUMN hf_markets_live_equity REAL")
+            await db.execute("ALTER TABLE app_state ADD COLUMN hf_markets_live_currency TEXT")
+            await db.execute("ALTER TABLE app_state ADD COLUMN hf_markets_live_updated_at TEXT")
+            await db.execute("ALTER TABLE app_state ADD COLUMN hf_markets_live_synced_at TEXT")
+
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_records (
@@ -421,6 +444,45 @@ async def set_google_oauth_tokens_postgres(
             "UPDATE pcorp.app_state SET google_refresh_token = %s, google_access_token = %s, "
             "google_token_expires_at = %s WHERE id = 1",
             (refresh_token, access_token, expires_at),
+        )
+    await conn.commit()
+
+
+async def get_hf_markets_live_status_postgres(conn: Any) -> dict | None:
+    """Postgres-only, same asymmetry as get_google_oauth_tokens_postgres
+    above -- the SQLite-mode equivalent isn't a row in this table at all,
+    it's hf_markets_client.py's own local MT5 file, untouched. Raw getter
+    only: returns whatever was last pushed plus when, with no staleness
+    opinion of its own -- app/finance.py's get_hf_markets_live_status_for_dashboard
+    is where "is this too old to trust" actually gets decided, same split
+    as get_local_node_last_seen_at (raw) vs local_node_online (main.py's
+    own freshness check) already established for the same kind of value."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT hf_markets_live_balance, hf_markets_live_equity, hf_markets_live_currency, "
+            "hf_markets_live_updated_at, hf_markets_live_synced_at FROM pcorp.app_state WHERE id = 1"
+        )
+        row = await cur.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return {
+        "balance": row[0],
+        "equity": row[1],
+        "currency": row[2],
+        "updated_at": row[3],
+        "synced_at": row[4],
+    }
+
+
+async def set_hf_markets_live_status_postgres(
+    conn: Any, balance: float, equity: float, currency: str, updated_at: str | None
+) -> None:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE pcorp.app_state SET hf_markets_live_balance = %s, hf_markets_live_equity = %s, "
+            "hf_markets_live_currency = %s, hf_markets_live_updated_at = %s, "
+            "hf_markets_live_synced_at = (now() AT TIME ZONE 'utc') WHERE id = 1",
+            (balance, equity, currency, updated_at),
         )
     await conn.commit()
 

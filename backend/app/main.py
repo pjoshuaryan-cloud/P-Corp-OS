@@ -133,6 +133,7 @@ from app.finance import (
     compute_concentration_metrics,
     compute_luno_zar_value,
     get_hf_markets_live_status,
+    get_hf_markets_live_status_for_dashboard,
     live_finance_dashboard,
     maybe_snapshot_hf_markets,
     maybe_snapshot_luno,
@@ -191,6 +192,7 @@ from app.db import (
     save_message,
     set_active_conversation,
     set_credits_exhausted,
+    set_hf_markets_live_status_postgres,
 )
 from app.memory import FORGET_MEMORY_TOOL, SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
 from app.focus import FOCUS_TOOL_NAMES, FOCUS_TOOLS, execute_focus_tool_call
@@ -443,6 +445,39 @@ async def _postgres_health_check_loop(app: FastAPI) -> None:
                 print(f"[postgres_health_check] reconnect failed, will retry next tick: {reconnect_exc}")
 
 
+HF_MARKETS_LIVE_PUSH_INTERVAL_SECONDS = 60
+
+
+async def _hf_markets_live_push_loop(app: FastAPI) -> None:
+    """Bridges HF Markets' live floating P&L to the cloud (2026-09-12) --
+    hf_markets_client.py's local MT5 file only ever exists on this Mac's
+    disk, so Render (what iOS talks to) had no way to see it at all.
+    Mac-only (see its lifespan() registration, gated the same as
+    _trigger_scheduler_loop/_calendar_sync_loop) -- Render could never
+    read the file anyway. 60s matches the MT5 Expert Advisor's own write
+    cadence (PcorpBalanceExport.mq5, see hf_markets_client.py's
+    docstring) -- polling more often than the source itself updates
+    would just resend the same number. Fails soft on every path (no EA
+    running yet, a transient write failure) -- app/finance.py's
+    get_hf_markets_live_status_for_dashboard() already treats a stale-or-
+    missing cloud value as "nothing to show," same honest posture as
+    every other local-file read in this app."""
+    while True:
+        await asyncio.sleep(HF_MARKETS_LIVE_PUSH_INTERVAL_SECONDS)
+        conn = getattr(app.state, "postgres_conn", None)
+        if conn is None:
+            continue
+        status = get_hf_markets_live_status()
+        if status is None:
+            continue
+        try:
+            await set_hf_markets_live_status_postgres(
+                conn, status["balance"], status["equity"], status["currency"], status["updated_at"]
+            )
+        except Exception as exc:
+            print(f"[hf_markets_live_push] failed: {type(exc).__name__}: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Real bug found live during the reliability pass (2026-09-07): adding
@@ -557,6 +592,11 @@ async def lifespan(app: FastAPI):
             app.state.trigger_scheduler_task = asyncio.create_task(_trigger_scheduler_loop())
         if not hasattr(app.state, "calendar_sync_task"):
             app.state.calendar_sync_task = asyncio.create_task(_calendar_sync_loop())
+        # HF Markets' live bridge (2026-09-12) -- Mac-only for the same
+        # reason as the two loops above, plus there's simply nothing to
+        # push in SQLite mode (no shared cloud DB for Render to read from).
+        if DATA_BACKEND == "postgres" and not hasattr(app.state, "hf_markets_live_push_task"):
+            app.state.hf_markets_live_push_task = asyncio.create_task(_hf_markets_live_push_loop(app))
     yield
     if hasattr(app.state, "trigger_scheduler_task"):
         app.state.trigger_scheduler_task.cancel()
@@ -564,6 +604,9 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, "calendar_sync_task"):
         app.state.calendar_sync_task.cancel()
         del app.state.calendar_sync_task
+    if hasattr(app.state, "hf_markets_live_push_task"):
+        app.state.hf_markets_live_push_task.cancel()
+        del app.state.hf_markets_live_push_task
     if hasattr(app.state, "postgres_health_check_task"):
         app.state.postgres_health_check_task.cancel()
         del app.state.postgres_health_check_task
@@ -1018,8 +1061,12 @@ async def finance_dashboard(request: Request, _: None = Depends(verify_token)) -
         elif account["name"] == "Nasdaq / Markets":
             # Real-time equity/floating P&L (2026-08-24) -- Josh wanted
             # to see this live during open trades, not just once a day.
-            # See app/finance.py's get_hf_markets_live_status() docstring.
-            account["hf_markets_live"] = get_hf_markets_live_status()
+            # Real gap found live (2026-09-12): the plain local-file read
+            # only ever worked from the Mac itself -- Render (what iOS
+            # talks to) always got None. get_hf_markets_live_status_for_dashboard
+            # falls back to the Mac's periodically-pushed cloud copy when
+            # the local file isn't there. See app/finance.py's docstring.
+            account["hf_markets_live"] = await get_hf_markets_live_status_for_dashboard(postgres_conn)
     return snapshot
 
 

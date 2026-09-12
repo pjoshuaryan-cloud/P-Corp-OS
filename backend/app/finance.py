@@ -12,6 +12,7 @@ until real usage actually calls for it").
 from datetime import date, datetime, timezone
 
 from app.coingecko_client import fetch_xstock_zar_prices
+from app.db import get_hf_markets_live_status_postgres
 from app.finance_db import (
     dashboard_snapshot,
     get_hf_markets_schedule,
@@ -332,4 +333,40 @@ def get_hf_markets_live_status() -> dict | None:
         "floating_pnl": equity - balance,
         "currency": data.get("currency", "ZAR"),
         "updated_at": data.get("updated_at"),
+    }
+
+
+async def get_hf_markets_live_status_for_dashboard(postgres_conn=None) -> dict | None:
+    """Real gap found live (2026-09-12): get_hf_markets_live_status() above
+    only ever works when called from a process that can actually see the
+    local MT5 file -- i.e. the Mac. Render (what iOS talks to) always got
+    None, so the phone showed only the once-a-day snapshot capital, never
+    live floating P&L. Local file always wins when it's actually there
+    (so the Mac itself, including desktop, is completely unaffected by
+    any of this); only falls back to the Mac's periodically-pushed cloud
+    copy (main.py's _hf_markets_live_push_loop, Mac-only) when it isn't.
+    150s reuses the exact constant and reasoning main.py already applies
+    to local_node_online (2.5x the 60s push cadence, tolerating one
+    missed beat without flapping) -- stale means the Mac is
+    asleep/closed/MT5 isn't running, and showing nothing is more honest
+    than showing a frozen number as if it were live."""
+    local = get_hf_markets_live_status()
+    if local is not None:
+        return local
+    if postgres_conn is None:
+        return None
+    cloud = await get_hf_markets_live_status_postgres(postgres_conn)
+    if cloud is None or cloud["synced_at"] is None:
+        return None
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    if (now_utc - datetime.fromisoformat(cloud["synced_at"])).total_seconds() >= 150:
+        return None
+    balance = cloud["balance"]
+    equity = cloud["equity"]
+    return {
+        "balance": balance,
+        "equity": equity,
+        "floating_pnl": equity - balance,
+        "currency": cloud["currency"],
+        "updated_at": cloud["updated_at"],
     }
