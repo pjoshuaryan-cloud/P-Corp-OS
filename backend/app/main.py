@@ -1338,18 +1338,7 @@ async def speak(request: SpeakRequest, http_request: Request, _: None = Depends(
         return Response(content=audio, media_type="audio/wav")
     except Exception as error:
         print(f"[speak] Piper also failed (no voice available at all): {error}")
-
-        def _redacted_report(name: str, value: str | None) -> str:
-            if value is None:
-                return f"{name}: not set"
-            control_positions = [i for i, c in enumerate(value) if ord(c) < 32 or ord(c) > 126]
-            return f"{name}: length={len(value)}, control_chars_at={control_positions}"
-
-        debug = (
-            f"{_redacted_report('ELEVENLABS_API_KEY', ELEVENLABS_API_KEY)} | "
-            f"{_redacted_report('ELEVENLABS_VOICE_ID', ELEVENLABS_VOICE_ID)}"
-        )
-        raise HTTPException(status_code=503, detail=f"Frank's voice is unavailable right now. DEBUG: {debug}") from error
+        raise HTTPException(status_code=503, detail="Frank's voice is unavailable right now.") from error
 
 
 @app.websocket("/ws")
