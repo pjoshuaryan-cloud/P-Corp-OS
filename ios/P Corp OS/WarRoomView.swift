@@ -231,6 +231,7 @@ struct WarRoomView: View {
                 // scrollable region -- the header just scrolls out of the
                 // way instead of permanently reserving space.
                 ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming, runningTool: backend.runningTool, onRefresh: {
+                    await backend.refreshHistory()
                     await focusClient.fetch()
                     await insightsClient.fetch()
                     await situationRoomClient.fetch()

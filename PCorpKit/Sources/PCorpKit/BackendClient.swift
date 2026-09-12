@@ -672,7 +672,46 @@ public final class BackendClient: ObservableObject {
         let attachments: [HistoryAttachmentEntry]?
     }
 
+    /// Manual retry path for pull-to-refresh on the chat thread itself --
+    /// loadHistory() below already retries automatically on the
+    /// reconnect-after-foreground path, but a genuinely bad connection can
+    /// still exhaust all attempts and leave a stale message (e.g. a
+    /// "[connection error...]" bubble appended client-side while
+    /// backgrounded) on screen with no other way to retry short of a full
+    /// force-quit -- confirmed live (2026-09-12): Josh backgrounded the
+    /// app mid-reply, the reply finished and saved correctly server-side
+    /// (per main.py's run_claude_turn fix the night before), but the
+    /// foreground-triggered loadHistory() call that should have shown it
+    /// landed during the same reconnect race AgentsClient.fetch() was
+    /// already hardened against, and nothing on this chat thread's own
+    /// pull-to-refresh (WarRoomView's onRefresh) retried it. Skips
+    /// entirely while a reply is actively streaming -- loadHistory()
+    /// replaces `messages` wholesale from what the server has already
+    /// saved, and an in-flight turn isn't saved until it completes, so
+    /// refreshing mid-reply would wipe the partial reply still visible on
+    /// screen (same race stopGenerating()'s own comment above describes).
+    public func refreshHistory() async {
+        guard !isStreaming else { return }
+        await loadHistory()
+    }
+
     private func loadHistory() async {
+        // Same three-attempt, ~20s-total backoff as AgentsClient.fetch()
+        // (2026-09-11), added here for the same reason (2026-09-12): a
+        // foreground-triggered reconnect can race the network actually
+        // being ready, and a single failed attempt used to leave whatever
+        // was already in `messages` -- including a stale client-side
+        // "[connection error...]" bubble -- stuck on screen with no retry.
+        let delaysSeconds: [Double] = [2, 6, 12]
+        for delay in delaysSeconds {
+            if await applyHistoryFromServer() { return }
+            try? await Task.sleep(for: .seconds(delay))
+        }
+        _ = await applyHistoryFromServer()
+    }
+
+    @discardableResult
+    private func applyHistoryFromServer() async -> Bool {
         do {
             let (data, _) = try await BackendURLSession.shared.data(from: historyURL)
             let entries = try JSONDecoder().decode([HistoryEntry].self, from: data)
@@ -704,9 +743,9 @@ public final class BackendClient: ObservableObject {
                 }
                 return ChatMessage(role: entry.role, content: entry.content, storedAttachmentNames: storedNames)
             }
+            return true
         } catch {
-            // Not critical enough to surface a hard error on first load —
-            // the thread just starts empty, same as before this existed.
+            return false
         }
     }
 
