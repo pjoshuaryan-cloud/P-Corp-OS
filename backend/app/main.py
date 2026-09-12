@@ -1319,8 +1319,26 @@ async def speak(request: SpeakRequest, http_request: Request, _: None = Depends(
         except Exception as error:
             print(f"[speak] ElevenLabs failed, falling back to Piper: {error}")
 
-    audio = await asyncio.to_thread(synthesize_wav_bytes, request.text)
-    return Response(content=audio, media_type="audio/wav")
+    # Real bug found live (2026-09-12): Piper's voice model is a ~115MB
+    # file downloaded once onto this Mac's disk (data/piper_voices/,
+    # .gitignore'd -- see piper_tts.py's own docstring), never deployed to
+    # Render. On Render, if ElevenLabs is also unconfigured/failing (the
+    # actual trigger Josh hit -- a wrong ELEVENLABS_API_KEY/VOICE_ID from
+    # the original deployment setup, same class of mistake as Supabase/
+    # Anthropic/Luno's env vars before it), this fallback used to raise
+    # PiperVoice.load()'s FileNotFoundError completely uncaught, surfacing
+    # as a bare 500 with no server-side log line at all -- unlike
+    # ElevenLabs' own failure two lines up, which at least explains
+    # itself. Piper genuinely has no fallback of its own (it *is* the
+    # fallback), so this can't recover -- but it can fail exactly as
+    # loudly and debuggably as the ElevenLabs path above, instead of a
+    # silent, unexplained crash.
+    try:
+        audio = await asyncio.to_thread(synthesize_wav_bytes, request.text)
+        return Response(content=audio, media_type="audio/wav")
+    except Exception as error:
+        print(f"[speak] Piper also failed (no voice available at all): {error}")
+        raise HTTPException(status_code=503, detail="Frank's voice is unavailable right now.") from error
 
 
 @app.websocket("/ws")
