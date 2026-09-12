@@ -208,7 +208,21 @@ public struct ApprovalRequest: Identifiable {
 public final class BackendClient: ObservableObject {
     @Published public private(set) var messages: [ChatMessage] = []
     @Published public private(set) var isConnected: Bool = false
-    @Published public private(set) var isStreaming: Bool = false
+    /// Mirrored to UserDefaults on every change (didSet below) -- not for
+    /// this launch's own use, but for the *next* one. A clean background
+    /// (isStreaming already false) or a completed/failed turn always
+    /// leaves this reading false; only a turn genuinely in flight when the
+    /// process itself stops -- iOS reclaiming a backgrounded app's memory,
+    /// a crash, or Josh force-quitting mid-reply -- leaves it stuck at
+    /// true, since nothing runs to flip it back. connect() reads this
+    /// exactly once, on the first connect() of a fresh process, to tell
+    /// "the app just stopped mid-reply" apart from "Josh is opening the
+    /// app normally" -- see its own comment for why that distinction
+    /// decides whether to resume the interrupted conversation or start a
+    /// new one.
+    @Published public private(set) var isStreaming: Bool = false {
+        didSet { UserDefaults.standard.set(isStreaming, forKey: Self.wasStreamingAtLastStopKey) }
+    }
     /// Non-nil while ANY of the three approval flows (file edit, calendar
     /// change, automation-rule creation) is blocked waiting on Josh's
     /// decision -- one shared slot since 2026-09-06 (see ApprovalRequest's
@@ -323,6 +337,10 @@ public final class BackendClient: ObservableObject {
     /// there" anymore either way — the conversation history browser
     /// (search + date grouping) already makes any of them reachable.
     private static var hasStartedFreshThisLaunch = false
+    /// UserDefaults (not a static var -- needs to survive the process
+    /// itself dying, not just persist across nav clicks like
+    /// hasStartedFreshThisLaunch above) key for isStreaming's didSet.
+    private static let wasStreamingAtLastStopKey = "pcorp.wasStreamingAtLastStop"
 
     /// Host/scheme/port come from BackendHost's current environment
     /// (2026-08-12, extended to a real environment system 2026-09-09) --
@@ -442,7 +460,27 @@ public final class BackendClient: ObservableObject {
             Task { await loadHistory() }
         } else {
             Self.hasStartedFreshThisLaunch = true
-            Task { await startFreshConversationForLaunch() }
+            // Real gap found live (2026-09-12): a cold launch always used
+            // to start a brand-new conversation unconditionally -- correct
+            // for "Josh is just opening the app," wrong for "iOS killed
+            // the app (or it crashed, or Josh force-quit it) while a
+            // reply was actively streaming." That reply still finishes
+            // and saves correctly server-side either way (last night's
+            // _safe_send fix), but landing in a fresh empty conversation
+            // instead of the one it was saved to meant Josh would never
+            // see it without manually digging through Chat History.
+            // isStreaming's didSet mirrors it to UserDefaults on every
+            // change, so a value of `true` surviving to this fresh
+            // process's first launch can only mean the previous process
+            // stopped mid-turn, never a clean exit -- resume that
+            // conversation instead of burying it under a new one.
+            let wasStreamingAtLastStop = UserDefaults.standard.bool(forKey: Self.wasStreamingAtLastStopKey)
+            if wasStreamingAtLastStop {
+                UserDefaults.standard.set(false, forKey: Self.wasStreamingAtLastStopKey)
+                Task { await loadHistory() }
+            } else {
+                Task { await startFreshConversationForLaunch() }
+            }
         }
     }
 
