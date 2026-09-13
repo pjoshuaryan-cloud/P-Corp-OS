@@ -86,14 +86,14 @@ struct ConversationHistorySheet: View {
     /// timestamps), groups ordered newest-first.
     private var groupedByDay: [(String, [ConversationSummary])] {
         let grouped = Dictionary(grouping: conversations) { conversation -> String in
-            guard let date = Self.sqliteDateFormatter.date(from: conversation.lastMessageAt) else { return "Earlier" }
+            guard let date = Self.parseTimestamp(conversation.lastMessageAt) else { return "Earlier" }
             if Calendar.current.isDateInToday(date) { return "Today" }
             if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
             return Self.dayLabelFormatter.string(from: date)
         }
         return grouped.sorted { lhs, rhs in
-            let lhsDate = lhs.value.first.flatMap { Self.sqliteDateFormatter.date(from: $0.lastMessageAt) } ?? .distantPast
-            let rhsDate = rhs.value.first.flatMap { Self.sqliteDateFormatter.date(from: $0.lastMessageAt) } ?? .distantPast
+            let lhsDate = lhs.value.first.flatMap { Self.parseTimestamp($0.lastMessageAt) } ?? .distantPast
+            let rhsDate = rhs.value.first.flatMap { Self.parseTimestamp($0.lastMessageAt) } ?? .distantPast
             return lhsDate > rhsDate
         }
     }
@@ -105,6 +105,25 @@ struct ConversationHistorySheet: View {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter
     }()
+
+    /// Real bug found live (2026-09-13): Postgres's own timestamps carry
+    /// full microsecond precision ("...:45.848782"), which this formatter
+    /// (named for SQLite's plain "datetime('now')" output, no fractional
+    /// seconds) can't parse -- DateFormatter.date(from:) just returns nil
+    /// on the unexpected trailing characters, silently non-lenient. Every
+    /// conversation touched since the Postgres migration fell into the
+    /// guard's "Earlier" fallback above *and* sorted as .distantPast,
+    /// which is exactly what made Josh's own conversation from minutes
+    /// earlier look "gone" -- not missing data (confirmed live: GET
+    /// /conversations already returned it correctly, first in the list),
+    /// just filed under the wrong day header. Truncating at the first
+    /// "." before parsing handles any fractional precision without
+    /// needing to guess Postgres's exact digit count, which isn't fixed
+    /// -- trailing zeros can be stripped from the text representation.
+    private static func parseTimestamp(_ raw: String) -> Date? {
+        let truncated = raw.split(separator: ".", maxSplits: 1).first.map(String.init) ?? raw
+        return sqliteDateFormatter.date(from: truncated)
+    }
 
     private static let dayLabelFormatter: DateFormatter = {
         let formatter = DateFormatter()
