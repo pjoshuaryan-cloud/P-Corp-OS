@@ -170,11 +170,29 @@ async def update_person(person_id: int, postgres_conn: Any = None, **fields) -> 
     language identifier to resolve, so a name lookup would only add an
     unnecessary collision risk (editing "Rob" could silently land on the
     wrong "Rob" if two exist). Only non-None fields are written, same
-    "partial update" reasoning as add_person's own UPDATE branch."""
+    "partial update" reasoning as add_person's own UPDATE branch.
+
+    Raises ValueError if `name` is among the fields and would collide
+    with a different, existing person -- name is UNIQUE, and add_person's
+    own upsert already depends on that constraint. Checked explicitly
+    before writing (same "look first" shape as add_person's own upsert
+    check above) rather than letting the database's own constraint
+    violation surface as a raw, uncaught exception -- which would also
+    leave the shared Postgres connection in an aborted-transaction state
+    until rolled back, the exact class of leak already found and fixed
+    once this session in auth_db.py's verify_device_session."""
     non_null_fields = {k: v for k, v in fields.items() if v is not None}
     if not non_null_fields:
         return True
+    new_name = non_null_fields.get("name")
     if postgres_conn is not None:
+        if new_name is not None:
+            async with postgres_conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT id FROM people.people WHERE name ILIKE %s AND id != %s", (new_name, person_id)
+                )
+                if await cur.fetchone() is not None:
+                    raise ValueError(f"Another person named {new_name!r} already exists")
         async with postgres_conn.cursor() as cur:
             set_clause = ", ".join(f"{col} = %s" for col in non_null_fields)
             await cur.execute(
@@ -185,6 +203,12 @@ async def update_person(person_id: int, postgres_conn: Any = None, **fields) -> 
         await postgres_conn.commit()
         return updated
     async with aiosqlite.connect(DB_PATH) as db:
+        if new_name is not None:
+            cursor = await db.execute(
+                "SELECT id FROM people WHERE name = ? COLLATE NOCASE AND id != ?", (new_name, person_id)
+            )
+            if await cursor.fetchone() is not None:
+                raise ValueError(f"Another person named {new_name!r} already exists")
         set_clause = ", ".join(f"{col} = ?" for col in non_null_fields)
         cursor = await db.execute(
             f"UPDATE people SET {set_clause} WHERE id = ?",

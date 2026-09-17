@@ -1103,6 +1103,7 @@ async def person_create(body: PersonCreate, request: Request, _: None = Depends(
 
 
 class PersonUpdate(BaseModel):
+    name: str | None = None
     email: str | None = None
     phone: str | None = None
     relationship_type: str | None = None
@@ -1120,7 +1121,12 @@ async def person_update(
     # reasoning as Joshx's own id-based status/payment-status routes above.
     postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
     fields = body.model_dump(exclude_none=True)
-    updated = await update_person(person_id, postgres_conn, **fields)
+    try:
+        updated = await update_person(person_id, postgres_conn, **fields)
+    except ValueError as error:
+        # name is UNIQUE -- update_person already checks before writing,
+        # so this means the new name collides with a different person.
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if not updated:
         raise HTTPException(status_code=404, detail=f"No person with id {person_id}")
     await record_tool_call("update_person_ui", {"person_id": person_id, **fields}, "ok", postgres_conn)

@@ -352,9 +352,18 @@ private struct PersonRow: View {
     var body: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(person.name)
-                    .font(PCorpFont.body(13.5, weight: .semibold))
-                    .foregroundStyle(theme.textPrimary)
+                // Real gap found live (2026-09-17, same day as the two
+                // fixes right below): Josh asked to edit name itself too,
+                // not just the fields under it -- update_person already
+                // accepted it via its generic **fields, just needed a
+                // pre-write uniqueness check (people_db.py) so renaming
+                // to a name someone else already has surfaces as a real
+                // error instead of a raw database constraint violation.
+                InlineEditableText(value: person.name) { newValue in
+                    guard !newValue.isEmpty else { return }
+                    await peopleClient.updatePerson(id: person.id, name: newValue)
+                }
+                .font(PCorpFont.body(13.5, weight: .semibold))
                 // Real gap found live (2026-09-17, same day as the
                 // original Editability Pass 1): relationship_type/company/
                 // notes used to be folded into one read-only "subtitle"
