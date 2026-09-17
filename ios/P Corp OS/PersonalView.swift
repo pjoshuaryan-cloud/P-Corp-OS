@@ -351,20 +351,41 @@ private struct PersonRow: View {
                 Text(person.name)
                     .font(PCorpFont.body(13.5, weight: .semibold))
                     .foregroundStyle(theme.textPrimary)
-                Text(subtitle)
-                    .font(PCorpFont.body(11.5))
-                    .foregroundStyle(theme.textSecondary)
-                // Real gap found in an audit (2026-09-17, Editability Pass
-                // 1): these two used to be one concatenated, read-only
-                // "email · phone" Text -- a joined string can't be
-                // inline-edited as two separate fields, so this splits
-                // into two InlineEditableText rows instead.
+                // Real gap found live (2026-09-17, same day as the
+                // original Editability Pass 1): relationship_type/company/
+                // notes used to be folded into one read-only "subtitle"
+                // string -- fine for display, but meant an existing
+                // record with real gaps (Josh's own "Robin," relationship_
+                // type already "spouse," company/notes genuinely empty)
+                // had no way to fill those in, only email/phone were
+                // wired up at first. Split into individually editable
+                // rows, same InlineEditableText primitive as email/phone
+                // below. linkedClientName stays read-only -- it's a
+                // cross-reference into Joshx/Alpha Mode Media clients,
+                // not free text, out of scope here.
+                InlineEditableText(value: person.relationshipType ?? "", placeholder: "Add relationship") { newValue in
+                    await peopleClient.updatePerson(id: person.id, relationshipType: newValue)
+                }
+                .font(PCorpFont.body(11.5))
+                InlineEditableText(value: person.company ?? "", placeholder: "Add company") { newValue in
+                    await peopleClient.updatePerson(id: person.id, company: newValue)
+                }
+                .font(PCorpFont.body(11.5))
+                if let linked = person.linkedClientName {
+                    Text("linked to \(linked)")
+                        .font(PCorpFont.body(11.5))
+                        .foregroundStyle(theme.textSecondary)
+                }
                 InlineEditableText(value: person.email ?? "", placeholder: "Add email") { newValue in
                     await peopleClient.updatePerson(id: person.id, email: newValue)
                 }
                 .font(PCorpFont.body(10.5))
                 InlineEditableText(value: person.phone ?? "", placeholder: "Add phone") { newValue in
                     await peopleClient.updatePerson(id: person.id, phone: newValue)
+                }
+                .font(PCorpFont.body(10.5))
+                InlineEditableText(value: person.notes ?? "", placeholder: "Add notes") { newValue in
+                    await peopleClient.updatePerson(id: person.id, notes: newValue)
                 }
                 .font(PCorpFont.body(10.5))
             }
@@ -383,13 +404,4 @@ private struct PersonRow: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
     }
-
-    private var subtitle: String {
-        var parts: [String] = []
-        if let type = person.relationshipType { parts.append(type) }
-        if let company = person.company { parts.append(company) }
-        if let linked = person.linkedClientName { parts.append("linked to \(linked)") }
-        return parts.isEmpty ? "No details on file" : parts.joined(separator: " — ")
-    }
-
 }

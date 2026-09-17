@@ -48,18 +48,36 @@ public final class PeopleClient: ObservableObject {
     private struct PersonUpdatePayload: Encodable {
         let email: String?
         let phone: String?
+        let relationshipType: String?
+        let company: String?
+        let notes: String?
+
+        enum CodingKeys: String, CodingKey {
+            case email, phone
+            case relationshipType = "relationship_type"
+            case company, notes
+        }
     }
 
-    /// Backs People's inline-edit contact fields (2026-09-17, Editability
-    /// Pass 1) -- id-based PATCH, not add_person's name-matched upsert,
-    /// since the UI already has the exact row from a prior fetch. Refetches
-    /// on success rather than reconstructing `dashboard` locally, same
-    /// fire-and-refetch shape as every other write client in this app.
-    public func updatePerson(id: Int, email: String? = nil, phone: String? = nil) async {
+    /// Backs People's inline-edit fields (2026-09-17, Editability Pass 1;
+    /// extended same day -- real gap found live: Josh's existing "Robin"
+    /// record (relationship_type "spouse") had company/notes sitting
+    /// empty with no way to fill them in, only email/phone were wired up
+    /// at first). id-based PATCH, not add_person's name-matched upsert,
+    /// since the UI already has the exact row from a prior fetch.
+    /// Refetches on success rather than reconstructing `dashboard`
+    /// locally, same fire-and-refetch shape as every other write client
+    /// in this app.
+    public func updatePerson(
+        id: Int, email: String? = nil, phone: String? = nil,
+        relationshipType: String? = nil, company: String? = nil, notes: String? = nil
+    ) async {
         var request = URLRequest(url: BackendHost.url(path: "/people/\(id)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONEncoder().encode(PersonUpdatePayload(email: email, phone: phone))
+        request.httpBody = try? JSONEncoder().encode(
+            PersonUpdatePayload(email: email, phone: phone, relationshipType: relationshipType, company: company, notes: notes)
+        )
         let writeError = await performWrite(request)
         await fetch()
         if let writeError { errorMessage = writeError }

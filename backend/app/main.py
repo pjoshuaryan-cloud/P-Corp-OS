@@ -1105,6 +1105,9 @@ async def person_create(body: PersonCreate, request: Request, _: None = Depends(
 class PersonUpdate(BaseModel):
     email: str | None = None
     phone: str | None = None
+    relationship_type: str | None = None
+    company: str | None = None
+    notes: str | None = None
 
 
 @app.patch("/people/{person_id}")
