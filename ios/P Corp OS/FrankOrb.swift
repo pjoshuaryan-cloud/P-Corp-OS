@@ -29,6 +29,7 @@ struct FrankOrb: View {
         case idle
         case listening(audioLevel: Double)
         case speaking(audioLevel: Double)
+        case flagging
         case error
     }
 
@@ -40,7 +41,7 @@ struct FrankOrb: View {
 
     private var audioLevel: Double? {
         switch state {
-        case .idle, .error: nil
+        case .idle, .flagging, .error: nil
         case .listening(let level), .speaking(let level): level
         }
     }
@@ -50,14 +51,26 @@ struct FrankOrb: View {
     /// is -- exact match for desktop's own radiusScale.
     private var radiusScale: Double {
         switch state {
-        case .idle, .error: 1.0
+        case .idle, .flagging, .error: 1.0
         case .listening: 0.78
         case .speaking(let level): 1.0 + level * 0.22
         }
     }
 
+    /// Real gap found live (2026-09-17): particleColor used to fall back
+    /// to theme.textPrimary, which flips between light/dark -- silently
+    /// contradicting this same file's own theme (AppTheme's doc comment
+    /// already said the orb is "deliberately NOT themed... a fixed
+    /// brand/identity element"). FrankIdentity.presence (Theme.swift) is
+    /// that fixed value, finally implemented. .flagging reuses the
+    /// existing statusHot token (already documented as "urgency," not
+    /// "broken") rather than inventing a new color for one state.
     private var particleColor: Color {
-        state == .error ? .orange : theme.textPrimary
+        switch state {
+        case .error: .orange
+        case .flagging: theme.statusHot
+        case .idle, .listening, .speaking: FrankIdentity.presence
+        }
     }
 
     private struct Particle {
@@ -86,6 +99,22 @@ struct FrankOrb: View {
                 .blur(radius: 8)
                 .offset(y: 74)
 
+            // Core glow (2026-09-17) -- a soft, blurred sense of an energy
+            // source at the center, using the same fixed presence color as
+            // the particles. Still fully abstract (no face, no icon) --
+            // a considered addition to the existing motion/texture
+            // language, not a departure from it.
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [particleColor.opacity(0.35), particleColor.opacity(0)],
+                        center: .center, startRadius: 0, endRadius: 70
+                    )
+                )
+                .frame(width: 140, height: 140)
+                .blur(radius: 6)
+                .animation(.easeOut(duration: 0.5), value: state)
+
             TimelineView(.animation(paused: reduceMotion)) { timeline in
                 Canvas { context, size in
                     let center = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -93,11 +122,19 @@ struct FrankOrb: View {
                     let t = timeline.date.timeIntervalSinceReferenceDate
                     let scale = radiusScale
                     let color = particleColor
+                    // Barely-perceptible idle rotation (2026-09-17) -- a
+                    // second, independent motion signature on top of the
+                    // existing per-particle shimmer, so the orb reads as
+                    // quietly alive even at rest, not just breathing in
+                    // place. Off during active states so it never
+                    // competes with real mic/playback-driven motion.
+                    let rotationOffset: Double = (state == .idle && !reduceMotion) ? t * 0.025 : 0
 
                     for particle in Self.particles {
+                        let angle = particle.angle + rotationOffset
                         let r = maxRadius * particle.radiusFactor * scale
-                        let x = center.x + r * cos(particle.angle)
-                        let y = center.y + r * sin(particle.angle)
+                        let x = center.x + r * cos(angle)
+                        let y = center.y + r * sin(angle)
 
                         // Exact match for desktop's own current shimmer
                         // logic (WarRoomView.swift there) -- idle: slow,
@@ -106,7 +143,9 @@ struct FrankOrb: View {
                         // restrained rather than alarming. Listening:
                         // real mic level dominates, a small synthetic
                         // component still blended in so it keeps reading
-                        // as organic per-particle motion.
+                        // as organic per-particle motion. Flagging: a
+                        // slower, gentle pulse -- noticeable without
+                        // reading as an error or an interruption.
                         let syntheticShimmer = (sin(t * 0.5 + particle.phaseOffset) + 1) / 2
                         let shimmer: Double
                         switch state {
@@ -114,6 +153,9 @@ struct FrankOrb: View {
                             shimmer = 0.4
                         case .idle:
                             shimmer = reduceMotion ? 0.5 : 0.35 + syntheticShimmer * 0.3
+                        case .flagging:
+                            let pulse = (sin(t * 0.9 + particle.phaseOffset) + 1) / 2
+                            shimmer = reduceMotion ? 0.55 : 0.4 + pulse * 0.35
                         case .listening, .speaking:
                             let level = audioLevel ?? 0
                             shimmer = reduceMotion ? level : min(1.0, syntheticShimmer * 0.2 + level * 0.9)

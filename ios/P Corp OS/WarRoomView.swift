@@ -121,6 +121,11 @@ struct WarRoomView: View {
     @State private var isSituationRoomRefreshing = false
     @FocusState private var isInputFocused: Bool
     @Environment(\.appTheme) private var theme
+    // Static, not instance state (2026-09-17, Living Presence pass) --
+    // mirrors desktop WarRoomView's own hasGreetedThisLaunch: this view
+    // can be torn down/recreated by nav, but the spoken greeting must
+    // only ever happen once per real process launch.
+    private static var hasGreetedThisLaunch = false
 
     private var greeting: String {
         switch Calendar.current.component(.hour, from: .now) {
@@ -128,6 +133,18 @@ struct WarRoomView: View {
         case 12..<17: "Good afternoon"
         default: "Good evening"
         }
+    }
+
+    /// Proactive spoken greeting (2026-09-17, Living Presence pass) --
+    /// fires from the new idle/empty-thread screen below, reusing the
+    /// same `greeting` text already shown there so spoken and on-screen
+    /// text agree. Gated by hasGreetedThisLaunch so it speaks exactly
+    /// once per process. VoiceOutput.speak already handles empty-guard/
+    /// cancellation/error surfacing -- nothing new needed there.
+    private func triggerGreetingIfNeeded() {
+        guard !Self.hasGreetedThisLaunch else { return }
+        Self.hasGreetedThisLaunch = true
+        voiceOutput.speak("\(greeting), Josh. What are we working on today?")
     }
 
     /// Proactive greeting summary (2026-08-25 iOS parity pass, porting
@@ -219,6 +236,69 @@ struct WarRoomView: View {
                     .padding(.horizontal, 32)
                     .padding(.top, 8)
                 Spacer(minLength: 0)
+            } else if backend.messages.isEmpty {
+                // New idle-orb screen (2026-09-17, Living Presence pass) --
+                // mirrors desktop WarRoomView's own idle branch, which iOS
+                // never had (dashboardHeader used to show the greeting
+                // inline with the always-visible dashboard cards instead).
+                // Shown only for a genuinely empty conversation; the
+                // instant a real message exists this falls through to the
+                // unchanged `else` below -- dashboardHeader's cards are
+                // untouched.
+                Spacer(minLength: 0)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("\(greeting), Joshx.")
+                        .font(PCorpFont.display(30, weight: .bold))
+                        .foregroundStyle(theme.textPrimary)
+
+                    if attentionItems.isEmpty {
+                        Text("Nothing requires immediate attention. Your day is clear.")
+                            .font(PCorpFont.body(15))
+                            .foregroundStyle(theme.textSecondary)
+                    } else {
+                        Text("\(attentionItems.count) THING\(attentionItems.count == 1 ? "" : "S") REQUIRE\(attentionItems.count == 1 ? "S" : "") YOUR ATTENTION.")
+                            .font(PCorpFont.label(10))
+                            .tracking(1.1)
+                            .foregroundStyle(theme.textSecondary)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(attentionItems.prefix(3).enumerated()), id: \.offset) { index, item in
+                                AttentionRow(number: index + 1, item: item)
+                            }
+                        }
+                        .padding(.top, 4)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .onAppear { triggerGreetingIfNeeded() }
+
+                Spacer(minLength: 16)
+
+                // .flagging (2026-09-17) reuses the same attentionItems
+                // data driving the text above -- no separate signal
+                // invented, just a matching visual state.
+                FrankOrb(state: attentionItems.isEmpty ? .idle : .flagging)
+                    .frame(width: 160, height: 160)
+                    .frame(maxWidth: .infinity)
+
+                // Ambient Focus caption (2026-09-17) -- reuses the same
+                // focusClient already backing missionStatusCard below, a
+                // glance-able echo right where you're already looking at
+                // Frank rather than a separate card.
+                Text("Focus: \(focusClient.objective ?? "Nothing set yet")")
+                    .font(PCorpFont.body(11))
+                    .foregroundStyle(theme.textTertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, -4)
+
+                Spacer(minLength: 16)
+
+                WarRoomCommandMap(agentsClient: agentsClient, insightsClient: insightsClient)
+                    .padding(.horizontal, 24)
+
+                Spacer(minLength: 16)
             } else {
                 // Real bug found live (2026-08-27): dashboardHeader used to
                 // sit outside this scroll region as a fixed-height sibling.

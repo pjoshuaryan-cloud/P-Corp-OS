@@ -36,8 +36,22 @@ struct WarRoomView: View {
     // state. Backs the proactive greeting below (2026-08-20, Face-Lift
     // item 08), not a duplicate of the right rail's card.
     @StateObject private var greetingInsightsClient = InsightsClient()
+    // Own instance (2026-09-17, Living Presence pass), same "each view
+    // fetches its own copy" reasoning as greetingInsightsClient above --
+    // RightRail's MissionStatusCard owns a separate FocusClient of its
+    // own, this isn't a shared/reused instance. Backs the ambient
+    // "Focus: ..." caption near the idle orb below.
+    @StateObject private var greetingFocusClient = FocusClient()
     @StateObject private var voiceInput = VoiceInput()
     @StateObject private var voiceOutput = VoiceOutput()
+    // Static, not instance state (2026-09-17) -- mirrors BackendClient's
+    // own hasStartedFreshThisLaunch pattern: this view can be torn down
+    // and recreated by nav (.id(selectedItem.id) elsewhere in the app),
+    // but the spoken greeting must only ever happen once per real process
+    // launch, not once per view recreation. Deliberately independent of
+    // BackendClient's own cold-launch flag/timing to avoid any race
+    // between the two -- this just gates "have we spoken yet."
+    private static var hasGreetedThisLaunch = false
     /// Set true right when a push-to-talk transcript is sent, consumed
     /// once that turn's reply finishes streaming -- the mechanism for
     /// "only speak replies to voice input" (confirmed decision,
@@ -59,6 +73,20 @@ struct WarRoomView: View {
         case 12..<17: "Good afternoon"
         default: "Good evening"
         }
+    }
+
+    /// Proactive spoken greeting (2026-09-17, Living Presence pass) --
+    /// fires from the exact same idle/empty-thread moment the on-screen
+    /// greeting already shows, reusing its own text logic so the spoken
+    /// and displayed greeting always agree. Gated by the static
+    /// hasGreetedThisLaunch flag (see its own comment above) so it speaks
+    /// exactly once per process, no matter how many times this view or
+    /// its idle branch gets recreated. VoiceOutput.speak already handles
+    /// empty-guard/cancellation/error surfacing -- nothing new needed there.
+    private func triggerGreetingIfNeeded(at date: Date) {
+        guard !Self.hasGreetedThisLaunch else { return }
+        Self.hasGreetedThisLaunch = true
+        voiceOutput.speak("\(timeOfDayGreeting(at: date)), Josh. What are we working on today?")
     }
 
     /// The greeting's "N things require your attention" list (2026-08-20,
@@ -206,6 +234,7 @@ struct WarRoomView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 48)
+                .onAppear { triggerGreetingIfNeeded(at: currentDate) }
 
                 Spacer(minLength: 20)
 
@@ -213,9 +242,24 @@ struct WarRoomView: View {
                 // conversation is active the thread takes this space
                 // instead. The other case where the blob shows is actively
                 // listening (above), reactive to real audio.
-                FrankOrb(state: .idle)
+                // .flagging (2026-09-17, Living Presence pass) reuses the
+                // exact same attentionItems data already driving the text
+                // above -- no separate signal invented, just a matching
+                // visual state for "something real needs a look."
+                FrankOrb(state: attentionItems.isEmpty ? .idle : .flagging)
                     .frame(width: 185, height: 185)
                     .frame(maxWidth: .infinity)
+
+                // Ambient Focus caption (2026-09-17, Living Presence pass)
+                // -- a glance-able echo of RightRail's MissionStatusCard,
+                // right where you're already looking at Frank, not asking
+                // you to check a separate panel. Purely additive; the
+                // right rail card itself is untouched.
+                Text("Focus: \(greetingFocusClient.objective ?? "Nothing set yet")")
+                    .font(PCorpFont.body(12))
+                    .foregroundStyle(theme.textTertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, -8)
 
                 Spacer(minLength: 20)
 
@@ -297,6 +341,11 @@ struct WarRoomView: View {
                 await greetingInsightsClient.fetch()
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
+        }
+        // One-shot, same as RightRail's MissionStatusCard -- Focus doesn't
+        // change often enough to warrant its own poll loop.
+        .task {
+            await greetingFocusClient.fetch()
         }
         .onChange(of: backend.isStreaming) { _, isStreaming in
             // isStreaming going true -> false is the real signal a turn
@@ -1298,6 +1347,7 @@ private struct FrankOrb: View {
         case idle
         case listening(audioLevel: Double)
         case speaking(audioLevel: Double)
+        case flagging
         case error
     }
 
@@ -1309,7 +1359,7 @@ private struct FrankOrb: View {
 
     private var audioLevel: Double? {
         switch state {
-        case .idle, .error: nil
+        case .idle, .flagging, .error: nil
         case .listening(let level), .speaking(let level): level
         }
     }
@@ -1322,14 +1372,26 @@ private struct FrankOrb: View {
     /// them out scaled by how loud the real audio actually is.
     private var radiusScale: Double {
         switch state {
-        case .idle, .error: 1.0
+        case .idle, .flagging, .error: 1.0
         case .listening: 0.78
         case .speaking(let level): 1.0 + level * 0.22
         }
     }
 
+    /// Real gap found live (2026-09-17): particleColor used to fall back
+    /// to theme.textPrimary, which flips between light/dark -- silently
+    /// contradicting AppTheme's own doc comment ("Frank's orb...
+    /// deliberately NOT themed... a fixed brand/identity element").
+    /// FrankIdentity.presence (PCorpKit/Theme.swift) is that fixed value,
+    /// finally implemented. .flagging reuses the existing statusHot token
+    /// (already documented as "urgency," not "broken") rather than
+    /// inventing a new color for one state.
     private var particleColor: Color {
-        state == .error ? .orange : theme.textPrimary
+        switch state {
+        case .error: .orange
+        case .flagging: theme.statusHot
+        case .idle, .listening, .speaking: FrankIdentity.presence
+        }
     }
 
     private struct Particle {
@@ -1392,6 +1454,24 @@ private struct FrankOrb: View {
                 .blur(radius: 8)
                 .offset(y: 74)
 
+            // Core glow (2026-09-17) -- a soft, blurred sense of an energy
+            // source at the center, using the same fixed presence color as
+            // the particles. A single static shape animated only on state
+            // change (not per-frame), so it doesn't reopen the CPU cost
+            // already fought and fixed below -- still fully abstract, no
+            // face or icon, a considered addition to the existing motion/
+            // texture language rather than a departure from it.
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [particleColor.opacity(0.35), particleColor.opacity(0)],
+                        center: .center, startRadius: 0, endRadius: 70
+                    )
+                )
+                .frame(width: 140, height: 140)
+                .blur(radius: 6)
+                .animation(.easeOut(duration: 0.5), value: state)
+
             // Paused under Reduce Motion (2026-08-20) rather than removing
             // the component entirely -- real state changes (a state
             // transition, a real audio level jump) still redraw normally
@@ -1423,11 +1503,22 @@ private struct FrankOrb: View {
                     let t = timeline.date.timeIntervalSinceReferenceDate
                     let scale = radiusScale
                     let color = particleColor
+                    // Barely-perceptible idle rotation (2026-09-17) -- a
+                    // second, independent motion signature on top of the
+                    // existing per-particle shimmer, so the orb reads as
+                    // quietly alive even at rest, not just breathing in
+                    // place. Off during active states so it never competes
+                    // with real mic/playback-driven motion. Cheap enough
+                    // not to reopen the CPU fight above -- one extra
+                    // addition per particle already inside the loop, no
+                    // new per-frame allocation.
+                    let rotationOffset: Double = (state == .idle && !reduceMotion) ? t * 0.025 : 0
 
                     for particle in Self.particles {
+                        let angle = particle.angle + rotationOffset
                         let r = maxRadius * particle.radiusFactor * scale
-                        let x = center.x + r * cos(particle.angle)
-                        let y = center.y + r * sin(particle.angle)
+                        let x = center.x + r * cos(angle)
+                        let y = center.y + r * sin(angle)
 
                         // Per-particle shimmer, out of phase with its
                         // neighbors, so the cluster reads as alive rather
@@ -1448,6 +1539,11 @@ private struct FrankOrb: View {
                             shimmer = 0.4
                         case .idle:
                             shimmer = reduceMotion ? 0.5 : 0.35 + syntheticShimmer * 0.3
+                        case .flagging:
+                            // A slower, gentle pulse -- noticeable without
+                            // reading as an error or an interruption.
+                            let pulse = (sin(t * 0.9 + particle.phaseOffset) + 1) / 2
+                            shimmer = reduceMotion ? 0.55 : 0.4 + pulse * 0.35
                         case .listening, .speaking:
                             let level = audioLevel ?? 0
                             shimmer = reduceMotion ? level : min(1.0, syntheticShimmer * 0.2 + level * 0.9)

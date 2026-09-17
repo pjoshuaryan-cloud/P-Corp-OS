@@ -118,3 +118,21 @@ public enum AppStorageKeys {
     public static let darkModeEnabled = "darkModeEnabled"
     public static let showSystemStatus = "showSystemStatus"
 }
+
+/// Frank's own fixed presence color (2026-09-17) -- deliberately outside
+/// the light/dark `AppTheme` split above, finally implementing what
+/// `AppTheme`'s own doc comment already said the intent was ("Frank's
+/// orb... deliberately NOT themed here... fixed brand/identity element,
+/// not chrome that needs to flip for contrast"). `FrankOrb.swift` never
+/// actually did this -- `particleColor` fell back to `theme.textPrimary`,
+/// which *does* flip between light/dark, silently contradicting that
+/// comment since it was written. A single fixed value, in the same
+/// indigo-blue family as `AppTheme.accent` (brand consistency) but tuned
+/// to hold up against both a near-white and a near-black background at
+/// once, since it's never theme-swapped -- a first-pass judgment call,
+/// same as `statusGood`/`statusRisk`/`statusHot` above each already
+/// document themselves as being, meant to be checked live and retuned
+/// rather than treated as final on the first try.
+public enum FrankIdentity {
+    public static let presence = Color(red: 0.376, green: 0.427, blue: 0.945) // #6069F1
+}
