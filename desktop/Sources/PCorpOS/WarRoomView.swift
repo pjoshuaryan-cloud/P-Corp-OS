@@ -36,12 +36,6 @@ struct WarRoomView: View {
     // state. Backs the proactive greeting below (2026-08-20, Face-Lift
     // item 08), not a duplicate of the right rail's card.
     @StateObject private var greetingInsightsClient = InsightsClient()
-    // Own instance (2026-09-17, Living Presence pass), same "each view
-    // fetches its own copy" reasoning as greetingInsightsClient above --
-    // RightRail's MissionStatusCard owns a separate FocusClient of its
-    // own, this isn't a shared/reused instance. Backs the ambient
-    // "Focus: ..." caption near the idle orb below.
-    @StateObject private var greetingFocusClient = FocusClient()
     @StateObject private var voiceInput = VoiceInput()
     @StateObject private var voiceOutput = VoiceOutput()
     // Static, not instance state (2026-09-17) -- mirrors BackendClient's
@@ -250,17 +244,6 @@ struct WarRoomView: View {
                     .frame(width: 185, height: 185)
                     .frame(maxWidth: .infinity)
 
-                // Ambient Focus caption (2026-09-17, Living Presence pass)
-                // -- a glance-able echo of RightRail's MissionStatusCard,
-                // right where you're already looking at Frank, not asking
-                // you to check a separate panel. Purely additive; the
-                // right rail card itself is untouched.
-                Text("Focus: \(greetingFocusClient.objective ?? "Nothing set yet")")
-                    .font(PCorpFont.body(12))
-                    .foregroundStyle(theme.textTertiary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, -8)
-
                 Spacer(minLength: 20)
 
                 // Stats row sits below Frank himself, not competing with
@@ -341,11 +324,6 @@ struct WarRoomView: View {
                 await greetingInsightsClient.fetch()
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
-        }
-        // One-shot, same as RightRail's MissionStatusCard -- Focus doesn't
-        // change often enough to warrant its own poll loop.
-        .task {
-            await greetingFocusClient.fetch()
         }
         .onChange(of: backend.isStreaming) { _, isStreaming in
             // isStreaming going true -> false is the real signal a turn

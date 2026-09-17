@@ -283,16 +283,6 @@ struct WarRoomView: View {
                     .frame(width: 160, height: 160)
                     .frame(maxWidth: .infinity)
 
-                // Ambient Focus caption (2026-09-17) -- reuses the same
-                // focusClient already backing missionStatusCard below, a
-                // glance-able echo right where you're already looking at
-                // Frank rather than a separate card.
-                Text("Focus: \(focusClient.objective ?? "Nothing set yet")")
-                    .font(PCorpFont.body(11))
-                    .foregroundStyle(theme.textTertiary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, -4)
-
                 Spacer(minLength: 16)
 
                 WarRoomCommandMap(agentsClient: agentsClient, insightsClient: insightsClient)
