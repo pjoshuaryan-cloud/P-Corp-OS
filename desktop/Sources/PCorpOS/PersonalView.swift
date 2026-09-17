@@ -23,10 +23,29 @@ import PCorpKit
 /// source independently fetchable/failable" pattern WarRoomView already
 /// uses for focusClient/insightsClient, so a failure in one section never
 /// blanks the other.
+///
+/// Update (2026-09-17, Editability Pass 1): the "display-only... through
+/// Frank" note above is now stale -- an audit found this the clearest
+/// case of a section whose backend writes (add_goal/add_habit/add_person)
+/// already existed as Frank chat tools with no direct UI path to the same
+/// calls. Gained real "+Add" inline forms for all three, plus inline
+/// editing of People's email/phone via PCorpKit's new InlineEditableText.
 struct PersonalView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = PersonalClient()
     @StateObject private var peopleClient = PeopleClient()
+
+    @State private var isAddingGoal = false
+    @State private var newGoalTitle = ""
+    @State private var newGoalTargetDate = ""
+    @State private var isAddingHabit = false
+    @State private var newHabitTitle = ""
+    @State private var newHabitCadence = ""
+    @State private var isAddingPerson = false
+    @State private var newPersonName = ""
+    @State private var newPersonEmail = ""
+    @State private var newPersonPhone = ""
+    @State private var newPersonCompany = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -43,18 +62,20 @@ struct PersonalView: View {
                             .font(PCorpFont.body(12))
                             .foregroundStyle(theme.textSecondary)
                     } else if let dashboard = client.dashboard {
-                        section(title: "GOALS") {
-                            if dashboard.goals.isEmpty {
-                                emptyRow("Nothing yet — tell Frank about a goal and it'll show up here.")
+                        section(title: "GOALS", accessory: { addButton { isAddingGoal.toggle() } }) {
+                            if isAddingGoal { goalAddForm }
+                            if dashboard.goals.isEmpty && !isAddingGoal {
+                                emptyRow("Nothing yet — tell Frank about a goal, or add one above.")
                             } else {
                                 ForEach(dashboard.goals) { goal in
                                     GoalRow(goal: goal)
                                 }
                             }
                         }
-                        section(title: "HABITS") {
-                            if dashboard.habits.isEmpty {
-                                emptyRow("Nothing yet — tell Frank about a habit to track and it'll show up here.")
+                        section(title: "HABITS", accessory: { addButton { isAddingHabit.toggle() } }) {
+                            if isAddingHabit { habitAddForm }
+                            if dashboard.habits.isEmpty && !isAddingHabit {
+                                emptyRow("Nothing yet — tell Frank about a habit, or add one above.")
                             } else {
                                 ForEach(dashboard.habits) { habit in
                                     HabitRow(habit: habit)
@@ -76,12 +97,13 @@ struct PersonalView: View {
                                 .foregroundStyle(theme.textSecondary)
                         }
                     } else if let peopleDashboard = peopleClient.dashboard {
-                        section(title: "PEOPLE") {
-                            if peopleDashboard.people.isEmpty {
-                                emptyRow("Nothing yet — tell Frank about someone to track and it'll show up here.")
+                        section(title: "PEOPLE", accessory: { addButton { isAddingPerson.toggle() } }) {
+                            if isAddingPerson { personAddForm }
+                            if peopleDashboard.people.isEmpty && !isAddingPerson {
+                                emptyRow("Nothing yet — tell Frank about someone, or add one above.")
                             } else {
                                 ForEach(peopleDashboard.people) { person in
-                                    PersonRow(person: person)
+                                    PersonRow(person: person, peopleClient: peopleClient)
                                 }
                             }
                         }
@@ -123,12 +145,20 @@ struct PersonalView: View {
     }
 
     @ViewBuilder
-    private func section<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func section<Content: View, Accessory: View>(
+        title: String,
+        @ViewBuilder accessory: () -> Accessory = { EmptyView() },
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(PCorpFont.label(10))
-                .trackedLabel(1.2)
-                .foregroundStyle(theme.textSecondary)
+            HStack {
+                Text(title)
+                    .font(PCorpFont.label(10))
+                    .trackedLabel(1.2)
+                    .foregroundStyle(theme.textSecondary)
+                Spacer()
+                accessory()
+            }
             VStack(alignment: .leading, spacing: 10) {
                 content()
             }
@@ -139,6 +169,109 @@ struct PersonalView: View {
         Text(text)
             .font(PCorpFont.body(12))
             .foregroundStyle(theme.textSecondary)
+    }
+
+    private func addButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "plus")
+        }
+        .buttonStyle(.icon)
+    }
+
+    private func addFormSurface<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            content()
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface(radius: 12)
+    }
+
+    private func addFormButtons(canSave: Bool, onCancel: @escaping () -> Void, onSave: @escaping () -> Void) -> some View {
+        HStack {
+            Button("Cancel", action: onCancel)
+                .font(PCorpFont.body(12))
+                .foregroundStyle(theme.textSecondary)
+            Spacer()
+            Button("Save", action: onSave)
+                .buttonStyle(.actionFilled)
+                .disabled(!canSave)
+        }
+    }
+
+    private var goalAddForm: some View {
+        addFormSurface {
+            TextField("Goal title", text: $newGoalTitle)
+                .textFieldStyle(.plain)
+                .font(PCorpFont.body(13.5))
+            TextField("Target date (optional, e.g. 2026-12-31)", text: $newGoalTargetDate)
+                .textFieldStyle(.plain)
+                .font(PCorpFont.body(12))
+            addFormButtons(
+                canSave: !newGoalTitle.trimmingCharacters(in: .whitespaces).isEmpty,
+                onCancel: { isAddingGoal = false; newGoalTitle = ""; newGoalTargetDate = "" },
+                onSave: {
+                    let title = newGoalTitle
+                    let targetDate = newGoalTargetDate.isEmpty ? nil : newGoalTargetDate
+                    newGoalTitle = ""; newGoalTargetDate = ""; isAddingGoal = false
+                    Task { await client.addGoal(title: title, targetDate: targetDate) }
+                }
+            )
+        }
+    }
+
+    private var habitAddForm: some View {
+        addFormSurface {
+            TextField("Habit title", text: $newHabitTitle)
+                .textFieldStyle(.plain)
+                .font(PCorpFont.body(13.5))
+            TextField("Cadence (optional, e.g. daily, weekly)", text: $newHabitCadence)
+                .textFieldStyle(.plain)
+                .font(PCorpFont.body(12))
+            addFormButtons(
+                canSave: !newHabitTitle.trimmingCharacters(in: .whitespaces).isEmpty,
+                onCancel: { isAddingHabit = false; newHabitTitle = ""; newHabitCadence = "" },
+                onSave: {
+                    let title = newHabitTitle
+                    let cadence = newHabitCadence.isEmpty ? nil : newHabitCadence
+                    newHabitTitle = ""; newHabitCadence = ""; isAddingHabit = false
+                    Task { await client.addHabit(title: title, cadence: cadence) }
+                }
+            )
+        }
+    }
+
+    private var personAddForm: some View {
+        addFormSurface {
+            TextField("Name", text: $newPersonName)
+                .textFieldStyle(.plain)
+                .font(PCorpFont.body(13.5))
+            TextField("Company (optional)", text: $newPersonCompany)
+                .textFieldStyle(.plain)
+                .font(PCorpFont.body(12))
+            TextField("Email (optional)", text: $newPersonEmail)
+                .textFieldStyle(.plain)
+                .font(PCorpFont.body(12))
+            TextField("Phone (optional)", text: $newPersonPhone)
+                .textFieldStyle(.plain)
+                .font(PCorpFont.body(12))
+            addFormButtons(
+                canSave: !newPersonName.trimmingCharacters(in: .whitespaces).isEmpty,
+                onCancel: {
+                    isAddingPerson = false
+                    newPersonName = ""; newPersonCompany = ""; newPersonEmail = ""; newPersonPhone = ""
+                },
+                onSave: {
+                    let name = newPersonName
+                    let company = newPersonCompany.isEmpty ? nil : newPersonCompany
+                    let email = newPersonEmail.isEmpty ? nil : newPersonEmail
+                    let phone = newPersonPhone.isEmpty ? nil : newPersonPhone
+                    newPersonName = ""; newPersonCompany = ""; newPersonEmail = ""; newPersonPhone = ""
+                    isAddingPerson = false
+                    Task { await peopleClient.addPerson(name: name, company: company, email: email, phone: phone) }
+                }
+            )
+        }
     }
 }
 
@@ -213,6 +346,7 @@ private struct HabitRow: View {
 
 private struct PersonRow: View {
     let person: Person
+    @ObservedObject var peopleClient: PeopleClient
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -224,12 +358,19 @@ private struct PersonRow: View {
                 Text(subtitle)
                     .font(PCorpFont.body(11.5))
                     .foregroundStyle(theme.textSecondary)
-                if let contactLine {
-                    Text(contactLine)
-                        .font(PCorpFont.body(10.5))
-                        .foregroundStyle(theme.textTertiary)
-                        .lineLimit(1)
+                // Real gap found in an audit (2026-09-17, Editability Pass
+                // 1): these two used to be one concatenated, read-only
+                // "email · phone" Text -- a joined string can't be
+                // inline-edited as two separate fields, so this splits
+                // into two InlineEditableText rows instead.
+                InlineEditableText(value: person.email ?? "", placeholder: "Add email") { newValue in
+                    await peopleClient.updatePerson(id: person.id, email: newValue)
                 }
+                .font(PCorpFont.body(10.5))
+                InlineEditableText(value: person.phone ?? "", placeholder: "Add phone") { newValue in
+                    await peopleClient.updatePerson(id: person.id, phone: newValue)
+                }
+                .font(PCorpFont.body(10.5))
             }
             Spacer()
             Text("Last contact: \(person.lastContactDate ?? "never")")
@@ -253,10 +394,4 @@ private struct PersonRow: View {
         return parts.isEmpty ? "No details on file" : parts.joined(separator: " — ")
     }
 
-    private var contactLine: String? {
-        var parts: [String] = []
-        if let email = person.email, !email.isEmpty { parts.append(email) }
-        if let phone = person.phone, !phone.isEmpty { parts.append(phone) }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
 }

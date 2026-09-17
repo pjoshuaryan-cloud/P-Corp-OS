@@ -33,7 +33,7 @@ struct FinanceView: View {
                             ConcentrationSection(concentration: concentration)
                         }
                         ForEach(dashboard.accounts) { account in
-                            AccountCard(account: account) { historyAccount = account }
+                            AccountCard(account: account, client: client) { historyAccount = account }
                         }
                     }
                 }
@@ -68,6 +68,7 @@ struct FinanceView: View {
 
 private struct AccountCard: View {
     let account: FinanceAccount
+    @ObservedObject var client: FinanceClient
     let onTapHistory: () -> Void
     @Environment(\.appTheme) private var theme
 
@@ -120,7 +121,7 @@ private struct AccountCard: View {
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(account.holdings) { holding in
-                        HoldingRow(holding: holding)
+                        HoldingRow(holding: holding, isAutomatic: account.isAutomatic, accountName: account.name, client: client)
                     }
                 }
             }
@@ -189,7 +190,11 @@ private struct HFMarketsLiveSummary: View {
 
 private struct HoldingRow: View {
     let holding: FinanceHolding
+    let isAutomatic: Bool
+    let accountName: String
+    @ObservedObject var client: FinanceClient
     @Environment(\.appTheme) private var theme
+    @State private var editErrorMessage: String?
 
     private var trendColor: Color {
         switch holding.trend {
@@ -208,22 +213,48 @@ private struct HoldingRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: trendSymbol)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(trendColor)
-                .frame(width: 14)
-            Text(holding.asset)
-                .font(PCorpFont.mono(11.5, weight: .medium))
-                .foregroundStyle(theme.textSecondary)
-                .frame(width: 42, alignment: .leading)
-            Text(formattedBalance)
-                .font(PCorpFont.body(13.5, weight: .semibold))
-                .foregroundStyle(theme.textPrimary)
-            Spacer()
-            Text("as of \(holding.recordedAt)")
-                .font(PCorpFont.body(10.5))
-                .foregroundStyle(theme.textTertiary)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 10) {
+                Image(systemName: trendSymbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(trendColor)
+                    .frame(width: 14)
+                Text(holding.asset)
+                    .font(PCorpFont.mono(11.5, weight: .medium))
+                    .foregroundStyle(theme.textSecondary)
+                    .frame(width: 42, alignment: .leading)
+                // Real gap found in an audit (2026-09-17, Editability
+                // Pass 1): the 4 manual accounts' balances rendered as
+                // plain, read-only Text -- fixing a wrong figure meant
+                // going through Frank in chat. Automatic accounts (Luno,
+                // Nasdaq/Markets) are untouched, still plain Text -- their
+                // numbers come from a live feed, editing them here would
+                // just be overwritten on the next fetch.
+                if isAutomatic {
+                    Text(formattedBalance)
+                        .font(PCorpFont.body(13.5, weight: .semibold))
+                        .foregroundStyle(theme.textPrimary)
+                } else {
+                    InlineEditableText(value: rawBalanceString, placeholder: "0.00") { newValue in
+                        guard let parsed = Double(newValue) else {
+                            editErrorMessage = "Enter a plain number, e.g. 1234.56"
+                            return
+                        }
+                        editErrorMessage = nil
+                        await client.updateBalance(accountName: accountName, balance: parsed)
+                    }
+                    .font(PCorpFont.body(13.5, weight: .semibold))
+                }
+                Spacer()
+                Text("as of \(holding.recordedAt)")
+                    .font(PCorpFont.body(10.5))
+                    .foregroundStyle(theme.textTertiary)
+            }
+            if let editErrorMessage {
+                Text(editErrorMessage)
+                    .font(PCorpFont.body(10.5))
+                    .foregroundStyle(.red)
+            }
         }
     }
 
@@ -231,6 +262,10 @@ private struct HoldingRow: View {
         holding.asset == "ZAR"
             ? "R\(String(format: "%.2f", holding.balance))"
             : String(format: "%.6f", holding.balance)
+    }
+
+    private var rawBalanceString: String {
+        String(format: "%.2f", holding.balance)
     }
 }
 

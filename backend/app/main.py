@@ -97,7 +97,7 @@ from app.creative_director_agent import (
 from app.design_agent import DESIGN_AGENT_TOOL_NAMES, DESIGN_AGENT_TOOLS, execute_design_agent_tool_call
 from app.debate import DEBATE_TOOL_NAMES, DEBATE_TOOLS, execute_debate_tool_call
 from app.knowledge import list_docs as list_knowledge_docs, read_doc as read_knowledge_doc
-from app.personal_db import dashboard_snapshot as personal_dashboard_snapshot, init_personal_db
+from app.personal_db import add_goal, add_habit, dashboard_snapshot as personal_dashboard_snapshot, init_personal_db
 from app.personal_tools import PERSONAL_TOOL_NAMES, PERSONAL_TOOLS, build_personal_block, execute_personal_tool_call
 from app.joshx_db import (
     PROJECT_PAYMENT_STATUS_VALUES,
@@ -112,13 +112,14 @@ from app.joshx_db import (
     set_project_status_by_id,
 )
 from app.joshx_tools import JOSHX_TOOL_NAMES, JOSHX_TOOLS, build_joshx_block, execute_joshx_tool_call
-from app.people_db import dashboard_snapshot as people_dashboard_snapshot, init_people_db
+from app.people_db import add_person, dashboard_snapshot as people_dashboard_snapshot, init_people_db, update_person
 from app.people_tools import PEOPLE_TOOL_NAMES, PEOPLE_TOOLS, build_people_block, execute_people_tool_call
 from app.finance_db import (
     get_balance_history,
     get_hf_markets_schedule,
     get_luno_schedule,
     init_finance_db,
+    log_balance,
 )
 from app.calendar_tools import CALENDAR_TOOL_NAMES, CALENDAR_TOOLS, execute_calendar_tool_call
 from app.calendar_db import init_calendar_db, sync_calendar_cache
@@ -923,6 +924,44 @@ async def personal_dashboard(request: Request, _: None = Depends(verify_token)) 
     return await personal_dashboard_snapshot(postgres_conn)
 
 
+class PersonalGoalCreate(BaseModel):
+    title: str
+    target_date: str | None = None
+    notes: str | None = None
+
+
+@app.post("/personal/goals")
+async def personal_goal_create(
+    body: PersonalGoalCreate, request: Request, _: None = Depends(verify_token)
+) -> dict:
+    # Backs Personal's new "+Add" goal form (2026-09-17, Editability Pass
+    # 1) -- add_goal already existed as a Frank chat tool (personal_tools.py's
+    # ADD_GOAL_TOOL); this is a direct UI path to the same function, not a
+    # chat-mediated one, same shape as Joshx's own UI-driven writes below.
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    title = await add_goal(body.title, body.target_date, body.notes, postgres_conn)
+    await record_tool_call("add_goal_ui", body.model_dump(), "ok", postgres_conn)
+    return {"title": title}
+
+
+class PersonalHabitCreate(BaseModel):
+    title: str
+    cadence: str | None = None
+    notes: str | None = None
+
+
+@app.post("/personal/habits")
+async def personal_habit_create(
+    body: PersonalHabitCreate, request: Request, _: None = Depends(verify_token)
+) -> dict:
+    # Same reasoning as personal_goal_create above -- add_habit already
+    # existed as a Frank tool (ADD_HABIT_TOOL), this is a direct UI path.
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    title = await add_habit(body.title, body.cadence, body.notes, postgres_conn)
+    await record_tool_call("add_habit_ui", body.model_dump(), "ok", postgres_conn)
+    return {"title": title}
+
+
 @app.get("/joshx/dashboard")
 async def joshx_dashboard(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the desktop "Joshx" section -- Josh's independent freelance
@@ -1040,6 +1079,51 @@ async def people_dashboard(request: Request, _: None = Depends(verify_token)) ->
     return await people_dashboard_snapshot(postgres_conn)
 
 
+class PersonCreate(BaseModel):
+    name: str
+    relationship_type: str | None = None
+    company: str | None = None
+    email: str | None = None
+    phone: str | None = None
+
+
+@app.post("/people")
+async def person_create(body: PersonCreate, request: Request, _: None = Depends(verify_token)) -> dict:
+    # Backs People's new "+Add" form (2026-09-17, Editability Pass 1) --
+    # add_person already existed as a Frank tool (people_tools.py's
+    # ADD_PERSON_TOOL) and is itself an upsert keyed on name (case-
+    # insensitive) -- reused as-is, not reimplemented, since typing an
+    # existing name correctly updating that person rather than
+    # duplicating is already its documented, desired behavior.
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    fields = body.model_dump(exclude={"name"}, exclude_none=True)
+    name = await add_person(body.name, postgres_conn, **fields)
+    await record_tool_call("add_person_ui", body.model_dump(), "ok", postgres_conn)
+    return {"name": name}
+
+
+class PersonUpdate(BaseModel):
+    email: str | None = None
+    phone: str | None = None
+
+
+@app.patch("/people/{person_id}")
+async def person_update(
+    person_id: int, body: PersonUpdate, request: Request, _: None = Depends(verify_token)
+) -> dict:
+    # Backs People's new inline-edit fields (2026-09-17, Editability Pass
+    # 1) -- id-based (update_person, not add_person's fuzzy name match)
+    # since the UI already knows the exact row it's displaying, same
+    # reasoning as Joshx's own id-based status/payment-status routes above.
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    fields = body.model_dump(exclude_none=True)
+    updated = await update_person(person_id, postgres_conn, **fields)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"No person with id {person_id}")
+    await record_tool_call("update_person_ui", {"person_id": person_id, **fields}, "ok", postgres_conn)
+    return {"person_id": person_id, **fields}
+
+
 @app.get("/finance/dashboard")
 async def finance_dashboard(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the desktop "Finance" section -- Josh's personal investment
@@ -1068,6 +1152,31 @@ async def finance_dashboard(request: Request, _: None = Depends(verify_token)) -
             # the local file isn't there. See app/finance.py's docstring.
             account["hf_markets_live"] = await get_hf_markets_live_status_for_dashboard(postgres_conn)
     return snapshot
+
+
+class FinanceBalanceUpdate(BaseModel):
+    balance: float
+
+
+@app.post("/finance/accounts/{account_name}/balance")
+async def finance_account_balance_update(
+    account_name: str, body: FinanceBalanceUpdate, request: Request, _: None = Depends(verify_token)
+) -> dict:
+    # Backs Finance's new inline-edit balances for the 4 manual accounts
+    # (2026-09-17, Editability Pass 1) -- log_balance already existed as
+    # a Frank tool (finance_tools.py's LOG_FINANCE_BALANCE_TOOL); this is
+    # a direct UI path to the same function, not a chat-mediated one.
+    # account_name is fuzzy-matched by log_balance itself (same as the
+    # chat tool), not a strict id lookup -- the UI already has the exact
+    # name string from the fetched dashboard, so this is safe in practice.
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    matched_name = await log_balance(account_name, body.balance, postgres_conn=postgres_conn)
+    if matched_name is None:
+        raise HTTPException(status_code=404, detail=f"No account matching {account_name!r}")
+    await record_tool_call(
+        "log_balance_ui", {"account_name": account_name, "balance": body.balance}, "ok", postgres_conn
+    )
+    return {"account_name": matched_name, "balance": body.balance}
 
 
 @app.get("/finance/concentration")

@@ -163,6 +163,37 @@ async def _add_person_postgres(conn: Any, name: str, fields: dict) -> str:
     return name
 
 
+async def update_person(person_id: int, postgres_conn: Any = None, **fields) -> bool:
+    """id-keyed, unlike add_person's name-matched upsert above -- this
+    backs the UI's inline-edit path (2026-09-17), where the caller
+    already has the exact row from a prior fetch and there's no natural-
+    language identifier to resolve, so a name lookup would only add an
+    unnecessary collision risk (editing "Rob" could silently land on the
+    wrong "Rob" if two exist). Only non-None fields are written, same
+    "partial update" reasoning as add_person's own UPDATE branch."""
+    non_null_fields = {k: v for k, v in fields.items() if v is not None}
+    if not non_null_fields:
+        return True
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            set_clause = ", ".join(f"{col} = %s" for col in non_null_fields)
+            await cur.execute(
+                f"UPDATE people.people SET {set_clause} WHERE id = %s",
+                (*non_null_fields.values(), person_id),
+            )
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
+    async with aiosqlite.connect(DB_PATH) as db:
+        set_clause = ", ".join(f"{col} = ?" for col in non_null_fields)
+        cursor = await db.execute(
+            f"UPDATE people SET {set_clause} WHERE id = ?",
+            (*non_null_fields.values(), person_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
 async def log_interaction(
     person_identifier: str,
     interaction_date: str,

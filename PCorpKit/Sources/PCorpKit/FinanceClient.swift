@@ -55,4 +55,38 @@ public final class FinanceClient: ObservableObject {
         let (data, _) = try await URLSession.shared.data(from: url(path: "/finance/history", extraItems: items))
         return try JSONDecoder().decode([BalanceHistoryEntry].self, from: data)
     }
+
+    private struct ErrorDetail: Decodable { let detail: String }
+
+    private func performWrite(_ request: URLRequest) async -> String? {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                return (try? JSONDecoder().decode(ErrorDetail.self, from: data))?.detail
+                    ?? "Request failed (\(http.statusCode))."
+            }
+            return nil
+        } catch {
+            return "Couldn't reach the backend — is it running?"
+        }
+    }
+
+    private struct BalanceUpdatePayload: Encodable { let balance: Double }
+
+    /// Backs Finance's inline-edit balances for the 4 manual accounts
+    /// (2026-09-17, Editability Pass 1) -- wraps the same log_balance
+    /// Frank's own LOG_FINANCE_BALANCE_TOOL already uses, so this reads
+    /// as a real new snapshot (with its own recorded_at), not an
+    /// overwrite of history. accountName is percent-encoded into the
+    /// path since real account names contain spaces ("Liberty Stash").
+    public func updateBalance(accountName: String, balance: Double) async {
+        let encodedName = accountName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? accountName
+        var request = URLRequest(url: BackendHost.url(path: "/finance/accounts/\(encodedName)/balance"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(BalanceUpdatePayload(balance: balance))
+        let writeError = await performWrite(request)
+        await fetch()
+        if let writeError { errorMessage = writeError }
+    }
 }

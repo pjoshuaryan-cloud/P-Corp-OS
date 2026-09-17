@@ -147,3 +147,84 @@ public struct IconButtonStyle: ButtonStyle {
 extension ButtonStyle where Self == IconButtonStyle {
     public static var icon: IconButtonStyle { IconButtonStyle() }
 }
+
+/// Tap a value to edit it in place, commit on Return or on losing focus —
+/// the one shared primitive behind Editability Pass 1 (2026-09-17). An
+/// audit found only two real inline writes anywhere in this app (Joshx's
+/// status pickers, Triggers/Automations' toggles); everything else --
+/// People's contact fields, Finance's manual balances -- rendered as
+/// static `Text` with no way to fix a wrong number without going through
+/// Frank in chat. This is the one edit-affordance (a small trailing
+/// `pencil`, always the same glyph) reused everywhere that changes, so
+/// "this is editable" reads as one consistent visual language across
+/// screens rather than a different treatment per view.
+///
+/// Deliberately generic on `String` only, not typed per field -- a caller
+/// editing a number (Finance's balances) converts to/from `Double` itself
+/// in its own `onCommit`, same "the primitive stays reusable, type-
+/// specific handling stays at the call site" reasoning as `cardSurface`'s
+/// caller-supplied radius above.
+///
+/// Commit is explicit, never a silent autosave: `.onSubmit` (Return, both
+/// platforms) and losing focus (tapping away) are the only two triggers --
+/// there's deliberately no `onChange(of:)` on the draft text watching
+/// every keystroke. Doesn't need `GrowingChatInput.swift`'s platform-
+/// specific key handling (a `TextEditor` there has to tell a Return-to-
+/// send apart from a literal newline); a single-line `TextField` has no
+/// such ambiguity to resolve, so plain `.onSubmit` already does the right
+/// thing on both macOS and iOS.
+///
+/// Optimistic like Triggers' own toggle -- exits edit mode immediately
+/// on commit rather than waiting on the network; the caller's `onCommit`
+/// is responsible for surfacing a failure through its own client's
+/// existing `errorMessage`, same as every other write in this app already
+/// does, not a new error-handling path invented here.
+public struct InlineEditableText: View {
+    let value: String
+    let placeholder: String
+    let onCommit: (String) async -> Void
+
+    @State private var isEditing = false
+    @State private var draft = ""
+    @FocusState private var isFocused: Bool
+    @Environment(\.appTheme) private var theme
+
+    public init(value: String, placeholder: String = "", onCommit: @escaping (String) async -> Void) {
+        self.value = value
+        self.placeholder = placeholder
+        self.onCommit = onCommit
+    }
+
+    public var body: some View {
+        if isEditing {
+            TextField(placeholder, text: $draft)
+                .textFieldStyle(.plain)
+                .focused($isFocused)
+                .onSubmit { commit() }
+                .onChange(of: isFocused) { _, focused in
+                    if !focused { commit() }
+                }
+                .onAppear { isFocused = true }
+        } else {
+            HStack(spacing: 4) {
+                Text(value.isEmpty ? placeholder : value)
+                    .foregroundStyle(value.isEmpty ? theme.textTertiary : theme.textPrimary)
+                Image(systemName: "pencil")
+                    .font(.system(size: 10))
+                    .foregroundStyle(theme.textTertiary.opacity(0.6))
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                draft = value
+                isEditing = true
+            }
+        }
+    }
+
+    private func commit() {
+        isEditing = false
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != value else { return }
+        Task { await onCommit(trimmed) }
+    }
+}
