@@ -197,14 +197,34 @@ public struct InlineEditableText: View {
 
     public var body: some View {
         if isEditing {
-            TextField(placeholder, text: $draft)
-                .textFieldStyle(.plain)
-                .focused($isFocused)
-                .onSubmit { commit() }
-                .onChange(of: isFocused) { _, focused in
-                    if !focused { commit() }
+            // Real gap found live (2026-09-17): Return/losing focus were
+            // the only ways to commit -- correct as a *trigger* (still
+            // in place below), but with no visible affordance while
+            // editing, it wasn't discoverable, and tapping away inside a
+            // ScrollView doesn't always reliably resign focus depending
+            // on what's tapped. Josh's own report: "when i make edits...
+            // i should be able to save once edited." An explicit
+            // checkmark button is a third, always-visible way to commit
+            // the same `commit()` -- not a second mechanism, doesn't
+            // change what "committing explicitly, never a silent
+            // autosave" means, just makes the existing explicit commit
+            // reachable on demand instead of only implicitly.
+            HStack(spacing: 6) {
+                TextField(placeholder, text: $draft)
+                    .textFieldStyle(.plain)
+                    .focused($isFocused)
+                    .onSubmit { commit() }
+                    .onChange(of: isFocused) { _, focused in
+                        if !focused { commit() }
+                    }
+                    .onAppear { isFocused = true }
+                Button(action: commit) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(theme.accent)
                 }
-                .onAppear { isFocused = true }
+                .buttonStyle(.plain)
+            }
         } else {
             HStack(spacing: 4) {
                 Text(value.isEmpty ? placeholder : value)
