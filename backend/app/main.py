@@ -909,10 +909,14 @@ async def generated_document(filename: str, _: None = Depends(verify_token)) -> 
 
 
 @app.get("/trading-division/dashboard")
-async def trading_division_dashboard(_: None = Depends(verify_token)) -> dict:
-    # Backs the desktop "Trading Division" section -- read-only, see
+async def trading_division_dashboard(request: Request, _: None = Depends(verify_token)) -> dict:
+    # Backs the desktop/iOS "Trading Division" section -- read-only, see
     # app/trading_division.py's own docstring for the full boundary.
-    return await trading_division_dashboard_snapshot()
+    # postgres_conn added 2026-09-18 -- live_account/stock_movers both
+    # need it for the cloud fallback path (iOS/Render), same dispatcher
+    # pattern every other dashboard route already uses.
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return await trading_division_dashboard_snapshot(postgres_conn)
 
 
 @app.get("/personal/dashboard")

@@ -337,15 +337,40 @@ public struct TradingDivisionMonteCarloRun: Identifiable, Decodable {
     }
 }
 
+/// A single factual price-movement fact (2026-09-18, "stocks doing
+/// well" ask) -- same objective, non-advisory shape backend/app/
+/// market_movers.py already documents ("X moved Y% since Z," never a
+/// recommendation). `item_key` isn't decoded -- it's a dedup key for
+/// the Triggers Layer's own digest, meaningless to this dashboard view.
+public struct TradingDivisionStockMover: Identifiable, Decodable {
+    public let id = UUID()
+    public let title: String
+    public let detail: String
+
+    enum CodingKeys: String, CodingKey {
+        case title, detail
+    }
+}
+
 public struct TradingDivisionDashboard: Decodable {
     public let backtests: [TradingDivisionRun]
     public let walkforwardRuns: [TradingDivisionRun]
     public let montecarloRuns: [TradingDivisionMonteCarloRun]
+    /// Both added 2026-09-18, Josh's direct ask ("how my open trades are
+    /// doing... stocks doing well") -- see trading_division.py's own
+    /// live_account_summary()/check_stock_movers() docstrings for why
+    /// liveAccount is account-level only (a deliberate, confirmed
+    /// relaxation of this section's former read-only-history boundary)
+    /// and not a per-position breakdown.
+    public let liveAccount: HFMarketsLiveStatus?
+    public let stockMovers: [TradingDivisionStockMover]
 
     enum CodingKeys: String, CodingKey {
         case backtests
         case walkforwardRuns = "walkforward_runs"
         case montecarloRuns = "montecarlo_runs"
+        case liveAccount = "live_account"
+        case stockMovers = "stock_movers"
     }
 }
 

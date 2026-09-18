@@ -40,11 +40,14 @@ def _read_only_uri() -> str:
     return f"file:{DB_PATH}?mode=ro"
 
 
-async def dashboard_snapshot() -> dict:
-    """Backs the desktop Trading Division tab. Backtests and walk-forward
-    runs both live in the same `runs` table, split by `run_type` -- kept
-    as separate lists here since they're conceptually different things to
-    show, not because the underlying query differs much."""
+async def _history_snapshot() -> dict:
+    """The original dashboard_snapshot() body, unchanged -- split out
+    (2026-09-18) so summarize() (called on every single turn via
+    build_trading_division_block()) keeps reading only the cheap local
+    SQLite history, not the live account/stock-movers fetches
+    dashboard_snapshot() below now also does. Same "don't fetch live
+    data speculatively on every turn" discipline email_tools.py already
+    documents for its own list/search tools."""
     if not DB_PATH.exists():
         return {"backtests": [], "walkforward_runs": [], "montecarlo_runs": []}
 
@@ -79,11 +82,31 @@ async def dashboard_snapshot() -> dict:
     return {"backtests": backtests, "walkforward_runs": walkforward_runs, "montecarlo_runs": montecarlo_runs}
 
 
+async def dashboard_snapshot(postgres_conn=None) -> dict:
+    """Backs the desktop/iOS Trading Division tab specifically -- unlike
+    summarize() below (every turn's system prompt), a dashboard fetch is
+    a deliberate, one-off "show me the tab" action, so the extra live
+    calls here are the right cost/freshness tradeoff in a way they
+    wouldn't be per-turn.
+
+    live_account/stock_movers (2026-09-18) -- real gap found live: Josh
+    asked for these via chat, got them, then looked at the actual
+    dashboard tab and found nothing new there -- the chat-only delivery
+    wasn't the full ask. Both reuse the exact same functions the chat
+    agent already calls (live_account_summary/check_stock_movers below),
+    just returning their raw structured data here instead of the
+    plain-text version built for a system prompt."""
+    history = await _history_snapshot()
+    live_account = await get_hf_markets_live_status_for_dashboard(postgres_conn)
+    stock_movers = await check_stock_movers(postgres_conn)
+    return {**history, "live_account": live_account, "stock_movers": stock_movers}
+
+
 async def summarize() -> str:
     """Plain-text snapshot for the Trading Division Agent's system prompt
     -- same style as alpha_mode_db.summarize(). An honest "nothing yet"
     is a real, expected answer right now, not an error state."""
-    snapshot = await dashboard_snapshot()
+    snapshot = await _history_snapshot()
     if not snapshot["backtests"] and not snapshot["walkforward_runs"] and not snapshot["montecarlo_runs"]:
         return "No backtest, walk-forward, or Monte Carlo runs recorded yet — the trading robot is still in early development (its own README calls itself \"Phase 1: Scaffolding\")."
 

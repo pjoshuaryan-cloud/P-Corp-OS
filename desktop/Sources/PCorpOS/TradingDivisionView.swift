@@ -33,6 +33,22 @@ struct TradingDivisionView: View {
                             .font(PCorpFont.body(12))
                             .foregroundStyle(theme.textSecondary)
                     } else if let dashboard = client.dashboard {
+                        section(title: "LIVE ACCOUNT") {
+                            if let liveAccount = dashboard.liveAccount {
+                                LiveAccountCard(status: liveAccount)
+                            } else {
+                                emptyRow("No live account data right now — the Mac may be asleep/closed, or the EA isn't running.")
+                            }
+                        }
+                        section(title: "STOCK MOVERS") {
+                            if dashboard.stockMovers.isEmpty {
+                                emptyRow("No stock moved more than the notable-move threshold in the last day.")
+                            } else {
+                                ForEach(dashboard.stockMovers) { mover in
+                                    StockMoverRow(mover: mover)
+                                }
+                            }
+                        }
                         section(title: "BACKTESTS") {
                             if dashboard.backtests.isEmpty {
                                 emptyRow("No backtests recorded yet.")
@@ -76,7 +92,7 @@ struct TradingDivisionView: View {
                 Text("Trading Division")
                     .font(PCorpFont.display(24))
                     .foregroundStyle(theme.textPrimary)
-                Text("Read-only: recorded backtest, walk-forward, and Monte Carlo results")
+                Text("Read-only: live account status, stock movers, and recorded backtest/walk-forward/Monte Carlo results")
                     .font(PCorpFont.body(13))
                     .foregroundStyle(theme.textSecondary)
             }
@@ -162,6 +178,70 @@ private struct MonteCarloRow: View {
             Text("\(run.probabilityOfRuinPct, specifier: "%.2f")% probability of ruin")
                 .font(PCorpFont.body(12, weight: .semibold))
                 .foregroundStyle(theme.textPrimary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface(radius: 12)
+    }
+}
+
+/// Live account status (2026-09-18, Josh's direct "how my open trades
+/// are doing" ask) -- account-level only (balance/equity/floating P&L),
+/// same live HF Markets bridge Finance's own dashboard already shows,
+/// just surfaced here too. theme.statusGood/statusRisk reused for the
+/// profit/loss color, same semantic tokens Finance already uses for the
+/// same real signal, not a new color invented for this card.
+private struct LiveAccountCard: View {
+    let status: HFMarketsLiveStatus
+    @Environment(\.appTheme) private var theme
+
+    private var isProfit: Bool { status.floatingPnl >= 0 }
+
+    private var balanceLine: String {
+        let base = "Balance \(status.currency) \(String(format: "%.2f", status.balance))"
+        guard let updatedAt = status.updatedAt else { return base }
+        return "\(base) · as of \(updatedAt)"
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Equity \(status.currency) \(status.equity, specifier: "%.2f")")
+                    .font(PCorpFont.body(13.5, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                Text(balanceLine)
+                    .font(PCorpFont.body(11.5))
+                    .foregroundStyle(theme.textSecondary)
+            }
+            Spacer()
+            Text("\(isProfit ? "+" : "-")\(status.currency) \(abs(status.floatingPnl), specifier: "%.2f")")
+                .font(PCorpFont.body(13, weight: .semibold))
+                .foregroundStyle(isProfit ? theme.statusGood : theme.statusRisk)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface(radius: 12)
+    }
+}
+
+/// One factual stock-movement fact (2026-09-18, "stocks doing well" ask)
+/// -- same objective, non-advisory framing market_movers.py's own
+/// docstring establishes, never a recommendation.
+private struct StockMoverRow: View {
+    let mover: TradingDivisionStockMover
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(mover.title)
+                    .font(PCorpFont.body(13.5, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                Text(mover.detail)
+                    .font(PCorpFont.body(11.5))
+                    .foregroundStyle(theme.textSecondary)
+            }
+            Spacer()
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
