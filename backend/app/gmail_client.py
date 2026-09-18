@@ -143,6 +143,12 @@ async def _get_message(http: httpx.AsyncClient, token: str, message_id: str) -> 
         "subject": _header(headers, "Subject"),
         "snippet": payload.get("snippet"),
         "body": _extract_body(message_payload),
+        # The RFC 2822 Message-ID header (2026-09-18, reply-threading) --
+        # distinct from Gmail's own "id" above. Needed to build a reply's
+        # In-Reply-To/References headers; Gmail's send API only actually
+        # threads a message under a given threadId when those headers
+        # correctly reference a real message already in that thread.
+        "message_id_header": _header(headers, "Message-ID"),
         "received_at": _header(headers, "Date"),
     }
 
@@ -173,7 +179,14 @@ async def fetch_recent_messages(max_results: int = 20, query: str | None = None,
         return messages
 
 
-async def send_message(to: str, subject: str, body: str, postgres_conn=None) -> bool:
+async def send_message(
+    to: str,
+    subject: str,
+    body: str,
+    thread_id: str | None = None,
+    in_reply_to: str | None = None,
+    postgres_conn=None,
+) -> bool:
     """Sends a real email through Josh's own Gmail account -- the one
     write path this module has. Only ever called from email_tools.py's
     propose_send_email, and only after that tool's approval gate has
@@ -183,14 +196,31 @@ async def send_message(to: str, subject: str, body: str, postgres_conn=None) -> 
     a client puts there, so there's nothing correct to put here anyway.
     Plain MIMEText, not multipart/html -- matches this tool's own "kept
     small deliberately" scope, same reasoning email_tools.py's other
-    tools document for their own first-pass shape."""
+    tools document for their own first-pass shape.
+
+    thread_id/in_reply_to (2026-09-18, reply-threading) are both optional
+    and both-or-neither in practice -- a reply needs Gmail's threadId in
+    the request body AND a correctly-referencing In-Reply-To/References
+    header pair for the API to actually thread it rather than silently
+    starting a new one (confirmed via Google's own API docs, not
+    assumed). References is set equal to In-Reply-To here -- correct for
+    a direct reply to one message; a longer reply chain would properly
+    accumulate every prior Message-ID, not just the most recent, but this
+    tool only ever replies to one already-synced message, never a chain
+    Frank has seen multiple hops of."""
     token = await get_valid_access_token(postgres_conn)
     if token is None:
         return False
     message = MIMEText(body)
     message["To"] = to
     message["Subject"] = subject
+    if in_reply_to:
+        message["In-Reply-To"] = in_reply_to
+        message["References"] = in_reply_to
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+    request_body: dict = {"raw": raw}
+    if thread_id:
+        request_body["threadId"] = thread_id
     async with httpx.AsyncClient(timeout=15.0) as http:
-        result = await google_api_post(http, MESSAGES_SEND_URL, token, {"raw": raw})
+        result = await google_api_post(http, MESSAGES_SEND_URL, token, request_body)
     return result is not None

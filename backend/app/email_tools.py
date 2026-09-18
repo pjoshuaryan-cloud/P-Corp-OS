@@ -87,9 +87,10 @@ READ_EMAIL_TOOL = {
 PROPOSE_SEND_EMAIL_TOOL = {
     "name": "propose_send_email",
     "description": (
-        "Proposes sending a new email through Josh's real Gmail account. Does NOT send it immediately -- sends "
+        "Proposes sending an email through Josh's real Gmail account. Does NOT send it immediately -- sends "
         "Josh a real approval card showing the exact recipient/subject/body and blocks until he approves or "
-        "rejects. A fresh standalone message only -- no reply-threading yet."
+        "rejects. Pass reply_to_id to keep it in an existing Gmail thread (e.g. replying to something found "
+        "via get_recent_emails/search_emails/read_email); omit it for a fresh standalone message."
     ),
     "input_schema": {
         "type": "object",
@@ -97,6 +98,13 @@ PROPOSE_SEND_EMAIL_TOOL = {
             "to": {"type": "string", "description": "Recipient email address."},
             "subject": {"type": "string"},
             "body": {"type": "string", "description": "Plain-text email body."},
+            "reply_to_id": {
+                "type": "string",
+                "description": (
+                    "The id of the email being replied to (from get_recent_emails/search_emails/read_email), "
+                    "so this lands in the same Gmail thread instead of starting a new one. Omit for a fresh message."
+                ),
+            },
         },
         "required": ["to", "subject", "body"],
     },
@@ -115,7 +123,12 @@ def _format(emails: list[dict]) -> str:
             link = " [linked person]"
         elif e.get("linked_client_name"):
             link = f" [linked client: {e['linked_client_name']}]"
-        lines.append(f"- From {who} — \"{e['subject'] or '(no subject)'}\" ({e['received_at']}){link}\n  {e['snippet'] or ''}")
+        # id included (2026-09-18) -- a real gap found live: without it,
+        # there was no legitimate way to obtain an id to pass to
+        # read_email/propose_send_email's reply_to_id at all. Confirmed
+        # by Frank itself correctly refusing to fabricate one rather than
+        # silently making something up.
+        lines.append(f"- [id: {e['id']}] From {who} — \"{e['subject'] or '(no subject)'}\" ({e['received_at']}){link}\n  {e['snippet'] or ''}")
     return "\n".join(lines)
 
 
@@ -164,12 +177,29 @@ async def execute_email_tool_call(name: str, tool_input: dict, websocket: WebSoc
         body = tool_input["body"]
         if "@" not in to:
             return f"\"{to}\" doesn't look like a valid email address -- nothing was proposed."
-        approved = await _request_approval(websocket, name, f"To: {to} — {subject}", body)
+
+        # Reply-threading (2026-09-18) is best-effort, not required --
+        # an unresolved/missing reply_to_id just falls back to a fresh
+        # standalone message rather than blocking the send entirely,
+        # same fail-soft posture as every other Gmail-API call in this
+        # module.
+        thread_id = None
+        in_reply_to = None
+        title = f"To: {to} — {subject}"
+        reply_to_id = tool_input.get("reply_to_id")
+        if reply_to_id:
+            original = await get_email_by_id(reply_to_id, postgres_conn)
+            if original and original.get("message_id_header"):
+                thread_id = original["thread_id"]
+                in_reply_to = original["message_id_header"]
+                title += " (replying in thread)"
+
+        approved = await _request_approval(websocket, name, title, body)
         if not approved:
             return f"Rejected by Josh: email to {to} was not sent."
-        ok = await send_message(to, subject, body, postgres_conn)
+        ok = await send_message(to, subject, body, thread_id, in_reply_to, postgres_conn)
         if ok:
-            return f"Approved and sent to {to}."
+            return f"Approved and sent to {to}." + (" (kept in the original thread)" if thread_id else "")
         return "Approved, but sending failed -- Gmail isn't connected with send permission yet (Josh needs to re-consent via /auth/google/start), or a real Gmail API error occurred."
 
     return f"Unknown tool: {name}"

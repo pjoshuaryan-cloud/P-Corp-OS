@@ -69,6 +69,14 @@ async def init_email_db() -> None:
         columns = {row[1] async for row in cursor}
         if "body" not in columns:
             await db.execute("ALTER TABLE emails ADD COLUMN body TEXT")
+        # Migration path: emails existed before reply-threading did
+        # (2026-09-18) -- the RFC 2822 Message-ID header, needed to build
+        # a reply's In-Reply-To/References headers. Distinct from
+        # thread_id above (Gmail's own thread grouping id, already
+        # captured since 2026-08-27) -- both are needed for Gmail's send
+        # API to actually thread a reply rather than starting a new one.
+        if "message_id_header" not in columns:
+            await db.execute("ALTER TABLE emails ADD COLUMN message_id_header TEXT")
         await db.commit()
 
 
@@ -180,9 +188,9 @@ async def sync_recent_emails(max_results: int = 20, postgres_conn: Any = None) -
                 # gap found repeatedly this migration.
                 await cur.execute(
                     "INSERT INTO email.emails "
-                    "(id, thread_id, sender_email, sender_name, subject, snippet, body, received_at, "
-                    "linked_person_id, linked_client_name, created_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, (now() AT TIME ZONE 'utc'))",
+                    "(id, thread_id, sender_email, sender_name, subject, snippet, body, message_id_header, "
+                    "received_at, linked_person_id, linked_client_name, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, (now() AT TIME ZONE 'utc'))",
                     (
                         message["id"],
                         message["thread_id"],
@@ -191,6 +199,7 @@ async def sync_recent_emails(max_results: int = 20, postgres_conn: Any = None) -
                         message["subject"],
                         message["snippet"],
                         message["body"],
+                        message["message_id_header"],
                         message["received_at"],
                         linked_person_id,
                         linked_client_name,
@@ -218,8 +227,8 @@ async def sync_recent_emails(max_results: int = 20, postgres_conn: Any = None) -
 
             await db.execute(
                 "INSERT INTO emails "
-                "(id, thread_id, sender_email, sender_name, subject, snippet, body, received_at, "
-                "linked_person_id, linked_client_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, thread_id, sender_email, sender_name, subject, snippet, body, message_id_header, "
+                "received_at, linked_person_id, linked_client_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     message["id"],
                     message["thread_id"],
@@ -228,6 +237,7 @@ async def sync_recent_emails(max_results: int = 20, postgres_conn: Any = None) -
                     message["subject"],
                     message["snippet"],
                     message["body"],
+                    message["message_id_header"],
                     message["received_at"],
                     linked_person_id,
                     linked_client_name,
@@ -295,25 +305,30 @@ async def get_email_by_id(email_id: str, postgres_conn: Any = None) -> dict | No
     search_emails deliberately stay snippet-only above, matching
     email_tools.py's own "don't bloat every turn" reasoning for a list of
     several messages at once. This backs reading one specific message in
-    full, once Frank/Josh already knows which one they want."""
+    full, once Frank/Josh already knows which one they want. Also the
+    lookup propose_send_email's reply-threading uses (thread_id/
+    message_id_header) -- one function, two callers, rather than a
+    second near-identical query."""
     if postgres_conn is not None:
         async with postgres_conn.cursor() as cur:
             await cur.execute(
-                "SELECT id, sender_email, sender_name, subject, body, snippet, received_at, "
-                "linked_person_id, linked_client_name FROM email.emails WHERE id = %s",
+                "SELECT id, thread_id, sender_email, sender_name, subject, body, snippet, "
+                "message_id_header, received_at, linked_person_id, linked_client_name "
+                "FROM email.emails WHERE id = %s",
                 (email_id,),
             )
             row = await cur.fetchone()
             if row is None:
                 return None
-            cols = ["id", "sender_email", "sender_name", "subject", "body", "snippet", "received_at",
-                    "linked_person_id", "linked_client_name"]
+            cols = ["id", "thread_id", "sender_email", "sender_name", "subject", "body", "snippet",
+                    "message_id_header", "received_at", "linked_person_id", "linked_client_name"]
             return dict(zip(cols, row))
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, sender_email, sender_name, subject, body, snippet, received_at, "
-            "linked_person_id, linked_client_name FROM emails WHERE id = ?",
+            "SELECT id, thread_id, sender_email, sender_name, subject, body, snippet, "
+            "message_id_header, received_at, linked_person_id, linked_client_name "
+            "FROM emails WHERE id = ?",
             (email_id,),
         )
         row = await cursor.fetchone()
