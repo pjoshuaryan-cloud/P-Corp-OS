@@ -11,6 +11,7 @@ struct JoshxView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = JoshxClient()
     @State private var selectedProject: JoshxProject?
+    @State private var selectedLead: JoshxLead?
     @State private var leadPendingDelete: JoshxLead?
     @State private var projectPendingDelete: JoshxProject?
     @State private var clientPendingDelete: JoshxClientRecord?
@@ -72,12 +73,17 @@ struct JoshxView: View {
                                 emptyRow("No leads currently open — booked/lost ones are hidden here.")
                             } else {
                                 ForEach(openLeads(dashboard)) { lead in
-                                    LeadRow(lead: lead)
-                                        .contextMenu {
-                                            Button("Delete Lead", role: .destructive) {
-                                                leadPendingDelete = lead
-                                            }
+                                    Button {
+                                        selectedLead = lead
+                                    } label: {
+                                        LeadRow(lead: lead)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        Button("Delete Lead", role: .destructive) {
+                                            leadPendingDelete = lead
                                         }
+                                    }
                                 }
                             }
                         }
@@ -110,6 +116,9 @@ struct JoshxView: View {
         .task { await client.fetch() }
         .sheet(item: $selectedProject) { project in
             JoshxProjectDetailSheet(project: project, client: client)
+        }
+        .sheet(item: $selectedLead) { lead in
+            JoshxLeadDetailSheet(lead: lead, client: client)
         }
         .confirmationDialog(
             "Delete lead for \(leadPendingDelete?.clientName ?? "")?",
