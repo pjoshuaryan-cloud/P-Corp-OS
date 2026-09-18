@@ -146,6 +146,7 @@ from app.trading_division_agent import (
     TRADING_DIVISION_AGENT_TOOL_NAMES,
     TRADING_DIVISION_AGENT_TOOLS,
     execute_trading_division_agent_tool_call,
+    get_holding_update,
 )
 from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES, LEGACY_VAULT_TOOLS, execute_legacy_vault_tool_call
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
@@ -917,6 +918,25 @@ async def trading_division_dashboard(request: Request, _: None = Depends(verify_
     # pattern every other dashboard route already uses.
     postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
     return await trading_division_dashboard_snapshot(postgres_conn)
+
+
+@app.post("/trading-division/holding-update")
+async def trading_division_holding_update(request: Request, _: None = Depends(verify_token)) -> dict:
+    # Backs the dashboard tab's own "Get live update" action (2026-09-18,
+    # "make everything more detailed and interactive") -- a real,
+    # on-demand live web_search/web_fetch call, deliberately a plain
+    # REST route rather than routed through the websocket chat, since
+    # this tab has never needed BackendClient/chat plumbing at all.
+    # Same real API-key guard websocket_chat already has -- this is the
+    # first REST route (not just the websocket) to ever construct its
+    # own AsyncAnthropic client.
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
+    client = AsyncAnthropic(api_key=api_key)
+    update = await get_holding_update(client, postgres_conn)
+    return {"update": update}
 
 
 @app.get("/personal/dashboard")

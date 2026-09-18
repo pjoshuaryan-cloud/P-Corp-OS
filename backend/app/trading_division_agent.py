@@ -52,9 +52,18 @@ from app.market_movers import NOTABLE_MOVE_THRESHOLD_PCT
 from app.trading_division import live_account_summary, stock_movers_summary, summarize
 from app.web_tools import WEB_FETCH_TOOL, WEB_SEARCH_TOOL
 
+# Confirmed directly with Josh (2026-09-18) -- the only symbol that
+# actually appears anywhere in the trading robot's real backtest data,
+# and the one he confirmed is what he's actually holding/trading. A
+# plain constant, not a per-request input, since there's exactly one
+# real answer today; revisit if he ever trades something else.
+HOLDING_SYMBOL = "NDX"
+
 TRADING_DIVISION_AGENT_SYSTEM_PROMPT = """You are the Trading Division Agent inside P Corp OS -- a specialist Frank (the executive intelligence Joshua actually talks to) delegates to for the trading robot and related markets, not a persona Joshua addresses directly. You're being consulted mid-conversation; Frank will relay or incorporate what you say.
 
 The trading robot (an MQL5 Expert Advisor plus a Python research/backtesting framework) is a completely separate project, built and run on its own -- it does not get rebuilt or reimplemented here. Your job is read-only reporting and analysis over: its real recorded outputs (backtests, walk-forward runs, Monte Carlo simulations), Josh's real live trading account status, and real stock/forex market data -- all given as context below, or fetchable live via your web_fetch tool.
+
+Josh's real holding/traded instrument is NDX (the Nasdaq 100 index CFD) -- when he asks how his holding is doing or for relevant news about it, search for NDX's real current price/today's performance (web_search) and any genuinely relevant recent news, then combine that with his real account context above into one honest picture -- his account P&L is real internal data, NDX's market price/news is real external data, and they're two different things worth naming separately, not conflated into one number.
 
 When Josh asks about upcoming or recent forex news/economic releases, search for forexfactory.com's current economic calendar (web_search), then fetch the actual page (web_fetch) to read the real events -- use only the real fetched content, never invent an event or a time. If a search/fetch fails or comes back empty, say so plainly rather than fabricating calendar events.
 
@@ -88,6 +97,33 @@ CONSULT_TRADING_DIVISION_AGENT_TOOL = {
 
 TRADING_DIVISION_AGENT_TOOLS = [CONSULT_TRADING_DIVISION_AGENT_TOOL]
 TRADING_DIVISION_AGENT_TOOL_NAMES = {tool["name"] for tool in TRADING_DIVISION_AGENT_TOOLS}
+
+
+async def get_holding_update(client: AsyncAnthropic, postgres_conn=None) -> str:
+    """Backs the Trading Division dashboard tab's own "Get live update"
+    action (2026-09-18, "make everything more detailed and interactive"
+    -- a real ask for the dashboard itself, not routed through chat).
+    One-shot, non-streaming call (client.messages.create, not .stream())
+    -- same shape research_agent.py's own _research_sub_question already
+    uses for a tools-enabled call with no live text to relay token-by-
+    token, since this is a plain REST route's response, not a chat
+    turn. Deliberately separate from consult_trading_division_agent's
+    own streamed path -- that one needs `websocket` to relay text live,
+    this one has no websocket at all."""
+    account_context = await live_account_summary(postgres_conn)
+    prompt = (
+        f"Give me a real, current update on my {HOLDING_SYMBOL} holding: its actual live price and today's "
+        f"performance, and any genuinely relevant recent news. Here's my real account context for reference: "
+        f"{account_context}"
+    )
+    response = await client.messages.create(
+        model="claude-sonnet-5",
+        max_tokens=2048,
+        system=TRADING_DIVISION_AGENT_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+        tools=[WEB_SEARCH_TOOL, WEB_FETCH_TOOL],
+    )
+    return "".join(block.text for block in response.content if block.type == "text")
 
 
 async def execute_trading_division_agent_tool_call(

@@ -10,6 +10,13 @@ import PCorpKit
 struct TradingDivisionView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = TradingDivisionClient()
+    /// Tap targets (2026-09-18, "make the tab clickable... more detailed
+    /// and interactive") -- see desktop's own TradingDivisionView.swift
+    /// for the full reasoning, same additions mirrored here as `.sheet`
+    /// instead of `.popover`.
+    @State private var showLiveAccountDetail = false
+    @State private var selectedRun: TradingDivisionRun?
+    @State private var selectedMonteCarloRun: TradingDivisionMonteCarloRun?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -28,7 +35,10 @@ struct TradingDivisionView: View {
                     } else if let dashboard = client.dashboard {
                         section(title: "LIVE ACCOUNT") {
                             if let liveAccount = dashboard.liveAccount {
-                                LiveAccountCard(status: liveAccount)
+                                Button { showLiveAccountDetail = true } label: {
+                                    LiveAccountCard(status: liveAccount)
+                                }
+                                .buttonStyle(.plain)
                             } else {
                                 emptyRow("No live account data right now — the Mac may be asleep/closed, or the EA isn't running.")
                             }
@@ -47,7 +57,10 @@ struct TradingDivisionView: View {
                                 emptyRow("No backtests recorded yet.")
                             } else {
                                 ForEach(dashboard.backtests) { run in
-                                    RunRow(run: run, kind: "Backtest")
+                                    Button { selectedRun = run } label: {
+                                        RunRow(run: run, kind: "Backtest")
+                                    }
+                                    .buttonStyle(.plain)
                                 }
                             }
                         }
@@ -56,7 +69,10 @@ struct TradingDivisionView: View {
                                 emptyRow("No walk-forward runs recorded yet.")
                             } else {
                                 ForEach(dashboard.walkforwardRuns) { run in
-                                    RunRow(run: run, kind: "Walk-forward")
+                                    Button { selectedRun = run } label: {
+                                        RunRow(run: run, kind: "Walk-forward")
+                                    }
+                                    .buttonStyle(.plain)
                                 }
                             }
                         }
@@ -65,7 +81,10 @@ struct TradingDivisionView: View {
                                 emptyRow("No Monte Carlo runs recorded yet.")
                             } else {
                                 ForEach(dashboard.montecarloRuns) { run in
-                                    MonteCarloRow(run: run)
+                                    Button { selectedMonteCarloRun = run } label: {
+                                        MonteCarloRow(run: run)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
                             }
                         }
@@ -78,6 +97,17 @@ struct TradingDivisionView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
         .task { await client.fetch() }
+        .sheet(isPresented: $showLiveAccountDetail) {
+            if let liveAccount = client.dashboard?.liveAccount {
+                LiveAccountDetailSheet(status: liveAccount, client: client)
+            }
+        }
+        .sheet(item: $selectedRun) { run in
+            RunDetailSheet(run: run)
+        }
+        .sheet(item: $selectedMonteCarloRun) { run in
+            MonteCarloDetailSheet(run: run)
+        }
     }
 
     private var header: some View {
@@ -239,5 +269,204 @@ private struct StockMoverRow: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
         .background(RoundedRectangle(cornerRadius: 12).fill(theme.background.opacity(0.35)))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
+    }
+}
+
+/// iOS port of desktop's own LiveAccountDetailPopover -- see that file
+/// for the full reasoning (2026-09-18, manual "Get Live Update" action,
+/// not auto-fetched on open).
+private struct LiveAccountDetailSheet: View {
+    let status: HFMarketsLiveStatus
+    @ObservedObject var client: TradingDivisionClient
+    @Environment(\.appTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    private var isProfit: Bool { status.floatingPnl >= 0 }
+
+    var body: some View {
+        NavigationStack {
+            content
+                .navigationTitle("Live Account")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    detailRow("Equity", "\(status.currency) \(String(format: "%.2f", status.equity))")
+                    detailRow("Balance", "\(status.currency) \(String(format: "%.2f", status.balance))")
+                    detailRow(
+                        "Floating P&L",
+                        "\(isProfit ? "+" : "-")\(status.currency) \(String(format: "%.2f", abs(status.floatingPnl)))"
+                    )
+                    if let updatedAt = status.updatedAt {
+                        detailRow("As of", updatedAt)
+                    }
+                }
+
+                Divider().overlay(theme.divider)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("NDX HOLDING — LIVE UPDATE")
+                        .font(PCorpFont.label(9))
+                        .trackedLabel(1.1)
+                        .foregroundStyle(theme.textTertiary)
+
+                    if client.isFetchingHoldingUpdate {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Checking live price and news…")
+                                .font(PCorpFont.body(12))
+                                .foregroundStyle(theme.textSecondary)
+                        }
+                    } else if let update = client.holdingUpdate {
+                        Text(update)
+                            .font(PCorpFont.body(12.5))
+                            .foregroundStyle(theme.textPrimary)
+                            .textSelection(.enabled)
+                        Button("Refresh") { Task { await client.fetchHoldingUpdate() } }
+                            .buttonStyle(.bordered)
+                    } else {
+                        if let error = client.holdingUpdateError {
+                            Text(error)
+                                .font(PCorpFont.body(12))
+                                .foregroundStyle(theme.statusRisk)
+                        }
+                        Button("Get Live Update") { Task { await client.fetchHoldingUpdate() } }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+        }
+        .background(theme.background)
+    }
+
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label)
+                .font(PCorpFont.body(11.5, weight: .semibold))
+                .foregroundStyle(theme.textSecondary)
+                .frame(width: 100, alignment: .leading)
+            Text(value)
+                .font(PCorpFont.body(11.5))
+                .foregroundStyle(theme.textPrimary)
+        }
+    }
+}
+
+/// iOS port of desktop's own RunDetailPopover.
+private struct RunDetailSheet: View {
+    let run: TradingDivisionRun
+    @Environment(\.appTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            content
+                .navigationTitle("Run \(run.runId)")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 6) {
+                if let symbol = run.symbol { detailRow("Symbol", symbol) }
+                if let timeframe = run.entryTimeframe { detailRow("Timeframe", timeframe) }
+                if let start = run.startAt { detailRow("Start", start) }
+                if let end = run.endAt { detailRow("End", end) }
+                detailRow("Recorded", run.createdAt)
+                if let totalTrades = run.totalTrades { detailRow("Total trades", "\(totalTrades)") }
+                if let winRate = run.winRatePct { detailRow("Win rate", "\(String(format: "%.1f", winRate))%") }
+                if let profitFactor = run.profitFactor { detailRow("Profit factor", String(format: "%.2f", profitFactor)) }
+                if let drawdown = run.maxDrawdownPct { detailRow("Max drawdown", "\(String(format: "%.2f", drawdown))%") }
+                if let totalPnl = run.totalPnl { detailRow("Total P&L", String(format: "%.2f", totalPnl)) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+        }
+        .background(theme.background)
+    }
+
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label)
+                .font(PCorpFont.body(11.5, weight: .semibold))
+                .foregroundStyle(theme.textSecondary)
+                .frame(width: 100, alignment: .leading)
+            Text(value)
+                .font(PCorpFont.body(11.5))
+                .foregroundStyle(theme.textPrimary)
+        }
+    }
+}
+
+/// iOS port of desktop's own MonteCarloDetailPopover.
+private struct MonteCarloDetailSheet: View {
+    let run: TradingDivisionMonteCarloRun
+    @Environment(\.appTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            content
+                .navigationTitle("Monte Carlo Run \(run.runId)")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 6) {
+                detailRow("Recorded", run.createdAt)
+                detailRow("Simulations", "\(run.numSimulations)")
+                detailRow("Probability of ruin", "\(String(format: "%.2f", run.probabilityOfRuinPct))%")
+                if let p5 = run.finalBalanceP5 { detailRow("Final balance p5", String(format: "%.2f", p5)) }
+                if let p50 = run.finalBalanceP50 { detailRow("Final balance p50", String(format: "%.2f", p50)) }
+                if let p95 = run.finalBalanceP95 { detailRow("Final balance p95", String(format: "%.2f", p95)) }
+                if let p50 = run.maxDrawdownP50 { detailRow("Max drawdown p50", "\(String(format: "%.2f", p50))%") }
+                if let p95 = run.maxDrawdownP95 { detailRow("Max drawdown p95", "\(String(format: "%.2f", p95))%") }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+        }
+        .background(theme.background)
+    }
+
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label)
+                .font(PCorpFont.body(11.5, weight: .semibold))
+                .foregroundStyle(theme.textSecondary)
+                .frame(width: 140, alignment: .leading)
+            Text(value)
+                .font(PCorpFont.body(11.5))
+                .foregroundStyle(theme.textPrimary)
+        }
     }
 }
