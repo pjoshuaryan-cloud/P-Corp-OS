@@ -950,30 +950,6 @@ private struct ChatThreadView<Header: View>: View {
 /// no animation while a reply was pending), a real, separate gap fixed
 /// here as a side effect of adding the tool-execution indicator, which
 /// needed this same dots affordance to build on.
-private struct TypingIndicatorDots: View {
-    @Environment(\.appTheme) private var theme
-    @State private var animate = false
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<3, id: \.self) { index in
-                Circle()
-                    .fill(theme.textSecondary)
-                    .frame(width: 5, height: 5)
-                    .scaleEffect(animate ? 1 : 0.5)
-                    .opacity(animate ? 1 : 0.4)
-                    .animation(
-                        .easeInOut(duration: 0.55)
-                            .repeatForever(autoreverses: true)
-                            .delay(Double(index) * 0.15),
-                        value: animate
-                    )
-            }
-        }
-        .onAppear { animate = true }
-    }
-}
-
 /// Exact match for desktop's own private ChatBubble (WarRoomView.swift
 /// there) -- same colors, corner radius, padding, max width, spacer
 /// widths. Plain Text, not desktop's markdown renderer -- that lives in

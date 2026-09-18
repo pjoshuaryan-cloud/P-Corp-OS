@@ -29,9 +29,7 @@ struct FinanceView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     if client.isLoading && client.dashboard == nil {
-                        Text("Loading…")
-                            .font(PCorpFont.body(12))
-                            .foregroundStyle(theme.textSecondary)
+                        SkeletonList()
                     } else if let error = client.errorMessage {
                         Text(error)
                             .font(PCorpFont.body(12))
@@ -67,12 +65,7 @@ struct FinanceView: View {
                     .foregroundStyle(theme.textSecondary)
             }
             Spacer()
-            Button {
-                Task { await client.fetch() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.icon)
+            RefreshIconButton(action: client.fetch)
         }
         .padding(24)
     }
@@ -443,9 +436,7 @@ private struct FinanceAccountHistoryPopover: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if isLoading {
-                        Text("Loading…")
-                            .font(PCorpFont.body(12))
-                            .foregroundStyle(theme.textSecondary)
+                        SkeletonList()
                             .padding(16)
                     } else if loadFailed {
                         Text("Couldn't load history — is the backend running?")

@@ -52,11 +52,15 @@ public final class PeopleClient: ObservableObject {
         let relationshipType: String?
         let company: String?
         let notes: String?
+        let nextFollowUpDate: String?
+        let followUpCadenceDays: Int?
 
         enum CodingKeys: String, CodingKey {
             case name, email, phone
             case relationshipType = "relationship_type"
             case company, notes
+            case nextFollowUpDate = "next_follow_up_date"
+            case followUpCadenceDays = "follow_up_cadence_days"
         }
     }
 
@@ -78,13 +82,17 @@ public final class PeopleClient: ObservableObject {
     /// every other write client in this app.
     public func updatePerson(
         id: Int, name: String? = nil, email: String? = nil, phone: String? = nil,
-        relationshipType: String? = nil, company: String? = nil, notes: String? = nil
+        relationshipType: String? = nil, company: String? = nil, notes: String? = nil,
+        nextFollowUpDate: String? = nil, followUpCadenceDays: Int? = nil
     ) async {
         var request = URLRequest(url: BackendHost.url(path: "/people/\(id)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONEncoder().encode(
-            PersonUpdatePayload(name: name, email: email, phone: phone, relationshipType: relationshipType, company: company, notes: notes)
+            PersonUpdatePayload(
+                name: name, email: email, phone: phone, relationshipType: relationshipType, company: company, notes: notes,
+                nextFollowUpDate: nextFollowUpDate, followUpCadenceDays: followUpCadenceDays
+            )
         )
         let writeError = await performWrite(request)
         await fetch()

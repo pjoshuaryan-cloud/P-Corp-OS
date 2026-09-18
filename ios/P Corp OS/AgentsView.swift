@@ -57,9 +57,7 @@ struct AgentsView: View {
     @ViewBuilder
     private var agentSection: some View {
         if agentsClient.isLoading && agentsClient.agents.isEmpty {
-            Text("Loading…")
-                .font(PCorpFont.body(12))
-                .foregroundStyle(theme.textSecondary)
+            SkeletonList()
         } else if let error = agentsClient.errorMessage {
             Text(error)
                 .font(PCorpFont.body(12))
@@ -84,9 +82,7 @@ struct AgentsView: View {
         }
 
         if opsClient.isLoading && opsClient.tasks.isEmpty {
-            Text("Loading…")
-                .font(PCorpFont.body(12))
-                .foregroundStyle(theme.textSecondary)
+            SkeletonList()
         } else if let error = opsClient.errorMessage {
             Text(error)
                 .font(PCorpFont.body(12))

@@ -11,9 +11,19 @@ import SwiftUI
 /// replacement, not a new visual language.
 public struct RefreshIconButton: View {
     let action: () async -> Void
+    /// Optional override (2026-09-18, interaction polish pass) -- every
+    /// existing call site keeps its exact original `.icon`-styled
+    /// neutral appearance by leaving this `nil`. Added specifically for
+    /// `SituationRoomBanner`'s own already-intentional all-red alert
+    /// styling, which would otherwise silently regress to a generic
+    /// black/white icon if it adopted this component unmodified --
+    /// rather than duplicate this button's busy/disable logic a second
+    /// time locally just to preserve one color.
+    var tint: Color?
     @State private var isRefreshing = false
 
-    public init(action: @escaping () async -> Void) {
+    public init(tint: Color? = nil, action: @escaping () async -> Void) {
+        self.tint = tint
         self.action = action
     }
 
@@ -36,5 +46,17 @@ public struct RefreshIconButton: View {
         }
         .buttonStyle(.icon)
         .disabled(isRefreshing)
+        .modifier(OptionalTint(tint: tint))
+    }
+}
+
+private struct OptionalTint: ViewModifier {
+    let tint: Color?
+    func body(content: Content) -> some View {
+        if let tint {
+            content.foregroundStyle(tint)
+        } else {
+            content
+        }
     }
 }

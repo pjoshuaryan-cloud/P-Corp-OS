@@ -42,7 +42,10 @@ struct CalendarView: View {
     @ViewBuilder
     private var content: some View {
         if isLoading && events.isEmpty {
-            emptyState(icon: "calendar", title: "Loading…", subtitle: "Reading events from your iPhone's Calendar app.")
+            ScrollView {
+                SkeletonList(count: 4)
+                    .padding(20)
+            }
         } else if events.isEmpty {
             emptyState(icon: "calendar", title: "Nothing on the calendar", subtitle: "No events in the next 7 days across any calendar, or calendar access isn't granted yet.")
         } else {

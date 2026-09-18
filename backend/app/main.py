@@ -1186,6 +1186,8 @@ class PersonUpdate(BaseModel):
     relationship_type: str | None = None
     company: str | None = None
     notes: str | None = None
+    next_follow_up_date: str | None = None
+    follow_up_cadence_days: int | None = None
 
 
 @app.patch("/people/{person_id}")

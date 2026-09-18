@@ -19,9 +19,7 @@ struct AlphaModeDashboardView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if client.isLoading && client.dashboard == nil {
-                        Text("Loading…")
-                            .font(PCorpFont.body(12))
-                            .foregroundStyle(theme.textSecondary)
+                        SkeletonList()
                     } else if let error = client.errorMessage {
                         Text(error)
                             .font(PCorpFont.body(12))
@@ -75,12 +73,7 @@ struct AlphaModeDashboardView: View {
                     .foregroundStyle(theme.textSecondary)
             }
             Spacer()
-            Button {
-                Task { await client.fetch() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.icon)
+            RefreshIconButton(action: client.fetch)
         }
         .padding(24)
     }

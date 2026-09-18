@@ -20,9 +20,7 @@ struct TriggersView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if client.isLoading && client.status == nil {
-                        Text("Loading…")
-                            .font(PCorpFont.body(12))
-                            .foregroundStyle(theme.textSecondary)
+                        SkeletonList()
                     } else if let error = client.errorMessage {
                         Text(error)
                             .font(PCorpFont.body(12))

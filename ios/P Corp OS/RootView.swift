@@ -141,6 +141,7 @@ struct RootView: View {
             // covered topBar's hamburger button too, silently swallowing
             // taps on it.
         }
+        .toastHost()
         .gesture(closeDragGesture)
         .task {
             backend.connect()

@@ -32,12 +32,7 @@ struct CalendarView: View {
                     .foregroundStyle(theme.textSecondary)
             }
             Spacer()
-            Button {
-                Task { await load() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.icon)
+            RefreshIconButton(action: load)
         }
         .padding(24)
     }
@@ -45,7 +40,10 @@ struct CalendarView: View {
     @ViewBuilder
     private var content: some View {
         if isLoading && events.isEmpty {
-            emptyState(icon: "calendar", title: "Loading…", subtitle: "Reading events from the macOS Calendar app.")
+            ScrollView {
+                SkeletonList(count: 4)
+                    .padding(24)
+            }
         } else if events.isEmpty {
             emptyState(icon: "calendar", title: "Nothing on the calendar", subtitle: "No events in the next 7 days across any calendar.")
         } else {

@@ -11,6 +11,7 @@ import SwiftUI
 struct AutomationsView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = AutomationsClient()
+    @EnvironmentObject private var toastCenter: ToastCenter
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -49,9 +50,7 @@ struct AutomationsView: View {
     @ViewBuilder
     private var ruleSection: some View {
         if client.isLoading && client.rules.isEmpty {
-            Text("Loading…")
-                .font(PCorpFont.body(12))
-                .foregroundStyle(theme.textSecondary)
+            SkeletonList()
         } else if client.rules.isEmpty, let error = client.errorMessage {
             Text(error)
                 .font(PCorpFont.body(12))
@@ -72,8 +71,15 @@ struct AutomationsView: View {
                     RuleCard(
                         rule: rule,
                         lastRun: client.runs.first(where: { $0.ruleId == rule.id }),
-                        onToggle: { enabled in Task { await client.toggleRule(id: rule.id, enabled: enabled) } },
-                        onDelete: { Task { await client.deleteRule(id: rule.id) } }
+                        isBusy: client.isLoading,
+                        onToggle: { enabled in Task {
+                            await client.toggleRule(id: rule.id, enabled: enabled)
+                            if client.errorMessage == nil { toastCenter.show(enabled ? "Rule enabled" : "Rule paused", style: .success) }
+                        } },
+                        onDelete: { Task {
+                            await client.deleteRule(id: rule.id)
+                            if client.errorMessage == nil { toastCenter.show("Rule deleted", style: .success) }
+                        } }
                     )
                 }
             }
@@ -109,6 +115,10 @@ private struct RuleCard: View {
     /// Most recent automation_runs row for this rule, if any -- nil means
     /// genuinely never fired yet, not an error.
     let lastRun: AutomationRun?
+    /// AutomationsClient.isLoading -- true for the follow-up fetch()
+    /// toggleRule/deleteRule already trigger internally, so this reflects
+    /// real in-flight state with no new client-side flag needed.
+    let isBusy: Bool
     let onToggle: (Bool) -> Void
     let onDelete: () -> Void
     @Environment(\.appTheme) private var theme
@@ -136,17 +146,23 @@ private struct RuleCard: View {
                 // all before this; pause/resume is UI-driven (a PATCH),
                 // not a Frank tool, same reasoning Triggers' own toggle
                 // already established.
-                Toggle("", isOn: Binding(get: { rule.enabled }, set: onToggle))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .tint(theme.textPrimary)
-                Menu {
-                    Button("Delete", role: .destructive, action: onDelete)
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .foregroundStyle(theme.textSecondary)
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 20)
+                } else {
+                    Toggle("", isOn: Binding(get: { rule.enabled }, set: onToggle))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .tint(theme.textPrimary)
+                    Menu {
+                        Button("Delete", role: .destructive, action: onDelete)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .foregroundStyle(theme.textSecondary)
+                    }
+                    .frame(width: 20)
                 }
-                .frame(width: 20)
             }
             Text(rule.description)
                 .font(PCorpFont.body(12))

@@ -48,9 +48,7 @@ struct JoshxView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if client.isLoading && client.dashboard == nil {
-                        Text("Loading…")
-                            .font(PCorpFont.body(12))
-                            .foregroundStyle(theme.textSecondary)
+                        SkeletonList()
                     } else if let dashboard = client.dashboard {
                         // Real gap found live (2026-09-06, systems audit
                         // §18 sweep): errorMessage used to be checked
@@ -195,12 +193,7 @@ struct JoshxView: View {
                     .foregroundStyle(theme.textSecondary)
             }
             Spacer()
-            Button {
-                Task { await client.fetch() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.icon)
+            RefreshIconButton(action: client.fetch)
         }
         .padding(24)
     }

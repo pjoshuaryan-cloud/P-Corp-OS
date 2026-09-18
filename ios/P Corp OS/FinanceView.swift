@@ -21,9 +21,7 @@ struct FinanceView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     if client.isLoading && client.dashboard == nil {
-                        Text("Loading…")
-                            .font(PCorpFont.body(12))
-                            .foregroundStyle(theme.textSecondary)
+                        SkeletonList()
                     } else if let error = client.errorMessage {
                         Text(error)
                             .font(PCorpFont.body(12))
@@ -402,9 +400,7 @@ private struct FinanceAccountHistorySheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         if isLoading {
-                            Text("Loading…")
-                                .font(PCorpFont.body(12))
-                                .foregroundStyle(theme.textSecondary)
+                            SkeletonList()
                                 .padding(16)
                         } else if loadFailed {
                             Text("Couldn't load history — is the backend running?")

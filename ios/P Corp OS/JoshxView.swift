@@ -32,9 +32,7 @@ struct JoshxView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if client.isLoading && client.dashboard == nil {
-                        Text("Loading…")
-                            .font(PCorpFont.body(12))
-                            .foregroundStyle(theme.textSecondary)
+                        SkeletonList()
                     } else if let dashboard = client.dashboard {
                         // See desktop's own JoshxView.swift for why a
                         // loaded dashboard wins over errorMessage here

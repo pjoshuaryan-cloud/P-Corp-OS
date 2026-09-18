@@ -26,9 +26,7 @@ struct TradingDivisionView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if client.isLoading && client.dashboard == nil {
-                        Text("Loading…")
-                            .font(PCorpFont.body(12))
-                            .foregroundStyle(theme.textSecondary)
+                        SkeletonList()
                     } else if let error = client.errorMessage {
                         Text(error)
                             .font(PCorpFont.body(12))
@@ -287,6 +285,7 @@ private struct LiveAccountDetailSheet: View {
     @ObservedObject var client: TradingDivisionClient
     @Environment(\.appTheme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var toastCenter: ToastCenter
 
     private var isProfit: Bool { status.floatingPnl >= 0 }
 
@@ -340,7 +339,10 @@ private struct LiveAccountDetailSheet: View {
                             .font(PCorpFont.body(12.5))
                             .foregroundStyle(theme.textPrimary)
                             .textSelection(.enabled)
-                        Button("Refresh") { Task { await client.fetchHoldingUpdate() } }
+                        Button("Refresh") { Task {
+                            await client.fetchHoldingUpdate()
+                            if client.holdingUpdateError == nil { toastCenter.show("Live update ready", style: .success) }
+                        } }
                             .buttonStyle(.bordered)
                     } else {
                         if let error = client.holdingUpdateError {
@@ -348,7 +350,10 @@ private struct LiveAccountDetailSheet: View {
                                 .font(PCorpFont.body(12))
                                 .foregroundStyle(theme.statusRisk)
                         }
-                        Button("Get Live Update") { Task { await client.fetchHoldingUpdate() } }
+                        Button("Get Live Update") { Task {
+                            await client.fetchHoldingUpdate()
+                            if client.holdingUpdateError == nil { toastCenter.show("Live update ready", style: .success) }
+                        } }
                             .buttonStyle(.borderedProminent)
                     }
                 }
@@ -486,6 +491,7 @@ private struct StockMoverDetailSheet: View {
     @ObservedObject var client: TradingDivisionClient
     @Environment(\.appTheme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var toastCenter: ToastCenter
 
     private var isFetching: Bool { client.fetchingStockUpdateSymbols.contains(mover.symbol) }
     private var update: String? { client.stockUpdates[mover.symbol] }
@@ -538,7 +544,10 @@ private struct StockMoverDetailSheet: View {
                             .font(PCorpFont.body(12.5))
                             .foregroundStyle(theme.textPrimary)
                             .textSelection(.enabled)
-                        Button("Refresh") { Task { await client.fetchStockUpdate(symbol: mover.symbol) } }
+                        Button("Refresh") { Task {
+                            await client.fetchStockUpdate(symbol: mover.symbol)
+                            if client.stockUpdateErrors[mover.symbol] == nil { toastCenter.show("Live update ready", style: .success) }
+                        } }
                             .buttonStyle(.bordered)
                     } else {
                         if let error {
@@ -546,7 +555,10 @@ private struct StockMoverDetailSheet: View {
                                 .font(PCorpFont.body(12))
                                 .foregroundStyle(theme.statusRisk)
                         }
-                        Button("Get Live Update") { Task { await client.fetchStockUpdate(symbol: mover.symbol) } }
+                        Button("Get Live Update") { Task {
+                            await client.fetchStockUpdate(symbol: mover.symbol)
+                            if client.stockUpdateErrors[mover.symbol] == nil { toastCenter.show("Live update ready", style: .success) }
+                        } }
                             .buttonStyle(.borderedProminent)
                     }
                 }

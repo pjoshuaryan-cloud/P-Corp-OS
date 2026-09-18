@@ -34,6 +34,7 @@ struct PersonalView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = PersonalClient()
     @StateObject private var peopleClient = PeopleClient()
+    @EnvironmentObject private var toastCenter: ToastCenter
 
     @State private var isAddingGoal = false
     @State private var newGoalTitle = ""
@@ -54,9 +55,7 @@ struct PersonalView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if client.isLoading && client.dashboard == nil {
-                        Text("Loading…")
-                            .font(PCorpFont.body(12))
-                            .foregroundStyle(theme.textSecondary)
+                        SkeletonList()
                     } else if let error = client.errorMessage {
                         Text(error)
                             .font(PCorpFont.body(12))
@@ -86,9 +85,7 @@ struct PersonalView: View {
 
                     if peopleClient.isLoading && peopleClient.dashboard == nil {
                         section(title: "PEOPLE") {
-                            Text("Loading…")
-                                .font(PCorpFont.body(12))
-                                .foregroundStyle(theme.textSecondary)
+                            SkeletonList(count: 2)
                         }
                     } else if let error = peopleClient.errorMessage {
                         section(title: "PEOPLE") {
@@ -131,15 +128,10 @@ struct PersonalView: View {
                     .foregroundStyle(theme.textSecondary)
             }
             Spacer()
-            Button {
-                Task {
-                    await client.fetch()
-                    await peopleClient.fetch()
-                }
-            } label: {
-                Image(systemName: "arrow.clockwise")
+            RefreshIconButton {
+                await client.fetch()
+                await peopleClient.fetch()
             }
-            .buttonStyle(.icon)
         }
         .padding(24)
     }
@@ -187,15 +179,17 @@ struct PersonalView: View {
         .cardSurface(radius: 12)
     }
 
-    private func addFormButtons(canSave: Bool, onCancel: @escaping () -> Void, onSave: @escaping () -> Void) -> some View {
+    private func addFormButtons(canSave: Bool, onCancel: @escaping () -> Void, onSave: @escaping () async -> Void) -> some View {
         HStack {
             Button("Cancel", action: onCancel)
                 .font(PCorpFont.body(12))
                 .foregroundStyle(theme.textSecondary)
             Spacer()
-            Button("Save", action: onSave)
-                .buttonStyle(.actionFilled)
-                .disabled(!canSave)
+            AsyncButton(action: onSave) {
+                Text("Save")
+            }
+            .buttonStyle(.actionFilled)
+            .disabled(!canSave)
         }
     }
 
@@ -213,8 +207,9 @@ struct PersonalView: View {
                 onSave: {
                     let title = newGoalTitle
                     let targetDate = newGoalTargetDate.isEmpty ? nil : newGoalTargetDate
+                    await client.addGoal(title: title, targetDate: targetDate)
                     newGoalTitle = ""; newGoalTargetDate = ""; isAddingGoal = false
-                    Task { await client.addGoal(title: title, targetDate: targetDate) }
+                    if client.errorMessage == nil { toastCenter.show("Goal added", style: .success) }
                 }
             )
         }
@@ -234,8 +229,9 @@ struct PersonalView: View {
                 onSave: {
                     let title = newHabitTitle
                     let cadence = newHabitCadence.isEmpty ? nil : newHabitCadence
+                    await client.addHabit(title: title, cadence: cadence)
                     newHabitTitle = ""; newHabitCadence = ""; isAddingHabit = false
-                    Task { await client.addHabit(title: title, cadence: cadence) }
+                    if client.errorMessage == nil { toastCenter.show("Habit added", style: .success) }
                 }
             )
         }
@@ -266,9 +262,10 @@ struct PersonalView: View {
                     let company = newPersonCompany.isEmpty ? nil : newPersonCompany
                     let email = newPersonEmail.isEmpty ? nil : newPersonEmail
                     let phone = newPersonPhone.isEmpty ? nil : newPersonPhone
+                    await peopleClient.addPerson(name: name, company: company, email: email, phone: phone)
                     newPersonName = ""; newPersonCompany = ""; newPersonEmail = ""; newPersonPhone = ""
                     isAddingPerson = false
-                    Task { await peopleClient.addPerson(name: name, company: company, email: email, phone: phone) }
+                    if peopleClient.errorMessage == nil { toastCenter.show("Person added", style: .success) }
                 }
             )
         }
@@ -399,6 +396,14 @@ private struct PersonRow: View {
                 .font(PCorpFont.body(10.5))
                 InlineEditableText(value: person.notes ?? "", placeholder: "Add notes") { newValue in
                     await peopleClient.updatePerson(id: person.id, notes: newValue)
+                }
+                .font(PCorpFont.body(10.5))
+                InlineEditableText(value: person.nextFollowUpDate ?? "", placeholder: "Add next follow-up date (e.g. 2026-12-31)") { newValue in
+                    await peopleClient.updatePerson(id: person.id, nextFollowUpDate: newValue)
+                }
+                .font(PCorpFont.body(10.5))
+                InlineEditableText(value: person.followUpCadenceDays.map(String.init) ?? "", placeholder: "Add follow-up cadence (days)") { newValue in
+                    await peopleClient.updatePerson(id: person.id, followUpCadenceDays: Int(newValue))
                 }
                 .font(PCorpFont.body(10.5))
             }

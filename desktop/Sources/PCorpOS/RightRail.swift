@@ -208,20 +208,12 @@ private struct InsightsCard: View {
                 // whole app missing both (the other being Situation Room
                 // below). Same manual-refresh convention already used on
                 // 10 other views (e.g. TriggersView's own header), just
-                // never applied here.
-                if let lastFetchedAt = client.lastFetchedAt {
-                    Text("Updated \(lastFetchedAt.formatted(date: .omitted, time: .standard))")
-                        .font(PCorpFont.body(9.5))
-                        .foregroundStyle(theme.textTertiary)
-                }
-                Button {
-                    Task { await client.fetch() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.textSecondary)
-                }
-                .buttonStyle(.plain)
+                // never applied here. Update (2026-09-18, interaction
+                // polish pass): now the shared FreshnessLabel/
+                // RefreshIconButton components instead of hand-rolled
+                // duplicates of both.
+                FreshnessLabel(lastFetchedAt: client.lastFetchedAt)
+                RefreshIconButton(action: client.fetch)
                 LinkTextButton(title: "View all") {
                     navigate(to: "Frank", selectedID: $selectedID)
                 }

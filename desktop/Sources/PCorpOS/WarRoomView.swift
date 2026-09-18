@@ -118,7 +118,7 @@ struct WarRoomView: View {
                 SituationRoomBanner(
                     alerts: situationRoom.alerts,
                     lastFetchedAt: situationRoom.lastFetchedAt,
-                    onRefresh: { Task { await situationRoom.fetch() } }
+                    onRefresh: { await situationRoom.fetch() }
                 )
             }
 
@@ -577,7 +577,7 @@ struct WarRoomView: View {
 private struct SituationRoomBanner: View {
     let alerts: [SituationRoomAlert]
     let lastFetchedAt: Date?
-    let onRefresh: () -> Void
+    let onRefresh: () async -> Void
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -596,17 +596,8 @@ private struct SituationRoomBanner: View {
                 // Insights card -- an escalated alert is exactly the kind
                 // of thing that shouldn't rely on waiting out a silent
                 // 30s poll.
-                if let lastFetchedAt {
-                    Text("Updated \(lastFetchedAt.formatted(date: .omitted, time: .standard))")
-                        .font(PCorpFont.body(9))
-                        .foregroundStyle(theme.statusRisk.opacity(0.7))
-                }
-                Button(action: onRefresh) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(theme.statusRisk.opacity(0.8))
-                }
-                .buttonStyle(.plain)
+                FreshnessLabel(lastFetchedAt: lastFetchedAt, color: theme.statusRisk.opacity(0.7), fontSize: 9)
+                RefreshIconButton(tint: theme.statusRisk.opacity(0.8), action: onRefresh)
             }
             ForEach(alerts) { alert in
                 Text("\(alert.title) — \(alert.detail)")
@@ -772,30 +763,6 @@ private struct ApprovalCard: View {
 /// Three dots, staggered bounce, repeating for as long as it's on screen
 /// -- standard "typing" affordance, shown in place of the send button
 /// exactly while backend.isStreaming is true.
-private struct TypingIndicatorDots: View {
-    @Environment(\.appTheme) private var theme
-    @State private var animate = false
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<3, id: \.self) { index in
-                Circle()
-                    .fill(theme.textSecondary)
-                    .frame(width: 5, height: 5)
-                    .scaleEffect(animate ? 1 : 0.5)
-                    .opacity(animate ? 1 : 0.4)
-                    .animation(
-                        .easeInOut(duration: 0.55)
-                            .repeatForever(autoreverses: true)
-                            .delay(Double(index) * 0.15),
-                        value: animate
-                    )
-            }
-        }
-        .onAppear { animate = true }
-    }
-}
-
 /// Frank's full conversation history — searchable, grouped by when each
 /// conversation was last actually active. Built directly from a real
 /// request ("I want frank to remember all chats indefinitely, I want to be
