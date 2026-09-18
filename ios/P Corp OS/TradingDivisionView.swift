@@ -17,6 +17,7 @@ struct TradingDivisionView: View {
     @State private var showLiveAccountDetail = false
     @State private var selectedRun: TradingDivisionRun?
     @State private var selectedMonteCarloRun: TradingDivisionMonteCarloRun?
+    @State private var selectedMover: TradingDivisionStockMover?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -48,7 +49,10 @@ struct TradingDivisionView: View {
                                 emptyRow("No stock moved more than the notable-move threshold in the last day.")
                             } else {
                                 ForEach(dashboard.stockMovers) { mover in
-                                    StockMoverRow(mover: mover)
+                                    Button { selectedMover = mover } label: {
+                                        StockMoverRow(mover: mover)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
                             }
                         }
@@ -107,6 +111,9 @@ struct TradingDivisionView: View {
         }
         .sheet(item: $selectedMonteCarloRun) { run in
             MonteCarloDetailSheet(run: run)
+        }
+        .sheet(item: $selectedMover) { mover in
+            StockMoverDetailSheet(mover: mover, client: client)
         }
     }
 
@@ -468,5 +475,85 @@ private struct MonteCarloDetailSheet: View {
                 .font(PCorpFont.body(11.5))
                 .foregroundStyle(theme.textPrimary)
         }
+    }
+}
+
+/// iOS port of desktop's own StockMoverDetailPopover -- see that file
+/// for the full reasoning (2026-09-18, "make stock movers clickable and
+/// interactive," per-symbol state, no account-context framing).
+private struct StockMoverDetailSheet: View {
+    let mover: TradingDivisionStockMover
+    @ObservedObject var client: TradingDivisionClient
+    @Environment(\.appTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    private var isFetching: Bool { client.fetchingStockUpdateSymbols.contains(mover.symbol) }
+    private var update: String? { client.stockUpdates[mover.symbol] }
+    private var error: String? { client.stockUpdateErrors[mover.symbol] }
+
+    var body: some View {
+        NavigationStack {
+            content
+                .navigationTitle(mover.symbol)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(mover.title)
+                        .font(PCorpFont.body(15, weight: .semibold))
+                        .foregroundStyle(theme.textPrimary)
+                    Text(mover.detail)
+                        .font(PCorpFont.body(12.5))
+                        .foregroundStyle(theme.textSecondary)
+                }
+
+                Divider().overlay(theme.divider)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("LIVE UPDATE")
+                        .font(PCorpFont.label(9))
+                        .trackedLabel(1.1)
+                        .foregroundStyle(theme.textTertiary)
+
+                    if isFetching {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Checking live price and news…")
+                                .font(PCorpFont.body(12))
+                                .foregroundStyle(theme.textSecondary)
+                        }
+                    } else if let update {
+                        Text(update)
+                            .font(PCorpFont.body(12.5))
+                            .foregroundStyle(theme.textPrimary)
+                            .textSelection(.enabled)
+                        Button("Refresh") { Task { await client.fetchStockUpdate(symbol: mover.symbol) } }
+                            .buttonStyle(.bordered)
+                    } else {
+                        if let error {
+                            Text(error)
+                                .font(PCorpFont.body(12))
+                                .foregroundStyle(theme.statusRisk)
+                        }
+                        Button("Get Live Update") { Task { await client.fetchStockUpdate(symbol: mover.symbol) } }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+        }
+        .background(theme.background)
     }
 }

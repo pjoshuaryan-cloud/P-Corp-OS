@@ -44,6 +44,15 @@ how my open trades are doing... stocks doing well"), none guessed at:
    real anti-SSRF safeguard on their side, not a bug here. Scoped to
    forexfactory.com specifically via the system prompt instruction
    below, not a general web-browsing grant.
+
+Same-day follow-up: get_stock_update() generalizes get_holding_update's
+one-shot web-tools shape to any symbol, not just NDX -- backs "make
+stock movers clickable" on the dashboard. Deliberately NOT combined
+with account context the way NDX's own update is: most stock movers
+aren't things Josh actually holds (market_movers.py's own docstring
+already confirms the universe is broader than his holdings), so a
+mover's update stays a plain factual price/news check, no account-P&L
+framing implied.
 """
 
 from anthropic import AsyncAnthropic
@@ -115,6 +124,31 @@ async def get_holding_update(client: AsyncAnthropic, postgres_conn=None) -> str:
         f"Give me a real, current update on my {HOLDING_SYMBOL} holding: its actual live price and today's "
         f"performance, and any genuinely relevant recent news. Here's my real account context for reference: "
         f"{account_context}"
+    )
+    response = await client.messages.create(
+        model="claude-sonnet-5",
+        max_tokens=2048,
+        system=TRADING_DIVISION_AGENT_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+        tools=[WEB_SEARCH_TOOL, WEB_FETCH_TOOL],
+    )
+    return "".join(block.text for block in response.content if block.type == "text")
+
+
+async def get_stock_update(client: AsyncAnthropic, symbol: str) -> str:
+    """Backs the Trading Division dashboard's "make stock movers
+    clickable and interactive" ask (2026-09-18) -- same one-shot web
+    tools-enabled shape as get_holding_update above, but deliberately
+    NOT combined with account context: market_movers.py's own docstring
+    already confirms its universe includes assets Josh doesn't hold, not
+    just NDX, so implying an account-P&L connection here would be
+    actively wrong for most of these, not just unnecessary. Plain, real
+    price/news facts about the symbol only -- same non-advisory framing
+    as everywhere else this screener's data appears."""
+    prompt = (
+        f"Give me a real, current update on {symbol}: its actual live price and today's performance, and any "
+        f"genuinely relevant recent news. This is a factual price/news check, not Josh's own holding -- don't "
+        f"imply anything about whether he should act on it."
     )
     response = await client.messages.create(
         model="claude-sonnet-5",

@@ -147,6 +147,7 @@ from app.trading_division_agent import (
     TRADING_DIVISION_AGENT_TOOLS,
     execute_trading_division_agent_tool_call,
     get_holding_update,
+    get_stock_update,
 )
 from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES, LEGACY_VAULT_TOOLS, execute_legacy_vault_tool_call
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
@@ -936,6 +937,31 @@ async def trading_division_holding_update(request: Request, _: None = Depends(ve
         raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
     client = AsyncAnthropic(api_key=api_key)
     update = await get_holding_update(client, postgres_conn)
+    return {"update": update}
+
+
+class TradingDivisionStockUpdateRequest(BaseModel):
+    symbol: str
+
+
+@app.post("/trading-division/stock-update")
+async def trading_division_stock_update(
+    body: TradingDivisionStockUpdateRequest, _: None = Depends(verify_token)
+) -> dict:
+    # Backs "make stock movers clickable and interactive" (2026-09-18,
+    # same-day follow-up) -- same shape as the holding-update route
+    # above, generalized to any symbol from the movers list rather than
+    # the one hardcoded NDX holding. No postgres_conn needed here --
+    # get_stock_update doesn't touch account data at all, deliberately
+    # (see its own docstring for why that framing would be wrong for a
+    # mover Josh may not even hold).
+    if not body.symbol.strip():
+        raise HTTPException(status_code=400, detail="symbol is required")
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
+    client = AsyncAnthropic(api_key=api_key)
+    update = await get_stock_update(client, body.symbol)
     return {"update": update}
 
 

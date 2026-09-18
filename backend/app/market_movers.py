@@ -76,7 +76,13 @@ async def _check_movers_for_universe(universe: list[str], postgres_conn=None) ->
     check_stock_movers below needed the exact same threshold/lookback
     logic over a narrower universe (xStocks only, not Luno crypto too).
     Same item_key/title/detail shape either way, so a caller can treat
-    both functions' results identically."""
+    both functions' results identically.
+
+    `symbol` (2026-09-18) added alongside title/detail -- the Trading
+    Division dashboard's own "make stock movers clickable" ask needed
+    the raw asset symbol to fetch a live update for the specific one
+    tapped, and parsing it back out of the human-readable `title` string
+    would be fragile where a plain field isn't."""
     today = date.today().isoformat()
     items: list[dict] = []
     for asset in universe:
@@ -90,6 +96,7 @@ async def _check_movers_for_universe(universe: list[str], postgres_conn=None) ->
         items.append(
             {
                 "item_key": f"market_mover:{asset}:{today}",
+                "symbol": asset,
                 "title": f"{asset} {direction} {abs(pct):.1f}%",
                 "detail": (
                     f"R{change['current_price']:,.2f}, was R{change['previous_price']:,.2f} "

@@ -344,11 +344,16 @@ public struct TradingDivisionMonteCarloRun: Identifiable, Decodable {
 /// the Triggers Layer's own digest, meaningless to this dashboard view.
 public struct TradingDivisionStockMover: Identifiable, Decodable {
     public let id = UUID()
+    /// The raw asset symbol (2026-09-18, "make stock movers clickable"
+    /// ask) -- backs the per-mover live update fetch; kept separate from
+    /// `title` (a human-readable "SYMBOL up/down N%" string) rather than
+    /// parsed back out of it, which would be fragile.
+    public let symbol: String
     public let title: String
     public let detail: String
 
     enum CodingKeys: String, CodingKey {
-        case title, detail
+        case symbol, title, detail
     }
 }
 

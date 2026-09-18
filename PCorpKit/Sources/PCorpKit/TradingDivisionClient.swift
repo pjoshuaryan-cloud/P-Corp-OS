@@ -19,11 +19,20 @@ public final class TradingDivisionClient: ObservableObject {
     @Published public private(set) var holdingUpdate: String?
     @Published public private(set) var isFetchingHoldingUpdate = false
     @Published public private(set) var holdingUpdateError: String?
+    /// Same shape as holdingUpdate's own three properties above, but
+    /// keyed by symbol (2026-09-18, "make stock movers clickable and
+    /// interactive") -- several movers can each be tapped independently,
+    /// so a single shared property would let one mover's in-flight fetch
+    /// clobber another's already-shown result.
+    @Published public private(set) var stockUpdates: [String: String] = [:]
+    @Published public private(set) var fetchingStockUpdateSymbols: Set<String> = []
+    @Published public private(set) var stockUpdateErrors: [String: String] = [:]
 
     public init() {}
 
     private var url: URL { BackendHost.url(path: "/trading-division/dashboard") }
     private var holdingUpdateURL: URL { BackendHost.url(path: "/trading-division/holding-update") }
+    private var stockUpdateURL: URL { BackendHost.url(path: "/trading-division/stock-update") }
 
     public func fetch() async {
         isLoading = true
@@ -61,5 +70,29 @@ public final class TradingDivisionClient: ObservableObject {
             holdingUpdateError = "Couldn't reach the backend — is it running?"
         }
         isFetchingHoldingUpdate = false
+    }
+
+    /// Generalized counterpart to fetchHoldingUpdate above, for any
+    /// stock-mover symbol rather than the one hardcoded NDX holding --
+    /// same real live-call cost/latency, same manual-only trigger.
+    public func fetchStockUpdate(symbol: String) async {
+        fetchingStockUpdateSymbols.insert(symbol)
+        stockUpdateErrors[symbol] = nil
+        var request = URLRequest(url: stockUpdateURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(["symbol": symbol])
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                stockUpdateErrors[symbol] = "Request failed (\(http.statusCode))."
+            } else {
+                stockUpdates[symbol] = try JSONDecoder().decode(HoldingUpdateResponse.self, from: data).update
+            }
+        } catch {
+            stockUpdateErrors[symbol] = "Couldn't reach the backend — is it running?"
+        }
+        fetchingStockUpdateSymbols.remove(symbol)
     }
 }
