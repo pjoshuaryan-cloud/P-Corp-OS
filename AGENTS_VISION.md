@@ -202,6 +202,8 @@ It drafts communications, but Frank decides what to send.
 
 **Scope note (2026-08-04):** Built as draft-only, deliberately -- "Frank decides what to send" above lines up exactly with the standing rule that sending any message on Joshua's behalf needs his own explicit approval, so there's no send tool at all rather than a send tool gated behind confirmation. No real inbox/calendar integration either -- that needs real Google OAuth infrastructure (Cloud project, consent screen, token storage), a genuinely separate, bigger project. The Gmail/Calendar MCP connectors available in a Claude Code session are scoped to that session only; the P Corp OS backend has no MCP client of its own and would need its own integration built from scratch if/when that's worth doing.
 
+**Update (2026-09-18):** real Gmail integration now exists (`google_oauth.py`, since 2026-08-27) -- and with it, "Frank decides what to send" above was revisited directly with Joshua rather than left as an untested aspiration. He chose the middle option this document's own scope note had explicitly ruled out at the time ("rather than a send tool gated behind confirmation"): a real `propose_send_email` tool now exists, but it's approval-gated, not autonomous -- Frank drafts, Joshua sees the exact recipient/subject/body on a real approval card, and it only sends after his explicit approval, same mechanism `SECURITY.md`'s Engineering Agent/Calendar/Automations/Alpha Mode approval flows already use. "Frank decides what to send" was never meant as "without Joshua," and this is the first time that's actually been tested against a real send capability rather than a hypothetical one. See `SECURITY.md`'s 2026-09-18 entry for the full reasoning.
+
 ---
 
 ## Intelligence Division

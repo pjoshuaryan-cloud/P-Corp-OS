@@ -143,32 +143,37 @@ public struct ChatMessage: Identifiable {
     }
 }
 
-/// Which of the three approval flows a pending ApprovalRequest belongs to
-/// -- see ApprovalRequest's own doc comment for why this is now one
-/// generalized type instead of three parallel ones.
+/// Which of the approval flows a pending ApprovalRequest belongs to --
+/// see ApprovalRequest's own doc comment for why this is now one
+/// generalized type instead of parallel ones per kind.
 public enum ApprovalKind {
     case fileEdit
     case calendarChange
     case automationRule
     case alphaModeChange
+    case emailSend
 }
 
-/// A pending approval of any kind, sent by the backend via one of four
+/// A pending approval of any kind, sent by the backend via one of five
 /// sentinels: "\n[approval_request]" (Engineering Agent file edits, see
 /// engineering_agent.py's propose_file_edit), "\n[calendar_approval_request]"
 /// (calendar_tools.py's propose_*_calendar_event, added 2026-08-30),
 /// "\n[automation_approval_request]" (automation_tools.py's
-/// propose_create_automation, added 2026-09-06), or
-/// "\n[alpha_mode_approval_request]" (alpha_mode_tools.py's real-Supabase
-/// writes, added 2026-09-06 in the same systems-audit §19 sweep that
-/// gated them). Generalized from three separate structs/pending-slots/
-/// response-methods into this one type on the third occurrence -- exactly
-/// the point calendar_tools.py's own comment named as when to stop
-/// copy-pasting a new pair ("wait for a third occurrence, same rule of
-/// three already applied on the backend"); the fourth (.alphaModeChange)
-/// slots straight into the same shape, reusing the already-generic
-/// title/details fields .calendarChange established rather than adding
-/// two more optional properties for one more kind.
+/// propose_create_automation, added 2026-09-06), "\n[alpha_mode_approval_request]"
+/// (alpha_mode_tools.py's real-Supabase writes, added 2026-09-06 in the
+/// same systems-audit §19 sweep that gated them), or
+/// "\n[email_approval_request]" (email_tools.py's propose_send_email,
+/// added 2026-09-18 -- a deliberate, explicit reversal of Communications
+/// Agent's original "no send tool at all" decision, made directly with
+/// Josh; see SECURITY.md's 2026-09-18 entry). Generalized from three
+/// separate structs/pending-slots/response-methods into this one type on
+/// the third occurrence -- exactly the point calendar_tools.py's own
+/// comment named as when to stop copy-pasting a new pair ("wait for a
+/// third occurrence, same rule of three already applied on the
+/// backend"); .alphaModeChange and .emailSend both slot straight into
+/// the same shape, reusing the already-generic title/details fields
+/// .calendarChange established rather than adding new optional
+/// properties per kind.
 /// `kind` is set by listen() based on which sentinel matched, not decoded
 /// from JSON -- the three backend payload shapes are unchanged and still
 /// don't share a discriminator field, so this needed zero backend
@@ -223,9 +228,10 @@ public final class BackendClient: ObservableObject {
     @Published public private(set) var isStreaming: Bool = false {
         didSet { UserDefaults.standard.set(isStreaming, forKey: Self.wasStreamingAtLastStopKey) }
     }
-    /// Non-nil while ANY of the three approval flows (file edit, calendar
-    /// change, automation-rule creation) is blocked waiting on Josh's
-    /// decision -- one shared slot since 2026-09-06 (see ApprovalRequest's
+    /// Non-nil while ANY approval flow (file edit, calendar change,
+    /// automation-rule creation, Alpha Mode write, email send) is blocked
+    /// waiting on Josh's decision -- one shared slot since 2026-09-06 (see
+    /// ApprovalRequest's
     /// own doc comment), never more than one at a time in practice (a
     /// turn calls one tool at a time). The UI shows an approval card and
     /// disables normal chat input while this is set. Cleared by
@@ -653,18 +659,18 @@ public final class BackendClient: ObservableObject {
         }
     }
 
-    /// Sends Joshua's decision on a pending approval (any of the three
-    /// kinds -- see ApprovalRequest's own doc comment) back over this
-    /// same live socket -- the backend's propose_* executor is blocked in
-    /// a single `await websocket.receive_text()` call waiting for exactly
-    /// this shape, regardless of which flow it came from (the backend
-    /// matches purely by `id`, never by kind). Deliberately doesn't reuse
+    /// Sends Joshua's decision on a pending approval (any kind -- see
+    /// ApprovalRequest's own doc comment) back over this same live socket
+    /// -- the backend's propose_* executor is blocked in a single `await
+    /// websocket.receive_text()` call waiting for exactly this shape,
+    /// regardless of which flow it came from (the backend matches purely
+    /// by `id`, never by kind). Deliberately doesn't reuse
     /// send(_:attachments:) above, since that's coupled to starting a new
     /// chat turn (appends ChatMessages, sets isStreaming). Clears
     /// pendingApproval immediately so the UI can't double-send for the
     /// same request; a no-op if the socket already died while the card
-    /// was showing. One method for all three kinds since 2026-09-06 --
-    /// see ApprovalRequest's own doc comment for why.
+    /// was showing. One method for every kind since 2026-09-06 -- see
+    /// ApprovalRequest's own doc comment for why.
     public func respondToApproval(approved: Bool) {
         guard let request = pendingApproval, let task else { return }
         pendingApproval = nil
@@ -808,11 +814,13 @@ public final class BackendClient: ObservableObject {
         let id, tool, name, description, trigger_tool, agent, instruction: String
     }
     private struct AlphaModeApprovalWire: Decodable { let id, tool, title, details: String }
+    private struct EmailApprovalWire: Decodable { let id, tool, title, details: String }
     private static let notifyPrefix = "\n[notify]"
     private static let approvalRequestPrefix = "\n[approval_request]"
     private static let calendarApprovalRequestPrefix = "\n[calendar_approval_request]"
     private static let automationApprovalRequestPrefix = "\n[automation_approval_request]"
     private static let alphaModeApprovalRequestPrefix = "\n[alpha_mode_approval_request]"
+    private static let emailApprovalRequestPrefix = "\n[email_approval_request]"
     private static let toolStartPrefix = "\n[tool_start]"
     private static let documentGeneratedPrefix = "\n[document_generated]"
     private static let pingSentinel = "\n[ping]"
@@ -884,6 +892,17 @@ public final class BackendClient: ObservableObject {
                                let w = try? JSONDecoder().decode(AlphaModeApprovalWire.self, from: data) {
                                 self.pendingApproval = ApprovalRequest(
                                     id: w.id, tool: w.tool, kind: .alphaModeChange,
+                                    path: nil, summary: nil, diff: nil,
+                                    title: w.title, details: w.details, start: nil, end: nil,
+                                    name: nil, description: nil, triggerTool: nil, agent: nil, instruction: nil
+                                )
+                            }
+                        } else if text.hasPrefix(Self.emailApprovalRequestPrefix) {
+                            let payloadText = String(text.dropFirst(Self.emailApprovalRequestPrefix.count))
+                            if let data = payloadText.data(using: .utf8),
+                               let w = try? JSONDecoder().decode(EmailApprovalWire.self, from: data) {
+                                self.pendingApproval = ApprovalRequest(
+                                    id: w.id, tool: w.tool, kind: .emailSend,
                                     path: nil, summary: nil, diff: nil,
                                     title: w.title, details: w.details, start: nil, end: nil,
                                     name: nil, description: nil, triggerTool: nil, agent: nil, instruction: nil

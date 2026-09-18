@@ -43,6 +43,13 @@ Authentication, security, and permissions are explicitly owned by Layer 1 (P Cor
   - **Scope, explicitly:** Engineering Agent only, this pass. Design/Operations/Communications Agents are not wired into this approval mechanism yet — a deliberate follow-up once this proves out in real use, not bundled into this change.
   - **Update, same day:** proved out in real use, extended to Design Agent and Operations Agent — both have a real codebase to touch (SwiftUI source; `automations_registry.py`/Knowledge docs). Same tier classification, same shared `agent_codebase_tools.py` toolset/safety boundary/approval flow, no new infrastructure. Communications Agent deliberately excluded — its whole domain is external email/message drafts, no source of its own to read or edit.
 
+## Decided (2026-09-18)
+
+- **Email send capability, reversing this document's own "read-only" framing for Gmail — a real "needs explicit confirmation" example named directly in this document since 2026-07-24 ("...sending an email...") finally gets a real tool.** `AGENTS_VISION.md`'s Communications Agent section had recorded "no send tool at all, rather than a send tool gated behind confirmation" as a standing decision — a genuinely stronger position than this document's own tier framework required. Asked Josh directly before touching anything, given the stakes (real email to real third parties, not easily reversible): offered Gmail-drafts-only, approval-gated send, unconstrained direct send, or leave it read-only. **He chose approval-gated send.**
+  - New `propose_send_email` tool (`email_tools.py`) — classified **"Needs explicit confirmation."** Never sends immediately: sends Josh a real approval card (recipient, subject, full body) over the existing websocket and blocks until he approves or rejects, exactly mirroring `calendar_tools.py`'s/`alpha_mode_tools.py`'s own `propose_*`/`_request_approval` shape (own request id, fails closed on rejection/mismatch/malformed reply). A fifth independent instance of this pattern.
+  - Needs a new Google OAuth scope (`gmail.send`, added to `google_oauth.py`'s `SCOPES`) — Josh must re-consent once via `/auth/google/start` before this actually works; the existing refresh token predates the new scope and Google does not retroactively grant it.
+  - `AGENTS_VISION.md`'s Communications Agent section updated to match — see that file for the corresponding entry.
+
 ## Open questions
 
 - Credential storage and secrets management across desktop + mobile + any cloud sync backend, once those exist.

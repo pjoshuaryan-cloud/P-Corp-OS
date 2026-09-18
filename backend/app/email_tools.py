@@ -1,9 +1,7 @@
 """
 Frank's tools for the Gmail read-log (app/email_db.py), 2026-08-27. Same
 shape as people_tools.py: narrow, hardcoded actions via the plain SDK's
-tool-use. Read-only -- there is no send/reply/forward tool here, and
-never will be, per the original brief's constraint (Communications Agent
-stays draft-only; this module doesn't touch Communications Agent at all).
+tool-use.
 
 Deliberately no build_email_block() -- unlike Joshx/Personal/People's
 small, stable lists, email volume would bloat Frank's system prompt on
@@ -14,9 +12,29 @@ discipline.
 No consult_email_agent, same call already made for Personal/Joshx/
 People/Calendar -- these are plain read actions, not a domain complex
 enough to need a specialist's commentary.
+
+Update (2026-09-18): propose_send_email added -- a deliberate, explicit
+reversal of this module's own former "read-only, no send tool, ever"
+framing (AGENTS_VISION.md's Communications Agent section had recorded
+"no send tool at all" as a standing decision). Asked Josh directly
+rather than just building it: he chose approval-gated send specifically
+-- Frank drafts, Josh sees the exact to/subject/body on a real approval
+card, and it only actually sends after explicit approval, mirroring
+calendar_tools.py's/alpha_mode_tools.py's own propose_*/_request_approval
+shape exactly (own request_id, blocks on websocket.receive_text(), fails
+closed on rejection/malformed reply) -- a fifth occurrence of a pattern
+this codebase has now built four times independently. Needs the new
+gmail.send scope (google_oauth.py); Josh must re-consent once through
+/auth/google/start before this actually works.
 """
 
+import json
+import uuid
+
+from fastapi import WebSocket
+
 from app.email_db import get_email_by_id, get_recent_emails, search_emails, sync_recent_emails
+from app.gmail_client import send_message
 
 GET_RECENT_EMAILS_TOOL = {
     "name": "get_recent_emails",
@@ -66,7 +84,25 @@ READ_EMAIL_TOOL = {
     },
 }
 
-EMAIL_TOOLS = [GET_RECENT_EMAILS_TOOL, SEARCH_EMAILS_TOOL, READ_EMAIL_TOOL]
+PROPOSE_SEND_EMAIL_TOOL = {
+    "name": "propose_send_email",
+    "description": (
+        "Proposes sending a new email through Josh's real Gmail account. Does NOT send it immediately -- sends "
+        "Josh a real approval card showing the exact recipient/subject/body and blocks until he approves or "
+        "rejects. A fresh standalone message only -- no reply-threading yet."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "to": {"type": "string", "description": "Recipient email address."},
+            "subject": {"type": "string"},
+            "body": {"type": "string", "description": "Plain-text email body."},
+        },
+        "required": ["to", "subject", "body"],
+    },
+}
+
+EMAIL_TOOLS = [GET_RECENT_EMAILS_TOOL, SEARCH_EMAILS_TOOL, READ_EMAIL_TOOL, PROPOSE_SEND_EMAIL_TOOL]
 EMAIL_TOOL_NAMES = {tool["name"] for tool in EMAIL_TOOLS}
 
 
@@ -83,7 +119,24 @@ def _format(emails: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def execute_email_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
+async def _request_approval(websocket: WebSocket, tool: str, title: str, details: str) -> bool:
+    """Mirrors calendar_tools.py's/alpha_mode_tools.py's _request_approval
+    mechanics exactly. Returns True only on an explicit, correctly-matched
+    approval -- fails closed (False) on rejection, a stale/mismatched id,
+    or any malformed reply."""
+    request_id = str(uuid.uuid4())
+    payload = json.dumps({"id": request_id, "tool": tool, "title": title, "details": details})
+    await websocket.send_text(f"\n[email_approval_request]{payload}")
+
+    raw = await websocket.receive_text()
+    try:
+        response = json.loads(raw)["approval_response"]
+        return bool(response["approved"]) and response["id"] == request_id
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return False
+
+
+async def execute_email_tool_call(name: str, tool_input: dict, websocket: WebSocket, postgres_conn=None) -> str:
     if name == "get_recent_emails":
         await sync_recent_emails(max_results=tool_input.get("limit", 10), postgres_conn=postgres_conn)
         emails = await get_recent_emails(tool_input.get("limit", 10), postgres_conn)
@@ -104,5 +157,19 @@ async def execute_email_tool_call(name: str, tool_input: dict, postgres_conn=Non
         who = email["sender_name"] or email["sender_email"] or "unknown sender"
         body = email["body"] or email["snippet"] or "(no readable body -- was synced before full-body support, or Gmail returned no text content)"
         return f"From {who} — \"{email['subject'] or '(no subject)'}\" ({email['received_at']})\n\n{body}"
+
+    if name == "propose_send_email":
+        to = tool_input["to"]
+        subject = tool_input["subject"]
+        body = tool_input["body"]
+        if "@" not in to:
+            return f"\"{to}\" doesn't look like a valid email address -- nothing was proposed."
+        approved = await _request_approval(websocket, name, f"To: {to} — {subject}", body)
+        if not approved:
+            return f"Rejected by Josh: email to {to} was not sent."
+        ok = await send_message(to, subject, body, postgres_conn)
+        if ok:
+            return f"Approved and sent to {to}."
+        return "Approved, but sending failed -- Gmail isn't connected with send permission yet (Josh needs to re-consent via /auth/google/start), or a real Gmail API error occurred."
 
     return f"Unknown tool: {name}"

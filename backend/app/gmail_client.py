@@ -1,33 +1,46 @@
 """
-Raw Gmail REST calls (2026-08-27), read-only. Backs email_db.py's sync --
-never imported by email_tools.py directly, so Frank's tools only ever see
-already-synced rows out of email_db.py, never a live Gmail response.
+Raw Gmail REST calls (2026-08-27). Read-only reads back email_db.py's
+sync -- never imported by email_tools.py directly, so Frank's list/
+search tools only ever see already-synced rows out of email_db.py, never
+a live Gmail response. send_message (2026-09-18) is the one exception --
+called directly from email_tools.py's approval-gated propose_send_email,
+only after Josh has explicitly approved that exact text, never before.
 
-Fail-soft throughout (try/except: return []/None), matching
+Fail-soft throughout (try/except: return []/None/False), matching
 alpha_mode_supabase.py's own convention -- a missing/expired token or a
 Gmail API hiccup should never crash Frank's turn or the periodic sync
-tick, just come back empty.
+tick, just come back empty/failed.
 
 Update (2026-09-18): fetches `format=full` instead of `format=metadata`
 and decodes the actual message body -- the old metadata-only fetch never
 requested a body at all, so the only text ever available anywhere
 downstream was Gmail's own ~100-character auto-generated `snippet`,
 which is why Frank could only ever show "the first line." No new scope
-needed -- still the same read-only gmail.readonly grant, just asking for
-more of what it already permits.
+needed for this part -- still the same read-only gmail.readonly grant,
+just asking for more of what it already permits.
+
+Update (2026-09-18): send_message added, backing the new approval-gated
+propose_send_email tool -- a deliberate, explicit reversal (made
+directly with Josh) of this module's own former "no write scope, ever"
+stance. Needs the new gmail.send scope (google_oauth.py's SCOPES), which
+means Josh must re-consent once through /auth/google/start before this
+actually works -- the existing refresh token predates this scope and
+Google does not retroactively grant it.
 """
 
 import base64
 import re
+from email.mime.text import MIMEText
 from email.utils import parseaddr
 from html.parser import HTMLParser
 
 import httpx
 
-from app.google_oauth import get_valid_access_token, google_api_get
+from app.google_oauth import get_valid_access_token, google_api_get, google_api_post
 
 MESSAGES_LIST_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
 MESSAGES_GET_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}"
+MESSAGES_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 
 
 def _header(headers: list[dict], name: str) -> str | None:
@@ -158,3 +171,26 @@ async def fetch_recent_messages(max_results: int = 20, query: str | None = None,
             if message is not None:
                 messages.append(message)
         return messages
+
+
+async def send_message(to: str, subject: str, body: str, postgres_conn=None) -> bool:
+    """Sends a real email through Josh's own Gmail account -- the one
+    write path this module has. Only ever called from email_tools.py's
+    propose_send_email, and only after that tool's approval gate has
+    already returned True, so by the time this runs Josh has seen this
+    exact to/subject/body and explicitly approved it. No From header set
+    -- Gmail always sends as the authenticated account regardless of what
+    a client puts there, so there's nothing correct to put here anyway.
+    Plain MIMEText, not multipart/html -- matches this tool's own "kept
+    small deliberately" scope, same reasoning email_tools.py's other
+    tools document for their own first-pass shape."""
+    token = await get_valid_access_token(postgres_conn)
+    if token is None:
+        return False
+    message = MIMEText(body)
+    message["To"] = to
+    message["Subject"] = subject
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        result = await google_api_post(http, MESSAGES_SEND_URL, token, {"raw": raw})
+    return result is not None

@@ -1925,7 +1925,7 @@ async def run_claude_turn(
             elif block.name in CALENDAR_TOOL_NAMES:
                 result = await execute_calendar_tool_call(block.name, block.input, websocket, postgres_conn)
             elif block.name in EMAIL_TOOL_NAMES:
-                result = await execute_email_tool_call(block.name, block.input, postgres_conn)
+                result = await execute_email_tool_call(block.name, block.input, websocket, postgres_conn)
             elif block.name in AUTOMATION_TOOL_NAMES:
                 result = await execute_automation_tool_call(block.name, block.input, websocket, postgres_conn)
             elif block.name in DATA_ANALYSIS_TOOL_NAMES:

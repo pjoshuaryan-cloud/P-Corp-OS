@@ -650,6 +650,7 @@ private struct ApprovalCard: View {
             case .calendarChange: calendarChangeBody
             case .automationRule: automationRuleBody
             case .alphaModeChange: alphaModeChangeBody
+            case .emailSend: emailSendBody
             }
             HStack(spacing: 10) {
                 Button("Reject", role: .destructive, action: onReject)
@@ -680,6 +681,9 @@ private struct ApprovalCard: View {
             case .alphaModeChange:
                 Image(systemName: "building.2.crop.circle").foregroundStyle(theme.accentText)
                 Text("FRANK WANTS TO UPDATE ALPHA MODE MEDIA")
+            case .emailSend:
+                Image(systemName: "paperplane").foregroundStyle(theme.accentText)
+                Text("FRANK WANTS TO SEND AN EMAIL")
             }
         }
         .font(PCorpFont.label(10))
@@ -726,6 +730,26 @@ private struct ApprovalCard: View {
         Text(request.details ?? "")
             .font(PCorpFont.body(13))
             .foregroundStyle(theme.textSecondary)
+    }
+
+    /// title carries "To: recipient — subject", details carries the full
+    /// body -- same generic title/details reuse as .alphaModeChange, no
+    /// new payload fields. Bounded ScrollView since a real email body can
+    /// run to several paragraphs, unlike calendar/Alpha Mode's one-line
+    /// details -- same reasoning as fileEditBody's diff view above.
+    @ViewBuilder
+    private var emailSendBody: some View {
+        Text(request.title ?? "")
+            .font(PCorpFont.body(13, weight: .semibold))
+            .foregroundStyle(theme.textPrimary)
+        ScrollView {
+            Text(request.details ?? "")
+                .font(PCorpFont.body(13))
+                .foregroundStyle(theme.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        }
+        .frame(maxHeight: 180)
     }
 
     @ViewBuilder

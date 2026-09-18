@@ -11,11 +11,17 @@ current or transitive dependency (pyproject.toml/uv.lock), and this
 matches the codebase's own established "plain REST, no heavy SDK"
 convention (supabase_client.py does the same against PostgREST).
 
-Read-only scopes only this pass (gmail.readonly, calendar.readonly) --
-see the Gmail/Calendar integration plan's own "Calendar is read-only this
-pass" scope note. No write scope is requested, so there is no path by
-which this module could be used to send email or create/modify/delete a
-Google Calendar event even if some future code tried.
+Started read-only-only (gmail.readonly, calendar.readonly) -- see the
+Gmail/Calendar integration plan's own "Calendar is read-only this pass"
+scope note. Calendar stays read-only; Gmail gained `gmail.send`
+(2026-09-18, approval-gated send, see email_tools.py's
+propose_send_email/SECURITY.md's "needs explicit confirmation" tier) --
+a deliberate, explicit reversal of this module's own original "no write
+scope, ever" framing, made directly with Josh rather than assumed, since
+AGENTS_VISION.md's Communications Agent section had recorded "no send
+tool at all" as a standing decision. Google Calendar writes still go
+through system_calendar.py's AppleScript path only, completely
+unaffected -- this scope change is Gmail-only.
 
 Token storage follows auth.py's own "lazy file under backend/data/"
 convention, extended with real read-modify-write logic since this token
@@ -59,7 +65,11 @@ TOKEN_PATH = Path(__file__).parent.parent / "data" / "google_oauth_token.json"
 REDIRECT_URI = "http://127.0.0.1:8731/auth/google/callback"
 AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
-SCOPES = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly"
+SCOPES = (
+    "https://www.googleapis.com/auth/gmail.readonly "
+    "https://www.googleapis.com/auth/gmail.send "
+    "https://www.googleapis.com/auth/calendar.readonly"
+)
 # Access tokens are refreshed a little before their real expiry rather than
 # exactly at it, so a slow downstream call never straddles the boundary.
 _EXPIRY_SAFETY_MARGIN_SECONDS = 60
@@ -219,6 +229,20 @@ async def google_api_get(http: httpx.AsyncClient, url: str, token: str, params: 
     caller-specific, not duplicated."""
     try:
         response = await http.get(url, headers={"Authorization": f"Bearer {token}"}, params=params)
+        if response.status_code != 200:
+            return None
+        return response.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+async def google_api_post(http: httpx.AsyncClient, url: str, token: str, json_body: dict) -> dict | None:
+    """POST counterpart to google_api_get above, added 2026-09-18 for
+    gmail_client.py's send_message -- same bearer-auth/non-200-or-error
+    means failure shape, split out rather than folded into google_api_get
+    since a GET has no body and a POST here always does."""
+    try:
+        response = await http.post(url, headers={"Authorization": f"Bearer {token}"}, json=json_body)
         if response.status_code != 200:
             return None
         return response.json()
