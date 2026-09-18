@@ -154,7 +154,7 @@ private struct RuleCard: View {
                     Toggle("", isOn: Binding(get: { rule.enabled }, set: onToggle))
                         .labelsHidden()
                         .toggleStyle(.switch)
-                        .tint(theme.textPrimary)
+                        .tint(theme.statusGood)
                     Menu {
                         Button("Delete", role: .destructive, action: onDelete)
                     } label: {

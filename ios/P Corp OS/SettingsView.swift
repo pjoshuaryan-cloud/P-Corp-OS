@@ -189,7 +189,7 @@ private struct SettingsToggleRow: View {
             Toggle("", isOn: $isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
-                .tint(theme.textPrimary)
+                .tint(theme.statusGood)
         }
         .padding(16)
     }

@@ -139,7 +139,7 @@ private struct RuleSectionCard: View {
                 Toggle("", isOn: Binding(get: { section.enabled }, set: onToggle))
                     .labelsHidden()
                     .toggleStyle(.switch)
-                    .tint(theme.textPrimary)
+                    .tint(theme.statusGood)
             }
 
             if section.items.isEmpty {
