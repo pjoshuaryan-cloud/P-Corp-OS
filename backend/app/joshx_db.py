@@ -442,9 +442,10 @@ async def delete_lead_by_id(lead_id: int, postgres_conn: Any = None) -> bool:
 
 
 async def convert_lead_to_project(
-    lead_identifier: str,
-    project_name: str,
+    lead_identifier: str | None = None,
+    project_name: str = "",
     *,
+    lead_id: int | None = None,
     start_date: str | None = None,
     due_date: str | None = None,
     shoot_date: str | None = None,
@@ -455,25 +456,40 @@ async def convert_lead_to_project(
     """Explicit lead->project conversion (2026-08-31) -- real link
     (source_lead_id) and real field carry-forward from the lead itself.
     One transaction, one commit. Does NOT soft-delete the lead -- marks
-    it 'booked' instead."""
+    it 'booked' instead.
+
+    lead_id (2026-09-18) is an alternate, id-based way to identify the
+    lead -- for the UI's own "Convert to Project" action (JoshxLead
+    detail view), which already knows the exact row id it's displaying,
+    same reasoning delete_lead_by_id was split out for rather than
+    reusing the fuzzy-matched delete_lead. Exactly one of
+    lead_identifier/lead_id is expected; lead_identifier (fuzzy name
+    match) stays the only path Frank's own chat tool uses."""
     if postgres_conn is not None:
         async with postgres_conn.cursor() as cur:
-            await cur.execute(
-                "SELECT id FROM joshx.leads WHERE client_name ILIKE %s AND deleted_at IS NULL "
-                "ORDER BY id DESC LIMIT 1",
-                (lead_identifier,),
-            )
-            row = await cur.fetchone()
-            if row is None:
+            if lead_id is None:
                 await cur.execute(
                     "SELECT id FROM joshx.leads WHERE client_name ILIKE %s AND deleted_at IS NULL "
                     "ORDER BY id DESC LIMIT 1",
-                    (f"%{lead_identifier}%",),
+                    (lead_identifier,),
                 )
                 row = await cur.fetchone()
-            if row is None:
-                return None
-            lead_id = row[0]
+                if row is None:
+                    await cur.execute(
+                        "SELECT id FROM joshx.leads WHERE client_name ILIKE %s AND deleted_at IS NULL "
+                        "ORDER BY id DESC LIMIT 1",
+                        (f"%{lead_identifier}%",),
+                    )
+                    row = await cur.fetchone()
+                if row is None:
+                    return None
+                lead_id = row[0]
+            else:
+                await cur.execute(
+                    "SELECT id FROM joshx.leads WHERE id = %s AND deleted_at IS NULL", (lead_id,)
+                )
+                if await cur.fetchone() is None:
+                    return None
 
             await cur.execute(
                 "SELECT client_name, service, budget, estimated_value, notes, project_description "
@@ -525,9 +541,16 @@ async def convert_lead_to_project(
 
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        lead_id = await _find_row_id(db, "leads", lead_identifier, name_col="client_name")
         if lead_id is None:
-            return None
+            lead_id = await _find_row_id(db, "leads", lead_identifier, name_col="client_name")
+            if lead_id is None:
+                return None
+        else:
+            cursor = await db.execute(
+                "SELECT 1 FROM leads WHERE id = ? AND deleted_at IS NULL", (lead_id,)
+            )
+            if await cursor.fetchone() is None:
+                return None
 
         cursor = await db.execute(
             "SELECT client_name, service, budget, estimated_value, notes, project_description "

@@ -7,19 +7,37 @@ import SwiftUI
 /// target at all. JoshxLead's own projectDescription/probability/
 /// followUpDate/createdAt fields were genuinely invisible anywhere in
 /// either app -- not a display choice, they were simply never wired up.
-/// Read-only this pass, deliberately -- the ask was "let me see all the
-/// details," not "let me edit a lead's stage from here too" (Frank's
-/// own update_joshx_lead_stage tool already covers that via chat); a
-/// stage-editing Picker here would be a natural, separate follow-up,
-/// same shape as JoshxProjectDetailPopover's, not bundled into this.
 ///
 /// Same "own file, presented as a popover" convention as
 /// JoshxProjectDetailPopover.swift (iOS uses `.sheet` instead --
 /// see JoshxLeadDetailSheet.swift).
+///
+/// Update (2026-09-18, same day): "Convert to Project" added -- direct
+/// follow-up ("what if they graduate from a lead to a client i want to
+/// be able to update that"). Confirmed directly which of two real
+/// behaviors he meant (a plain client-status flip vs. a full lead-
+/// >project conversion) rather than guessing -- he chose the latter,
+/// reusing joshx_db.py's existing convert_lead_to_project transaction
+/// (real project created, lead marked 'booked', matching client flipped
+/// to 'active') via a new id-based `lead_id` path on that same function,
+/// same "id-based sibling of the fuzzy-matched original" shape
+/// delete_lead_by_id already established. Only asks for a project name
+/// -- everything else convert_lead_to_project can carry forward
+/// (budget/brief/notes) it already does automatically from the lead's
+/// own fields.
 struct JoshxLeadDetailPopover: View {
     let lead: JoshxLead
     @ObservedObject var client: JoshxClient
+    /// Called after a successful conversion so the parent can clear
+    /// `selectedLead` -- the lead flips to 'booked' and drops out of the
+    /// open-leads list, so there's nothing left here worth looking at.
+    var onConverted: () -> Void = {}
     @Environment(\.appTheme) private var theme
+    @State private var isConverting = false
+    @State private var newProjectName = ""
+    @State private var isSubmitting = false
+
+    private static let closedStages: Set<String> = ["booked", "lost"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -55,11 +73,60 @@ struct JoshxLeadDetailPopover: View {
                     }
 
                     clientInfoSection
+
+                    if !Self.closedStages.contains(lead.stage) {
+                        convertSection
+                    }
                 }
                 .padding(16)
             }
         }
         .frame(width: 380, height: 480)
+    }
+
+    @ViewBuilder
+    private var convertSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("GRADUATE THIS LEAD")
+                .font(PCorpFont.label(9))
+                .trackedLabel(1.1)
+                .foregroundStyle(theme.textTertiary)
+            if isConverting {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Project name", text: $newProjectName)
+                        .textFieldStyle(.plain)
+                        .font(PCorpFont.body(13))
+                    HStack {
+                        Button("Cancel") {
+                            isConverting = false
+                            newProjectName = ""
+                        }
+                        .font(PCorpFont.body(12))
+                        .foregroundStyle(theme.textSecondary)
+                        Spacer()
+                        Button("Convert", action: submitConversion)
+                            .buttonStyle(.actionFilled)
+                            .disabled(newProjectName.trimmingCharacters(in: .whitespaces).isEmpty || isSubmitting)
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .cardSurface(radius: 12)
+            } else {
+                Button("Convert to Project") { isConverting = true }
+                    .buttonStyle(.actionFilled)
+            }
+        }
+    }
+
+    private func submitConversion() {
+        let projectName = newProjectName
+        isSubmitting = true
+        Task {
+            await client.convertLeadToProject(leadId: lead.id, projectName: projectName)
+            isSubmitting = false
+            onConverted()
+        }
     }
 
     @ViewBuilder

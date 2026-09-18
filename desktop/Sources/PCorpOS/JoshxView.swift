@@ -137,7 +137,7 @@ struct JoshxView: View {
             JoshxProjectDetailPopover(project: project, client: client)
         }
         .popover(item: $selectedLead) { lead in
-            JoshxLeadDetailPopover(lead: lead, client: client)
+            JoshxLeadDetailPopover(lead: lead, client: client, onConverted: { selectedLead = nil })
         }
         .confirmationDialog(
             "Delete lead for \(leadPendingDelete?.clientName ?? "")?",

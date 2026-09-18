@@ -103,6 +103,7 @@ from app.joshx_db import (
     PROJECT_PAYMENT_STATUS_VALUES,
     PROJECT_STATUS_VALUES,
     compute_performance_metrics as joshx_performance_metrics,
+    convert_lead_to_project,
     dashboard_snapshot as joshx_dashboard_snapshot,
     delete_client_by_id,
     delete_lead_by_id,
@@ -1031,6 +1032,32 @@ async def joshx_project_payment_status_update(
         postgres_conn,
     )
     return {"project_id": project_id, "payment_status": body.payment_status}
+
+
+class JoshxLeadConvert(BaseModel):
+    project_name: str
+
+
+@app.post("/joshx/leads/{lead_id}/convert-to-project")
+async def joshx_lead_convert(
+    lead_id: int, body: JoshxLeadConvert, request: Request, _: None = Depends(verify_token)
+) -> dict:
+    # Backs the lead detail view's "Convert to Project" action
+    # (2026-09-18, direct follow-up to leads becoming clickable) --
+    # id-based, same reasoning as joshx_lead_delete below. Reuses
+    # convert_lead_to_project's existing lead_id kwarg (added alongside
+    # this route) rather than duplicating its field-carry-forward/
+    # status-flip transaction logic.
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    if not body.project_name.strip():
+        raise HTTPException(status_code=400, detail="project_name is required")
+    result = await convert_lead_to_project(lead_id=lead_id, project_name=body.project_name, postgres_conn=postgres_conn)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No lead with id {lead_id}")
+    await record_tool_call(
+        "convert_joshx_lead_to_project_ui", {"lead_id": lead_id, "project_name": body.project_name}, "ok", postgres_conn
+    )
+    return result
 
 
 @app.delete("/joshx/leads/{lead_id}")

@@ -11,15 +11,24 @@ import SwiftUI
 /// estimatedValue/budget/leadSource/a 2-line-truncated notes preview,
 /// with no tap target at all. JoshxLead's own projectDescription/
 /// probability/followUpDate/createdAt fields were genuinely invisible
-/// anywhere in either app. Read-only this pass, deliberately -- the ask
-/// was "let me see all the details," not "let me edit a lead's stage
-/// from here too" (Frank's own update_joshx_lead_stage tool already
-/// covers that via chat).
+/// anywhere in either app.
+///
+/// Update (2026-09-18, same day): "Convert to Project" added -- direct
+/// follow-up ("what if they graduate from a lead to a client i want to
+/// be able to update that"). See desktop's own JoshxLeadDetailPopover.swift
+/// for the full reasoning (confirmed which of two real behaviors he
+/// meant rather than guessing; reuses joshx_db.py's existing
+/// convert_lead_to_project transaction via a new id-based path).
 struct JoshxLeadDetailSheet: View {
     let lead: JoshxLead
     @ObservedObject var client: JoshxClient
     @Environment(\.appTheme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @State private var isConverting = false
+    @State private var newProjectName = ""
+    @State private var isSubmitting = false
+
+    private static let closedStages: Set<String> = ["booked", "lost"]
 
     var body: some View {
         NavigationStack {
@@ -54,11 +63,60 @@ struct JoshxLeadDetailSheet: View {
                 }
 
                 clientInfoSection
+
+                if !Self.closedStages.contains(lead.stage) {
+                    convertSection
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
         }
         .background(theme.background)
+    }
+
+    @ViewBuilder
+    private var convertSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("GRADUATE THIS LEAD")
+                .font(PCorpFont.label(9))
+                .trackedLabel(1.1)
+                .foregroundStyle(theme.textTertiary)
+            if isConverting {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Project name", text: $newProjectName)
+                        .textFieldStyle(.plain)
+                        .font(PCorpFont.body(13))
+                    HStack {
+                        Button("Cancel") {
+                            isConverting = false
+                            newProjectName = ""
+                        }
+                        .font(PCorpFont.body(12))
+                        .foregroundStyle(theme.textSecondary)
+                        Spacer()
+                        Button("Convert", action: submitConversion)
+                            .buttonStyle(.actionFilled)
+                            .disabled(newProjectName.trimmingCharacters(in: .whitespaces).isEmpty || isSubmitting)
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .cardSurface(radius: 12)
+            } else {
+                Button("Convert to Project") { isConverting = true }
+                    .buttonStyle(.actionFilled)
+            }
+        }
+    }
+
+    private func submitConversion() {
+        let projectName = newProjectName
+        isSubmitting = true
+        Task {
+            await client.convertLeadToProject(leadId: lead.id, projectName: projectName)
+            isSubmitting = false
+            dismiss()
+        }
     }
 
     @ViewBuilder

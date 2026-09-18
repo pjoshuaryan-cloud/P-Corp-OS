@@ -98,6 +98,21 @@ public final class JoshxClient: ObservableObject {
         if let writeError { errorMessage = writeError }
     }
 
+    /// Backs the lead detail view's "Convert to Project" action
+    /// (2026-09-18, direct follow-up to leads becoming clickable) -- a
+    /// lead graduating into a real booked job, not just a stage bump.
+    /// Same PATCH-then-refetch shape as updateProjectStatus above,
+    /// POST here since it creates a new project row server-side.
+    public func convertLeadToProject(leadId: Int, projectName: String) async {
+        var request = URLRequest(url: url(path: "/joshx/leads/\(leadId)/convert-to-project"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(["project_name": projectName])
+        let writeError = await performWrite(request)
+        await fetch()
+        if let writeError { errorMessage = writeError }
+    }
+
     /// Backs the LEADS section's delete action (2026-08-31) -- a dormant
     /// lead that never got closed out (see joshx_db.py's add_project doc
     /// comment for why one can linger indefinitely). Soft delete on the
