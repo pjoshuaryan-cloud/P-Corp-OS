@@ -30,6 +30,9 @@ from pathlib import Path
 
 import aiosqlite
 
+from app.finance import get_hf_markets_live_status_for_dashboard
+from app.market_movers import NOTABLE_MOVE_THRESHOLD_PCT, check_stock_movers
+
 DB_PATH = Path.home() / "Desktop" / "AMM - APP" / "research" / "data" / "research.sqlite"
 
 
@@ -109,6 +112,49 @@ async def summarize() -> str:
             )
     else:
         lines.append("No Monte Carlo runs yet.")
+    return "\n".join(lines)
+
+
+async def live_account_summary(postgres_conn=None) -> str:
+    """Real, deliberate extension of this module's own read-only-history
+    boundary (2026-09-18) -- Josh asked directly for "how my open trades
+    are doing." Confirmed which of two real things he meant first: an
+    account-level summary (this) vs. a per-position breakdown (would need
+    new code in the actual MT5 EA itself, a bigger lift touching the
+    trading robot's own source, out of scope here). He chose the
+    account-level summary.
+
+    Deliberately account-level only, not per-position -- reuses
+    finance.py's existing get_hf_markets_live_status_for_dashboard()
+    (the same live balance/equity/floating-P&L bridge Finance's own
+    dashboard already shows) rather than a new data source. No new
+    write path, no deeper hook into the EA -- this is Trading Division
+    surfacing data that already exists and already flows through this
+    same shared Postgres, not a new capability being invented."""
+    status = await get_hf_markets_live_status_for_dashboard(postgres_conn)
+    if status is None:
+        return "No live account data available right now -- the Mac may be asleep/closed, or the EA isn't running."
+    direction = "profit" if status["floating_pnl"] >= 0 else "loss"
+    return (
+        f"Live account: balance {status['currency']} {status['balance']:,.2f}, "
+        f"equity {status['currency']} {status['equity']:,.2f}, "
+        f"floating {direction} of {status['currency']} {abs(status['floating_pnl']):,.2f} "
+        f"(as of {status['updated_at']})."
+    )
+
+
+async def stock_movers_summary(postgres_conn=None) -> str:
+    """Plain-text formatting of check_stock_movers' factual, non-advisory
+    screener results (market_movers.py) -- backs Trading Division's
+    "stocks doing well" report. Never names a recommendation, only
+    objective price-movement facts, same framing check_market_movers
+    already documents for the Triggers digest."""
+    movers = await check_stock_movers(postgres_conn)
+    if not movers:
+        return f"No individual stock moved more than the {NOTABLE_MOVE_THRESHOLD_PCT:.0f}% notable-move threshold in the last day."
+    lines = [f"Stocks that moved more than {NOTABLE_MOVE_THRESHOLD_PCT:.0f}% in the last day:"]
+    for item in movers:
+        lines.append(f"  - {item['title']} ({item['detail']})")
     return "\n".join(lines)
 
 

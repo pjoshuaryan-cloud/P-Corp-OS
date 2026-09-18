@@ -28,6 +28,12 @@ Snapshotted once a day via the same shared scheduler tick as Luno/HF
 Markets' own balance snapshots. "Notable move" is a flat day-over-day
 percent threshold, hardcoded here (not a configurable trigger_rules
 column) -- same pattern as every other threshold-less rule_type.
+
+Update (2026-09-18): check_stock_movers() added, backing Trading
+Division's "stocks doing well" report -- same screener, same
+non-advisory framing, restricted to just the xStock universe rather
+than the combined Luno+xStock one check_market_movers already covers
+for the Triggers digest.
 """
 
 from datetime import date
@@ -65,22 +71,12 @@ async def maybe_snapshot_market_prices(postgres_conn=None) -> None:
     await mark_market_movers_snapshotted(today, postgres_conn)
 
 
-async def check_market_movers(threshold_days: int | None, postgres_conn=None) -> list[dict]:
-    """Trigger rule checker (registered in triggers.py's RULE_CHECKERS).
-    `threshold_days` is unused -- kept only to match every other
-    checker's call signature (RULE_CHECKERS.get(rule_type)(threshold)).
-
-    item_key includes today's date, not just the asset -- a market move
-    is a today-specific fact, not a persistent condition like an overdue
-    invoice, so there's nothing to decay/resurface on day 3/7 the way
-    the Triggers Layer's cadence does for other rules. Each day's move
-    for a given asset is simply a new, distinct item; the existing
-    dedup logic already handles "first sighting = always due" correctly
-    for that shape, no special-casing needed."""
-    luno_prices = await fetch_zar_prices()
-    xstock_prices = await fetch_all_xstock_zar_prices()
-    universe = sorted({**luno_prices, **xstock_prices}.keys())
-
+async def _check_movers_for_universe(universe: list[str], postgres_conn=None) -> list[dict]:
+    """Shared per-asset move-check loop -- factored out (2026-09-18) when
+    check_stock_movers below needed the exact same threshold/lookback
+    logic over a narrower universe (xStocks only, not Luno crypto too).
+    Same item_key/title/detail shape either way, so a caller can treat
+    both functions' results identically."""
     today = date.today().isoformat()
     items: list[dict] = []
     for asset in universe:
@@ -102,3 +98,33 @@ async def check_market_movers(threshold_days: int | None, postgres_conn=None) ->
             }
         )
     return items
+
+
+async def check_market_movers(threshold_days: int | None, postgres_conn=None) -> list[dict]:
+    """Trigger rule checker (registered in triggers.py's RULE_CHECKERS).
+    `threshold_days` is unused -- kept only to match every other
+    checker's call signature (RULE_CHECKERS.get(rule_type)(threshold)).
+
+    item_key includes today's date, not just the asset -- a market move
+    is a today-specific fact, not a persistent condition like an overdue
+    invoice, so there's nothing to decay/resurface on day 3/7 the way
+    the Triggers Layer's cadence does for other rules. Each day's move
+    for a given asset is simply a new, distinct item; the existing
+    dedup logic already handles "first sighting = always due" correctly
+    for that shape, no special-casing needed."""
+    luno_prices = await fetch_zar_prices()
+    xstock_prices = await fetch_all_xstock_zar_prices()
+    universe = sorted({**luno_prices, **xstock_prices}.keys())
+    return await _check_movers_for_universe(universe, postgres_conn)
+
+
+async def check_stock_movers(postgres_conn=None) -> list[dict]:
+    """Same objective, factual "X moved Y% since Z" screener as
+    check_market_movers above -- restricted to just the xStock universe
+    (2026-09-18, Trading Division's "stocks doing well" ask), since a
+    stock-specific report shouldn't be diluted with Luno's crypto pairs.
+    Backs Trading Division Agent's own context, not the Triggers digest
+    (which already gets the combined universe via check_market_movers)."""
+    xstock_prices = await fetch_all_xstock_zar_prices()
+    universe = sorted(xstock_prices.keys())
+    return await _check_movers_for_universe(universe, postgres_conn)

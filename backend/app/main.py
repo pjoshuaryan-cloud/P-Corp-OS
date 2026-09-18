@@ -1930,7 +1930,9 @@ async def run_claude_turn(
                 # transcript too.
                 assistant_text += result
             elif block.name in TRADING_DIVISION_AGENT_TOOL_NAMES:
-                result = await execute_trading_division_agent_tool_call(block.name, block.input, client, websocket)
+                result = await execute_trading_division_agent_tool_call(
+                    block.name, block.input, client, websocket, postgres_conn
+                )
                 # Same reasoning as consult_operations_agent above --
                 # already streamed live, needs to land in the persisted
                 # transcript too.
