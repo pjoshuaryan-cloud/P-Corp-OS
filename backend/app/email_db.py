@@ -60,6 +60,15 @@ async def init_email_db() -> None:
             )
             """
         )
+        # Migration path: emails existed before the full message body did
+        # (2026-09-18) -- gmail_client.py used to fetch format=metadata,
+        # which never returned a body at all, only Gmail's own ~100-char
+        # snippet. Nullable -- old already-synced rows simply have no
+        # body until they're synced again, a real honest gap, not backfilled.
+        cursor = await db.execute("PRAGMA table_info(emails)")
+        columns = {row[1] async for row in cursor}
+        if "body" not in columns:
+            await db.execute("ALTER TABLE emails ADD COLUMN body TEXT")
         await db.commit()
 
 
@@ -171,9 +180,9 @@ async def sync_recent_emails(max_results: int = 20, postgres_conn: Any = None) -
                 # gap found repeatedly this migration.
                 await cur.execute(
                     "INSERT INTO email.emails "
-                    "(id, thread_id, sender_email, sender_name, subject, snippet, received_at, "
+                    "(id, thread_id, sender_email, sender_name, subject, snippet, body, received_at, "
                     "linked_person_id, linked_client_name, created_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, (now() AT TIME ZONE 'utc'))",
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, (now() AT TIME ZONE 'utc'))",
                     (
                         message["id"],
                         message["thread_id"],
@@ -181,6 +190,7 @@ async def sync_recent_emails(max_results: int = 20, postgres_conn: Any = None) -
                         message["sender_name"],
                         message["subject"],
                         message["snippet"],
+                        message["body"],
                         message["received_at"],
                         linked_person_id,
                         linked_client_name,
@@ -208,8 +218,8 @@ async def sync_recent_emails(max_results: int = 20, postgres_conn: Any = None) -
 
             await db.execute(
                 "INSERT INTO emails "
-                "(id, thread_id, sender_email, sender_name, subject, snippet, received_at, "
-                "linked_person_id, linked_client_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, thread_id, sender_email, sender_name, subject, snippet, body, received_at, "
+                "linked_person_id, linked_client_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     message["id"],
                     message["thread_id"],
@@ -217,6 +227,7 @@ async def sync_recent_emails(max_results: int = 20, postgres_conn: Any = None) -
                     message["sender_name"],
                     message["subject"],
                     message["snippet"],
+                    message["body"],
                     message["received_at"],
                     linked_person_id,
                     linked_client_name,
@@ -277,3 +288,33 @@ async def search_emails(query: str, limit: int = 10, postgres_conn: Any = None) 
             (like, like, like, like, limit),
         )
         return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_email_by_id(email_id: str, postgres_conn: Any = None) -> dict | None:
+    """The one place the full body is actually read -- get_recent_emails/
+    search_emails deliberately stay snippet-only above, matching
+    email_tools.py's own "don't bloat every turn" reasoning for a list of
+    several messages at once. This backs reading one specific message in
+    full, once Frank/Josh already knows which one they want."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, sender_email, sender_name, subject, body, snippet, received_at, "
+                "linked_person_id, linked_client_name FROM email.emails WHERE id = %s",
+                (email_id,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            cols = ["id", "sender_email", "sender_name", "subject", "body", "snippet", "received_at",
+                    "linked_person_id", "linked_client_name"]
+            return dict(zip(cols, row))
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, sender_email, sender_name, subject, body, snippet, received_at, "
+            "linked_person_id, linked_client_name FROM emails WHERE id = ?",
+            (email_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row is not None else None

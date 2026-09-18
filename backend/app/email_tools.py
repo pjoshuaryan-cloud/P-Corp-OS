@@ -16,7 +16,7 @@ People/Calendar -- these are plain read actions, not a domain complex
 enough to need a specialist's commentary.
 """
 
-from app.email_db import get_recent_emails, search_emails, sync_recent_emails
+from app.email_db import get_email_by_id, get_recent_emails, search_emails, sync_recent_emails
 
 GET_RECENT_EMAILS_TOOL = {
     "name": "get_recent_emails",
@@ -50,7 +50,23 @@ SEARCH_EMAILS_TOOL = {
     },
 }
 
-EMAIL_TOOLS = [GET_RECENT_EMAILS_TOOL, SEARCH_EMAILS_TOOL]
+READ_EMAIL_TOOL = {
+    "name": "read_email",
+    "description": (
+        "Read one specific already-synced email in full, by its id (from get_recent_emails/search_emails' "
+        "own results) -- those two only ever return a short snippet preview to avoid bloating every turn "
+        "with full email text, so call this once you know which message Josh actually wants read in full."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "The email's id, as returned by get_recent_emails/search_emails."},
+        },
+        "required": ["id"],
+    },
+}
+
+EMAIL_TOOLS = [GET_RECENT_EMAILS_TOOL, SEARCH_EMAILS_TOOL, READ_EMAIL_TOOL]
 EMAIL_TOOL_NAMES = {tool["name"] for tool in EMAIL_TOOLS}
 
 
@@ -80,5 +96,13 @@ async def execute_email_tool_call(name: str, tool_input: dict, postgres_conn=Non
         if not emails:
             return f"No synced emails matching \"{tool_input['query']}\"."
         return _format(emails)
+
+    if name == "read_email":
+        email = await get_email_by_id(tool_input["id"], postgres_conn)
+        if email is None:
+            return f"No synced email found with id {tool_input['id']!r}."
+        who = email["sender_name"] or email["sender_email"] or "unknown sender"
+        body = email["body"] or email["snippet"] or "(no readable body -- was synced before full-body support, or Gmail returned no text content)"
+        return f"From {who} — \"{email['subject'] or '(no subject)'}\" ({email['received_at']})\n\n{body}"
 
     return f"Unknown tool: {name}"
