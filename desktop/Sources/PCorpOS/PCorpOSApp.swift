@@ -61,6 +61,11 @@ struct PCorpOSApp: App {
         // Shadow Mode (2026-08-10) -- see ActivityTracker.swift's own
         // docstring for what this does and doesn't capture.
         ActivityTracker.shared.start()
+
+        // One-time system permission prompt for real future-dated
+        // notifications (2026-09-18, "wake me up at 6am") -- see
+        // ScheduledNotifications.swift's own docstring.
+        ScheduledNotifications.requestAuthorizationIfNeeded()
     }
 
     var body: some Scene {

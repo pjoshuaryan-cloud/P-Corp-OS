@@ -799,6 +799,7 @@ public final class BackendClient: ObservableObject {
     }
 
     private struct NotificationPayload: Decodable { let title: String; let body: String }
+    private struct ScheduleNotificationPayload: Decodable { let title: String; let body: String; let fire_at: String }
     private struct ToolStartPayload: Decodable { let label: String }
     private struct DocumentGeneratedPayload: Decodable { let filename: String; let title: String }
     // One private wire-decode struct per sentinel, matching each backend
@@ -816,6 +817,7 @@ public final class BackendClient: ObservableObject {
     private struct AlphaModeApprovalWire: Decodable { let id, tool, title, details: String }
     private struct EmailApprovalWire: Decodable { let id, tool, title, details: String }
     private static let notifyPrefix = "\n[notify]"
+    private static let scheduleNotificationPrefix = "\n[schedule_notification]"
     private static let approvalRequestPrefix = "\n[approval_request]"
     private static let calendarApprovalRequestPrefix = "\n[calendar_approval_request]"
     private static let automationApprovalRequestPrefix = "\n[automation_approval_request]"
@@ -851,6 +853,12 @@ public final class BackendClient: ObservableObject {
                             if let data = payloadText.data(using: .utf8),
                                let payload = try? JSONDecoder().decode(NotificationPayload.self, from: data) {
                                 SystemNotification.post(title: payload.title, body: payload.body)
+                            }
+                        } else if text.hasPrefix(Self.scheduleNotificationPrefix) {
+                            let payloadText = String(text.dropFirst(Self.scheduleNotificationPrefix.count))
+                            if let data = payloadText.data(using: .utf8),
+                               let payload = try? JSONDecoder().decode(ScheduleNotificationPayload.self, from: data) {
+                                ScheduledNotifications.schedule(title: payload.title, body: payload.body, fireAt: payload.fire_at)
                             }
                         } else if text.hasPrefix(Self.approvalRequestPrefix) {
                             let payloadText = String(text.dropFirst(Self.approvalRequestPrefix.count))

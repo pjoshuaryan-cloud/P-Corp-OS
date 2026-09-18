@@ -40,6 +40,11 @@ struct P_Corp_OSApp: App {
         // that copy behind would defeat the point of moving to Keychain,
         // even though nothing reads it anymore.
         UserDefaults.standard.removeObject(forKey: "backendAuthToken")
+
+        // One-time system permission prompt for real future-dated
+        // notifications (2026-09-18, "wake me up at 6am") -- see
+        // ScheduledNotifications.swift's own docstring.
+        ScheduledNotifications.requestAuthorizationIfNeeded()
     }
 
     var body: some Scene {

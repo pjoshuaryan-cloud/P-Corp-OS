@@ -200,6 +200,11 @@ from app.db import (
 )
 from app.memory import FORGET_MEMORY_TOOL, SAVE_MEMORY_TOOL, build_memory_block, execute_tool_call
 from app.focus import FOCUS_TOOL_NAMES, FOCUS_TOOLS, execute_focus_tool_call
+from app.scheduled_notifications import (
+    SCHEDULED_NOTIFICATION_TOOL_NAMES,
+    SCHEDULED_NOTIFICATION_TOOLS,
+    execute_scheduled_notification_tool_call,
+)
 from app.tool_labels import label_for_tool
 from app.document_attachments import (
     ATTACHMENT_CAPABILITY_NOTE,
@@ -1849,6 +1854,7 @@ async def run_claude_turn(
                 SAVE_MEMORY_TOOL,
                 FORGET_MEMORY_TOOL,
                 *FOCUS_TOOLS,
+                *SCHEDULED_NOTIFICATION_TOOLS,
                 *DECISION_JOURNAL_TOOLS,
                 *MEMORY_GRAPH_TOOLS,
                 *SHADOW_MODE_TOOLS,
@@ -1909,6 +1915,8 @@ async def run_claude_turn(
             await _safe_send(websocket, f"\n[tool_start]{json.dumps({'label': label_for_tool(block.name)})}")
             if block.name in FOCUS_TOOL_NAMES:
                 result = await execute_focus_tool_call(block.name, block.input, postgres_conn)
+            elif block.name in SCHEDULED_NOTIFICATION_TOOL_NAMES:
+                result = await execute_scheduled_notification_tool_call(block.name, block.input, websocket)
             elif block.name in DECISION_JOURNAL_TOOL_NAMES:
                 result = await execute_decision_journal_tool_call(block.name, block.input, postgres_conn)
             elif block.name in MEMORY_GRAPH_TOOL_NAMES:

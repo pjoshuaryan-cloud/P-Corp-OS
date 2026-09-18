@@ -36,6 +36,7 @@ from app.operations_agent import OPERATIONS_TOOL_NAMES
 from app.people_tools import PEOPLE_TOOL_NAMES
 from app.personal_tools import PERSONAL_TOOL_NAMES
 from app.research_agent import RESEARCH_AGENT_TOOL_NAMES
+from app.scheduled_notifications import SCHEDULED_NOTIFICATION_TOOL_NAMES
 from app.shadow_mode import SHADOW_MODE_TOOL_NAMES
 from app.trading_division_agent import TRADING_DIVISION_AGENT_TOOL_NAMES
 
@@ -50,6 +51,7 @@ ALPHA_MODE_TOOL_NAMES = {tool["name"] for tool in ALPHA_MODE_TOOLS}
 # match main.py's own final `else` branch rather than any named group.
 ALL_TOOL_NAMES: frozenset[str] = frozenset().union(
     FOCUS_TOOL_NAMES,
+    SCHEDULED_NOTIFICATION_TOOL_NAMES,
     DECISION_JOURNAL_TOOL_NAMES,
     MEMORY_GRAPH_TOOL_NAMES,
     SHADOW_MODE_TOOL_NAMES,
@@ -92,6 +94,8 @@ def label_for_tool(tool_name: str) -> str:
         return "Proposing an automation"
     if tool_name in FOCUS_TOOL_NAMES:
         return "Updating your focus list"
+    if tool_name in SCHEDULED_NOTIFICATION_TOOL_NAMES:
+        return "Scheduling a notification"
     if tool_name in DECISION_JOURNAL_TOOL_NAMES:
         return "Logging a decision"
     if tool_name in MEMORY_GRAPH_TOOL_NAMES:
