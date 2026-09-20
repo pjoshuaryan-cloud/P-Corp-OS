@@ -1,5 +1,6 @@
 import EventKit
 import Foundation
+import SwiftUI
 
 struct CalendarEvent: Identifiable {
     let id = UUID()
@@ -7,6 +8,12 @@ struct CalendarEvent: Identifiable {
     let startDate: Date
     let endDate: Date
     let calendarName: String
+    /// The real color Joshua already assigned this calendar in the
+    /// iPhone's own Calendar app (2026-09-18, "I want work/home/family
+    /// colour coordinated") -- read directly from EKCalendar itself, not
+    /// a scheme invented here, so this always matches whatever he sees
+    /// in Calendar.
+    let calendarColor: Color
 }
 
 /// iOS's own EventKit read of the phone's own Calendar app (2026-08-14) --
@@ -46,7 +53,8 @@ enum SystemCalendar {
                     title: $0.title ?? "(untitled)",
                     startDate: $0.startDate,
                     endDate: $0.endDate,
-                    calendarName: $0.calendar.title
+                    calendarName: $0.calendar.title,
+                    calendarColor: Color(cgColor: $0.calendar.cgColor)
                 )
             }
             .sorted { $0.startDate < $1.startDate }

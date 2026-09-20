@@ -123,9 +123,14 @@ private struct EventRow: View {
                 Text(event.title)
                     .font(PCorpFont.body(13.5, weight: .semibold))
                     .foregroundStyle(theme.textPrimary)
-                Text(event.calendarName)
-                    .font(PCorpFont.body(11))
-                    .foregroundStyle(theme.textTertiary)
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(event.calendarColor)
+                        .frame(width: 6, height: 6)
+                    Text(event.calendarName)
+                        .font(PCorpFont.body(11))
+                        .foregroundStyle(theme.textTertiary)
+                }
             }
         }
         .padding(14)

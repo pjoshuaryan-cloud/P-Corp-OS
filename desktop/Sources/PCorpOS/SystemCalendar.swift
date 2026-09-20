@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// A real event from the macOS Calendar app.
 struct CalendarEvent: Identifiable {
@@ -7,6 +8,12 @@ struct CalendarEvent: Identifiable {
     let startDate: Date
     let endDate: Date
     let calendarName: String
+    /// The real color Joshua already assigned this calendar in the
+    /// macOS Calendar app (2026-09-18, "I want work/home/family
+    /// colour coordinated") -- read directly from Calendar.app itself
+    /// via AppleScript's `color of cal`, not a scheme invented here, so
+    /// this always matches whatever he sees there.
+    let calendarColor: Color
 }
 
 /// Reads real events from the macOS Calendar app via AppleScript, not
@@ -36,11 +43,15 @@ enum SystemCalendar {
             set output to ""
             repeat with cal in calendars
                 try
+                    set calColor to color of cal
+                    set calR to item 1 of calColor
+                    set calG to item 2 of calColor
+                    set calB to item 3 of calColor
                     set calEvents to (every event of cal whose start date is greater than or equal to startDate and start date is less than or equal to endDate)
                     repeat with e in calEvents
                         set sd to start date of e
                         set ed to end date of e
-                        set output to output & (summary of e as string) & (ASCII character 1) & (year of sd) & "-" & (month of sd as integer) & "-" & (day of sd) & "-" & (hours of sd) & "-" & (minutes of sd) & (ASCII character 1) & (year of ed) & "-" & (month of ed as integer) & "-" & (day of ed) & "-" & (hours of ed) & "-" & (minutes of ed) & (ASCII character 1) & (name of cal as string) & (ASCII character 2)
+                        set output to output & (summary of e as string) & (ASCII character 1) & (year of sd) & "-" & (month of sd as integer) & "-" & (day of sd) & "-" & (hours of sd) & "-" & (minutes of sd) & (ASCII character 1) & (year of ed) & "-" & (month of ed as integer) & "-" & (day of ed) & "-" & (hours of ed) & "-" & (minutes of ed) & (ASCII character 1) & (name of cal as string) & (ASCII character 1) & calR & "-" & calG & "-" & calB & (ASCII character 2)
                     end repeat
                 end try
             end repeat
@@ -73,7 +84,7 @@ enum SystemCalendar {
     private static func parse(_ output: String) -> [CalendarEvent] {
         output.split(separator: recordSeparator).compactMap { record in
             let fields = record.split(separator: fieldSeparator, omittingEmptySubsequences: false)
-            guard fields.count == 4,
+            guard fields.count == 5,
                   let start = parseDateComponents(fields[1]),
                   let end = parseDateComponents(fields[2])
             else { return nil }
@@ -81,9 +92,21 @@ enum SystemCalendar {
                 title: String(fields[0]),
                 startDate: start,
                 endDate: end,
-                calendarName: String(fields[3])
+                calendarName: String(fields[3]),
+                calendarColor: parseColor(fields[4])
             )
         }
+    }
+
+    /// AppleScript's Calendar.app color is a 3-item {r, g, b} list, each
+    /// 0-65535 (the same range Finder label colors and other older macOS
+    /// scripting dictionaries use) -- confirmed live against Joshua's real
+    /// calendars (2026-09-18): Work 59361,0,63948, Home 11396,39314,54351,
+    /// Family 65535,52676,0.
+    private static func parseColor(_ text: Substring) -> Color {
+        let parts = text.split(separator: "-").compactMap { Double($0) }
+        guard parts.count == 3 else { return .gray }
+        return Color(red: parts[0] / 65535, green: parts[1] / 65535, blue: parts[2] / 65535)
     }
 
     /// Parses "year-month-day-hour-minute" (all plain integers, no padding).
