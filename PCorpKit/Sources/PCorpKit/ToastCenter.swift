@@ -87,6 +87,23 @@ private struct ToastHostModifier: ViewModifier {
                         .padding(.bottom, Spacing.xl)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                         .onTapGesture { center.dismiss() }
+                        // Real bug found live (2026-09-18): mounting this
+                        // overlay on the app's root view (RootView.swift on
+                        // iOS) silently broke automatic keyboard avoidance
+                        // for the ENTIRE screen -- the growing chat input
+                        // stopped being pushed above the keyboard (hiding
+                        // typed lines behind it) and the interactive
+                        // scroll-to-dismiss gesture stopped responding. A
+                        // full-screen `.overlay()` on a window's root
+                        // content competes with UIHostingController's own
+                        // keyboard-avoidance inset logic for the whole
+                        // screen, not just this overlay. Explicitly opting
+                        // this banner alone out of keyboard-safe-area
+                        // participation resolves the ambiguity and restores
+                        // normal avoidance for everything else -- the
+                        // banner itself has no reason to reposition for a
+                        // keyboard anyway, it's a bottom-aligned toast.
+                        .ignoresSafeArea(.keyboard, edges: .bottom)
                 }
             }
             .animation(.easeOut(duration: AnimationTiming.standard), value: center.current)
