@@ -18,6 +18,10 @@ struct TradingDivisionView: View {
     @State private var selectedRun: TradingDivisionRun?
     @State private var selectedMonteCarloRun: TradingDivisionMonteCarloRun?
     @State private var selectedMover: TradingDivisionStockMover?
+    /// Trade Intelligence (2026-09-20) -- see desktop's own
+    /// TradingDivisionView.swift and TradeIntelligenceView.swift for the
+    /// full reasoning; same additions mirrored here as `.sheet`.
+    @State private var showTradeIntelligence = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -32,6 +36,10 @@ struct TradingDivisionView: View {
                             .font(PCorpFont.body(12))
                             .foregroundStyle(theme.textSecondary)
                     } else if let dashboard = client.dashboard {
+                        Button { showTradeIntelligence = true } label: {
+                            TradeIntelligenceEntryCard()
+                        }
+                        .buttonStyle(.plain)
                         section(title: "LIVE ACCOUNT") {
                             if let liveAccount = dashboard.liveAccount {
                                 Button { showLiveAccountDetail = true } label: {
@@ -109,6 +117,9 @@ struct TradingDivisionView: View {
         }
         .sheet(item: $selectedMonteCarloRun) { run in
             MonteCarloDetailSheet(run: run)
+        }
+        .sheet(isPresented: $showTradeIntelligence) {
+            TradeIntelligenceView()
         }
         .sheet(item: $selectedMover) { mover in
             StockMoverDetailSheet(mover: mover, client: client)
@@ -216,6 +227,36 @@ private struct MonteCarloRow: View {
 /// iOS port of desktop's own LiveAccountCard -- see that file for the
 /// full reasoning (2026-09-18, Josh's "how my open trades are doing"
 /// ask, account-level only).
+/// Entry point into Trade Intelligence -- see desktop's own
+/// TradingDivisionView.swift for the full reasoning, identical styling.
+private struct TradeIntelligenceEntryCard: View {
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "sparkles")
+                .foregroundStyle(theme.statusHot)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Trade Intelligence")
+                    .font(PCorpFont.body(13.5, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                Text("Chart analysis, signals, position review, trade breakdown — advisory")
+                    .font(PCorpFont.body(11))
+                    .foregroundStyle(theme.textSecondary)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(theme.statusHot.opacity(0.7))
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.statusHot.opacity(0.08))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.statusHot.opacity(0.25)))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
 private struct LiveAccountCard: View {
     let status: HFMarketsLiveStatus
     @Environment(\.appTheme) private var theme

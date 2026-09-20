@@ -149,6 +149,21 @@ from app.trading_division_agent import (
     get_holding_update,
     get_stock_update,
 )
+from app.trade_intelligence_db import (
+    SETUP_TAGS,
+    TIMEFRAMES,
+    add_trade as ti_add_trade,
+    compute_breakdown_stats as ti_compute_breakdown_stats,
+    delete_trade as ti_delete_trade,
+    init_trade_intelligence_db,
+    list_trades as ti_list_trades,
+)
+from app.trade_intelligence_agent import (
+    analyze_chart as ti_analyze_chart,
+    generate_signal as ti_generate_signal,
+    narrate_trade_breakdown,
+    review_position as ti_review_position,
+)
 from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES, LEGACY_VAULT_TOOLS, execute_legacy_vault_tool_call
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
@@ -523,6 +538,7 @@ async def lifespan(app: FastAPI):
         await init_email_db()
         await init_calendar_db()
         await init_auth_db()
+        await init_trade_intelligence_db()
     # A single reused httpx client, not one per /speak call — real bug
     # found and fixed 2026-07-30: creating a fresh AsyncClient() per
     # request meant paying a full DNS+TLS handshake to ElevenLabs every
@@ -577,6 +593,7 @@ async def lifespan(app: FastAPI):
             keepalives_interval=10,
             keepalives_count=3,
         )
+        await init_trade_intelligence_db(postgres_conn=app.state.postgres_conn)
     # Self-healing, not just harder to kill (2026-09-11): TCP keepalives
     # above reduce how often the shared connection dies, but don't
     # guarantee it never will -- a Postgres-side restart/eviction, or a
@@ -968,6 +985,172 @@ async def trading_division_stock_update(
     client = AsyncAnthropic(api_key=api_key)
     update = await get_stock_update(client, body.symbol)
     return {"update": update}
+
+
+class TradeCreateRequest(BaseModel):
+    symbol: str
+    direction: str
+    entry_price: float
+    entry_timestamp: str
+    size: float
+    setup_tag: str
+    timeframe: str
+    exit_price: float | None = None
+    exit_timestamp: str | None = None
+    pnl: float | None = None
+    screenshot_path: str | None = None
+    notes: str | None = None
+    ai_analysis: str | None = None
+
+
+@app.post("/trade-intelligence/trades")
+async def trade_intelligence_trade_create(
+    body: TradeCreateRequest, request: Request, _: None = Depends(verify_token)
+) -> dict:
+    # Backs Trade Breakdown's log-a-trade form -- direct UI write, same
+    # shape as Personal's own add_goal/add_habit routes above. Validated
+    # here BEFORE ever reaching the DB (real bug found live, 2026-09-20):
+    # a rejected INSERT on the shared Postgres connection leaves it in an
+    # aborted-transaction state, breaking every other route sharing that
+    # connection until something rolls it back -- same "check before
+    # writing" discipline as update_person's own name-uniqueness check.
+    # The DB's own CHECK constraints stay in place as a backstop, not the
+    # primary guard.
+    if body.direction not in ("long", "short"):
+        raise HTTPException(status_code=400, detail=f"direction must be 'long' or 'short', got {body.direction!r}")
+    if body.setup_tag not in SETUP_TAGS:
+        raise HTTPException(status_code=400, detail=f"setup_tag must be one of {SETUP_TAGS}, got {body.setup_tag!r}")
+    if body.timeframe not in TIMEFRAMES:
+        raise HTTPException(status_code=400, detail=f"timeframe must be one of {TIMEFRAMES}, got {body.timeframe!r}")
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    try:
+        trade_id = await ti_add_trade(
+            body.symbol, body.direction, body.entry_price, body.entry_timestamp, body.size,
+            body.setup_tag, body.timeframe, body.exit_price, body.exit_timestamp, body.pnl,
+            body.screenshot_path, body.notes, body.ai_analysis, postgres_conn,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Could not log trade: {error}") from error
+    await record_tool_call("add_trade_ui", body.model_dump(), "ok", postgres_conn)
+    return {"id": trade_id}
+
+
+@app.get("/trade-intelligence/trades")
+async def trade_intelligence_trades_list(request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return {"trades": await ti_list_trades(postgres_conn)}
+
+
+@app.delete("/trade-intelligence/trades/{trade_id}")
+async def trade_intelligence_trade_delete(
+    trade_id: int, request: Request, _: None = Depends(verify_token)
+) -> dict:
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    deleted = await ti_delete_trade(trade_id, postgres_conn)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"No trade with id {trade_id}")
+    await record_tool_call("delete_trade_ui", {"trade_id": trade_id}, "ok", postgres_conn)
+    return {"deleted": True}
+
+
+class ChartAnalysisRequest(BaseModel):
+    media_type: str
+    filename: str
+    data: str  # base64
+    symbol: str | None = None
+    note: str | None = None
+
+
+@app.post("/trade-intelligence/chart-analysis")
+async def trade_intelligence_chart_analysis(body: ChartAnalysisRequest, _: None = Depends(verify_token)) -> dict:
+    # Reuses the same base64-decode + build_content_block path the
+    # websocket chat attachment flow already uses (main.py's
+    # websocket_chat) -- no new image-encoding logic invented. Same
+    # MAX_ATTACHMENT_BYTES cap as chat attachments (a single chart image,
+    # so the per-message count/total caps don't apply here).
+    try:
+        raw_bytes = base64.b64decode(body.data)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Could not decode image data: {error}") from error
+    if len(raw_bytes) > MAX_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=400, detail=f"Image exceeds the {MAX_ATTACHMENT_BYTES // (1024*1024)}MB limit.")
+    image_block = build_content_block(body.media_type, body.filename, raw_bytes)
+    if image_block.get("type") != "image":
+        raise HTTPException(status_code=400, detail=f"Unsupported image type: {body.media_type}")
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
+    client = AsyncAnthropic(api_key=api_key)
+    analysis = await ti_analyze_chart(client, image_block, body.symbol, body.note)
+    return {"analysis": analysis}
+
+
+class PositionReviewRequest(BaseModel):
+    symbol: str
+    direction: str
+    entry_price: float
+    size: float
+    current_price: float
+    stop_loss: float | None = None
+    take_profit: float | None = None
+
+
+@app.post("/trade-intelligence/position-review")
+async def trade_intelligence_position_review(
+    body: PositionReviewRequest, _: None = Depends(verify_token)
+) -> dict:
+    # Advisory-only, same "second call mechanism" shape as trading-division's
+    # own holding-update/stock-update routes -- never a Frank chat tool,
+    # never reachable mid-conversation. Reasons only over the numbers
+    # given here (trade_intelligence_agent's own hard boundary), never
+    # assumes this represents a real open account position.
+    if body.direction not in ("long", "short"):
+        raise HTTPException(status_code=400, detail=f"direction must be 'long' or 'short', got {body.direction!r}")
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
+    client = AsyncAnthropic(api_key=api_key)
+    review = await ti_review_position(
+        client, body.symbol, body.direction, body.entry_price, body.size, body.current_price,
+        body.stop_loss, body.take_profit,
+    )
+    return {"review": review}
+
+
+class TradeSignalRequest(BaseModel):
+    symbol: str = "NDX"
+
+
+@app.post("/trade-intelligence/signal")
+async def trade_intelligence_signal(body: TradeSignalRequest, _: None = Depends(verify_token)) -> dict:
+    # Advisory-only -- see PositionReviewRequest's own comment above for
+    # the shared reasoning. Output only: no order is ever placed.
+    if not body.symbol.strip():
+        raise HTTPException(status_code=400, detail="symbol is required")
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
+    client = AsyncAnthropic(api_key=api_key)
+    signal = await ti_generate_signal(client, body.symbol)
+    return {"signal": signal}
+
+
+@app.get("/trade-intelligence/trades/breakdown")
+async def trade_intelligence_breakdown(request: Request, _: None = Depends(verify_token)) -> dict:
+    # Deterministic stats (compute_breakdown_stats) computed first and
+    # verified independently before ever being narrated -- the agent only
+    # ever narrates these already-correct numbers, per its own system
+    # prompt, never recomputing or eyeballing the raw trade log itself.
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    stats = await ti_compute_breakdown_stats(postgres_conn)
+    if stats["closed_trades"] == 0:
+        return {"stats": stats, "narrative": "No closed trades logged yet -- nothing to break down."}
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
+    client = AsyncAnthropic(api_key=api_key)
+    narrative = await narrate_trade_breakdown(client, stats)
+    return {"stats": stats, "narrative": narrative}
 
 
 @app.get("/personal/dashboard")

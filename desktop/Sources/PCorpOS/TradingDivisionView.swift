@@ -26,6 +26,11 @@ struct TradingDivisionView: View {
     @State private var selectedRun: TradingDivisionRun?
     @State private var selectedMonteCarloRun: TradingDivisionMonteCarloRun?
     @State private var selectedMover: TradingDivisionStockMover?
+    /// Trade Intelligence (2026-09-20) -- a genuinely separate, advisory
+    /// specialist agent from this tab's own read-only TradingDivisionClient
+    /// above; see TradeIntelligenceView.swift's own docstring for why it's
+    /// a distinct entry point rather than folded into these sections.
+    @State private var showTradeIntelligence = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -40,6 +45,10 @@ struct TradingDivisionView: View {
                             .font(PCorpFont.body(12))
                             .foregroundStyle(theme.textSecondary)
                     } else if let dashboard = client.dashboard {
+                        Button { showTradeIntelligence = true } label: {
+                            TradeIntelligenceEntryCard()
+                        }
+                        .buttonStyle(.plain)
                         section(title: "LIVE ACCOUNT") {
                             if let liveAccount = dashboard.liveAccount {
                                 Button { showLiveAccountDetail = true } label: {
@@ -119,6 +128,9 @@ struct TradingDivisionView: View {
         }
         .popover(item: $selectedMover) { mover in
             StockMoverDetailPopover(mover: mover, client: client)
+        }
+        .popover(isPresented: $showTradeIntelligence) {
+            TradeIntelligenceView()
         }
     }
 
@@ -222,6 +234,38 @@ private struct MonteCarloRow: View {
 /// just surfaced here too. theme.statusGood/statusRisk reused for the
 /// profit/loss color, same semantic tokens Finance already uses for the
 /// same real signal, not a new color invented for this card.
+/// Entry point into Trade Intelligence -- distinctly styled with
+/// theme.statusHot (same color language as AdvisoryDisclaimerBanner) so
+/// the tab visually signals "this is the advisory zone" before Josh even
+/// opens it, unlike every other section here which stays neutral/read-only.
+private struct TradeIntelligenceEntryCard: View {
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "sparkles")
+                .foregroundStyle(theme.statusHot)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Trade Intelligence")
+                    .font(PCorpFont.body(13.5, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                Text("Chart analysis, signals, position review, trade breakdown — advisory")
+                    .font(PCorpFont.body(11))
+                    .foregroundStyle(theme.textSecondary)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(theme.statusHot.opacity(0.7))
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.statusHot.opacity(0.08))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.statusHot.opacity(0.25)))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
 private struct LiveAccountCard: View {
     let status: HFMarketsLiveStatus
     @Environment(\.appTheme) private var theme
