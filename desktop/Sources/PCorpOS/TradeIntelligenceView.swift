@@ -2,15 +2,22 @@ import SwiftUI
 import PCorpKit
 import UniformTypeIdentifiers
 
-/// Trade Intelligence (2026-09-20) -- a genuinely separate, advisory
-/// specialist agent living inside the Trading Division tab, opened via
-/// TradeIntelligenceEntryCard (TradingDivisionView.swift). Structurally
-/// distinct from TradingDivisionClient/the read-only Trading Division
-/// Agent: its own client (TradeIntelligenceClient), its own backend
-/// module (trade_intelligence_agent.py), never reachable from Frank's
-/// chat loop. AdvisoryDisclaimerBanner is mounted exactly once here,
-/// unconditionally, above the 4-way section switcher -- see that
-/// component's own docstring for why.
+/// Trade Intelligence (2026-09-20, made conversational 2026-09-21) -- a
+/// genuinely separate, advisory specialist agent living inside the
+/// Trading Division tab, opened via TradeIntelligenceEntryCard
+/// (TradingDivisionView.swift). Structurally distinct from
+/// TradingDivisionClient/the read-only Trading Division Agent: its own
+/// client (TradeIntelligenceClient), its own backend module
+/// (trade_intelligence_agent.py), never reachable from Frank's chat loop.
+/// AdvisoryDisclaimerBanner is mounted exactly once here, unconditionally,
+/// above the 4-way section switcher -- see that component's own docstring
+/// for why.
+///
+/// Each of the 4 sections shows its own seed form/picker only while that
+/// capability's conversation hasn't started; once it has, it shows a
+/// shared AdvisoryConversationThread instead (real back-and-forth,
+/// 2026-09-21 -- "I want to be able to respond"), with a "Start Over"
+/// path back to the seed form.
 struct TradeIntelligenceView: View {
     @StateObject private var client = TradeIntelligenceClient()
     @Environment(\.appTheme) private var theme
@@ -81,64 +88,76 @@ struct TradeIntelligenceView: View {
 
     // MARK: - Chart Analysis
 
-    @State private var chartImageData: Data?
-    @State private var chartImageFilename = ""
-    @State private var chartImageMediaType = ""
+    @State private var chartImages: [(data: Data, mediaType: String, filename: String)] = []
     @State private var chartSymbol = "NDX"
     @State private var chartNote = ""
 
     @ViewBuilder
     private var chartAnalysisSection: some View {
         sectionLabel("CHART ANALYSIS")
-        Text("Plain-language read of what's visually present — not a calibrated numeric TA engine.")
-            .font(PCorpFont.body(11))
-            .foregroundStyle(theme.textTertiary)
+        if client.chartMessages.isEmpty {
+            Text("Plain-language read of what's visually present — not a calibrated numeric TA engine. Attach up to 4 related charts (e.g. different timeframes) for one combined read.")
+                .font(PCorpFont.body(11))
+                .foregroundStyle(theme.textTertiary)
 
-        if let chartImageData, let nsImage = NSImage(data: chartImageData) {
-            Image(nsImage: nsImage)
-                .resizable()
-                .scaledToFit()
-                .frame(maxHeight: 160)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-        Button(chartImageData == nil ? "Choose Chart Image…" : "Choose Different Image…") { pickChartImage() }
-            .buttonStyle(.bordered)
-
-        plainField("Symbol (optional)", text: $chartSymbol)
-        plainField("Note (optional)", text: $chartNote)
-
-        if client.isAnalyzingChart {
-            inFlightRow("Analyzing chart…")
-        } else if let analysis = client.chartAnalysis {
-            resultText(analysis)
-            Button("Analyze Again") { Task { await analyzeChart() } }
+            if !chartImages.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(Array(chartImages.enumerated()), id: \.offset) { index, image in
+                        if let nsImage = NSImage(data: image.data) {
+                            ZStack(alignment: .topTrailing) {
+                                Image(nsImage: nsImage)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 64, height: 64)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                Button { chartImages.remove(at: index) } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(theme.textPrimary)
+                                        .background(Circle().fill(theme.background))
+                                }
+                                .buttonStyle(.plain)
+                                .offset(x: 4, y: -4)
+                            }
+                        }
+                    }
+                }
+            }
+            Button(chartImages.isEmpty ? "Choose Chart Images…" : "Add More…") { pickChartImages() }
                 .buttonStyle(.bordered)
-                .disabled(chartImageData == nil)
-        } else {
+                .disabled(chartImages.count >= 4)
+
+            plainField("Symbol (optional)", text: $chartSymbol)
+            plainField("Note (optional)", text: $chartNote)
+
             if let error = client.chartAnalysisError { errorText(error) }
-            Button("Analyze Chart") { Task { await analyzeChart() } }
+            Button("Analyze Chart\(chartImages.count > 1 ? "s" : "")") { Task { await analyzeChart() } }
                 .buttonStyle(.actionFilled)
-                .disabled(chartImageData == nil)
+                .disabled(chartImages.isEmpty || client.isAnalyzingChart)
+        } else {
+            AdvisoryConversationThread(
+                messages: client.chartMessages, isSending: client.isAnalyzingChart, errorMessage: client.chartAnalysisError,
+                onSend: { text in Task { await client.sendChartFollowUp(text) } },
+                onReset: { client.resetChart(); chartImages = []; chartNote = "" }
+            )
         }
     }
 
-    private func pickChartImage() {
+    private func pickChartImages() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.png, .jpeg]
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        guard panel.runModal() == .OK, let url = panel.urls.first, let data = try? Data(contentsOf: url) else { return }
-        chartImageData = data
-        chartImageFilename = url.lastPathComponent
-        chartImageMediaType = url.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg"
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard chartImages.count < 4, let data = try? Data(contentsOf: url) else { continue }
+            let mediaType = url.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg"
+            chartImages.append((data: data, mediaType: mediaType, filename: url.lastPathComponent))
+        }
     }
 
     private func analyzeChart() async {
-        guard let chartImageData else { return }
-        await client.analyzeChart(
-            imageData: chartImageData, mediaType: chartImageMediaType, filename: chartImageFilename,
-            symbol: chartSymbol.isEmpty ? nil : chartSymbol, note: chartNote.isEmpty ? nil : chartNote
-        )
+        guard !chartImages.isEmpty else { return }
+        await client.analyzeChart(images: chartImages, symbol: chartSymbol.isEmpty ? nil : chartSymbol, note: chartNote.isEmpty ? nil : chartNote)
     }
 
     // MARK: - Trading Signals
@@ -148,18 +167,18 @@ struct TradeIntelligenceView: View {
     @ViewBuilder
     private var signalSection: some View {
         sectionLabel("TRADING SIGNALS")
-        plainField("Symbol", text: $signalSymbol)
-        if client.isGeneratingSignal {
-            inFlightRow("Generating signal…")
-        } else if let signal = client.signal {
-            resultText(signal)
-            Button("Regenerate") { Task { await client.generateSignal(symbol: signalSymbol) } }
-                .buttonStyle(.bordered)
-        } else {
+        if client.signalMessages.isEmpty {
+            plainField("Symbol", text: $signalSymbol)
             if let error = client.signalError { errorText(error) }
             Button("Generate Signal") { Task { await client.generateSignal(symbol: signalSymbol) } }
                 .buttonStyle(.actionFilled)
-                .disabled(signalSymbol.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(signalSymbol.trimmingCharacters(in: .whitespaces).isEmpty || client.isGeneratingSignal)
+        } else {
+            AdvisoryConversationThread(
+                messages: client.signalMessages, isSending: client.isGeneratingSignal, errorMessage: client.signalError,
+                onSend: { text in Task { await client.sendSignalFollowUp(text) } },
+                onReset: { client.resetSignal() }
+            )
         }
     }
 
@@ -181,31 +200,30 @@ struct TradeIntelligenceView: View {
     @ViewBuilder
     private var positionReviewSection: some View {
         sectionLabel("POSITION REVIEW")
-        plainField("Symbol", text: $reviewSymbol)
-        Picker("Direction", selection: $reviewDirection) {
-            Text("Long").tag("long")
-            Text("Short").tag("short")
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        plainField("Entry price", text: $reviewEntryPrice)
-        plainField("Size", text: $reviewSize)
-        plainField("Current price", text: $reviewCurrentPrice)
-        plainField("Stop-loss (optional)", text: $reviewStopLoss)
-        plainField("Take-profit (optional)", text: $reviewTakeProfit)
+        if client.positionMessages.isEmpty {
+            plainField("Symbol", text: $reviewSymbol)
+            Picker("Direction", selection: $reviewDirection) {
+                Text("Long").tag("long")
+                Text("Short").tag("short")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            plainField("Entry price", text: $reviewEntryPrice)
+            plainField("Size", text: $reviewSize)
+            plainField("Current price", text: $reviewCurrentPrice)
+            plainField("Stop-loss (optional)", text: $reviewStopLoss)
+            plainField("Take-profit (optional)", text: $reviewTakeProfit)
 
-        if client.isReviewingPosition {
-            inFlightRow("Reviewing position…")
-        } else if let review = client.positionReview {
-            resultText(review)
-            Button("Review Again") { Task { await reviewPosition() } }
-                .buttonStyle(.bordered)
-                .disabled(!canReviewPosition)
-        } else {
             if let error = client.positionReviewError { errorText(error) }
             Button("Review Position") { Task { await reviewPosition() } }
                 .buttonStyle(.actionFilled)
-                .disabled(!canReviewPosition)
+                .disabled(!canReviewPosition || client.isReviewingPosition)
+        } else {
+            AdvisoryConversationThread(
+                messages: client.positionMessages, isSending: client.isReviewingPosition, errorMessage: client.positionReviewError,
+                onSend: { text in Task { await client.sendPositionFollowUp(text) } },
+                onReset: { client.resetPosition() }
+            )
         }
     }
 
@@ -275,16 +293,23 @@ struct TradeIntelligenceView: View {
         Divider().overlay(theme.divider).padding(.vertical, 4)
 
         sectionLabel("BREAKDOWN")
-        if client.isLoadingBreakdown {
-            inFlightRow("Computing breakdown…")
-        } else if let breakdown = client.breakdown {
-            TradeBreakdownSummary(breakdown: breakdown)
-            Button("Refresh Breakdown") { Task { await client.fetchBreakdown() } }
-                .buttonStyle(.bordered)
+        if client.breakdownMessages.isEmpty {
+            if client.isLoadingBreakdown {
+                inFlightRow("Computing breakdown…")
+            } else {
+                if let error = client.breakdownError { errorText(error) }
+                Button("View Breakdown") { Task { await client.fetchBreakdown() } }
+                    .buttonStyle(.actionFilled)
+            }
         } else {
-            if let error = client.breakdownError { errorText(error) }
-            Button("View Breakdown") { Task { await client.fetchBreakdown() } }
-                .buttonStyle(.actionFilled)
+            if let stats = client.breakdownStats {
+                TradeBreakdownStatsLine(stats: stats)
+            }
+            AdvisoryConversationThread(
+                messages: client.breakdownMessages, isSending: client.isLoadingBreakdown, errorMessage: client.breakdownError,
+                onSend: { text in Task { await client.sendBreakdownFollowUp(text) } },
+                onReset: { client.resetBreakdown() }
+            )
         }
     }
 
@@ -362,13 +387,6 @@ struct TradeIntelligenceView: View {
         }
     }
 
-    private func resultText(_ text: String) -> some View {
-        Text(text)
-            .font(PCorpFont.body(12.5))
-            .foregroundStyle(theme.textPrimary)
-            .textSelection(.enabled)
-    }
-
     private func errorText(_ text: String) -> some View {
         Text(text)
             .font(PCorpFont.body(12))
@@ -415,26 +433,19 @@ private struct TradeHistoryRow: View {
     }
 }
 
-private struct TradeBreakdownSummary: View {
-    let breakdown: TradeBreakdown
+private struct TradeBreakdownStatsLine: View {
+    let stats: TradeBreakdownStats
     @Environment(\.appTheme) private var theme
 
     private var summaryLine: String {
-        let winRate = Int(breakdown.stats.overall.winRate * 100)
-        let totalPnl = String(format: "%.2f", breakdown.stats.overall.totalPnl)
-        return "\(breakdown.stats.closedTrades) closed trade(s) · \(winRate)% win rate · \(totalPnl) total P&L"
+        let winRate = Int(stats.overall.winRate * 100)
+        let totalPnl = String(format: "%.2f", stats.overall.totalPnl)
+        return "\(stats.closedTrades) closed trade(s) · \(winRate)% win rate · \(totalPnl) total P&L"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(summaryLine)
-                .font(PCorpFont.body(12, weight: .semibold))
-                .foregroundStyle(theme.textPrimary)
-
-            Text(breakdown.narrative)
-                .font(PCorpFont.body(12.5))
-                .foregroundStyle(theme.textPrimary)
-                .textSelection(.enabled)
-        }
+        Text(summaryLine)
+            .font(PCorpFont.body(12, weight: .semibold))
+            .foregroundStyle(theme.textPrimary)
     }
 }

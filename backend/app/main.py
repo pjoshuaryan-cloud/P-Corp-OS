@@ -159,16 +159,18 @@ from app.trade_intelligence_db import (
     list_trades as ti_list_trades,
 )
 from app.trade_intelligence_agent import (
+    TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT,
     analyze_chart as ti_analyze_chart,
     generate_signal as ti_generate_signal,
     narrate_trade_breakdown,
     review_position as ti_review_position,
+    run_conversational_turn,
 )
 from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES, LEGACY_VAULT_TOOLS, execute_legacy_vault_tool_call
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
 from app.research_agent import RESEARCH_AGENT_TOOL_NAMES, RESEARCH_AGENT_TOOLS, execute_research_agent_tool_call
-from app.web_tools import SERVER_TOOL_LABELS, WEB_TOOLS
+from app.web_tools import SERVER_TOOL_LABELS, WEB_SEARCH_TOOL, WEB_TOOLS
 from app.engineering_agent import (
     ENGINEERING_AGENT_TOOL_NAMES,
     ENGINEERING_AGENT_TOOLS,
@@ -1053,36 +1055,64 @@ async def trade_intelligence_trade_delete(
     return {"deleted": True}
 
 
-class ChartAnalysisRequest(BaseModel):
+class ImagePayload(BaseModel):
     media_type: str
     filename: str
     data: str  # base64
+
+
+class ChartAnalysisRequest(BaseModel):
+    images: list[ImagePayload] = []
     symbol: str | None = None
     note: str | None = None
+    # Real back-and-forth conversations (2026-09-21, "I want to be able to
+    # respond") -- history is entirely client-held and opaque: empty on
+    # the first call (images/symbol/note seed it), non-empty + `message`
+    # set on every follow-up. See trade_intelligence_agent.py's own
+    # docstring for the full reasoning.
+    history: list[dict[str, Any]] = []
+    message: str | None = None
+
+
+def _require_api_key() -> str:
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
+    return api_key
 
 
 @app.post("/trade-intelligence/chart-analysis")
 async def trade_intelligence_chart_analysis(body: ChartAnalysisRequest, _: None = Depends(verify_token)) -> dict:
+    client = AsyncAnthropic(api_key=_require_api_key())
+    if body.history:
+        if not body.message:
+            raise HTTPException(status_code=400, detail="message is required for a follow-up turn")
+        history = body.history + [{"role": "user", "content": body.message}]
+        reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history)
+        return {"reply": reply, "history": history}
+
+    if not body.images:
+        raise HTTPException(status_code=400, detail="At least one image is required to start a chart analysis.")
+    if len(body.images) > 4:
+        raise HTTPException(status_code=400, detail="Attach at most 4 chart images at once.")
     # Reuses the same base64-decode + build_content_block path the
     # websocket chat attachment flow already uses (main.py's
     # websocket_chat) -- no new image-encoding logic invented. Same
-    # MAX_ATTACHMENT_BYTES cap as chat attachments (a single chart image,
-    # so the per-message count/total caps don't apply here).
-    try:
-        raw_bytes = base64.b64decode(body.data)
-    except Exception as error:
-        raise HTTPException(status_code=400, detail=f"Could not decode image data: {error}") from error
-    if len(raw_bytes) > MAX_ATTACHMENT_BYTES:
-        raise HTTPException(status_code=400, detail=f"Image exceeds the {MAX_ATTACHMENT_BYTES // (1024*1024)}MB limit.")
-    image_block = build_content_block(body.media_type, body.filename, raw_bytes)
-    if image_block.get("type") != "image":
-        raise HTTPException(status_code=400, detail=f"Unsupported image type: {body.media_type}")
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
-    client = AsyncAnthropic(api_key=api_key)
-    analysis = await ti_analyze_chart(client, image_block, body.symbol, body.note)
-    return {"analysis": analysis}
+    # per-image MAX_ATTACHMENT_BYTES cap as chat attachments.
+    image_blocks = []
+    for image in body.images:
+        try:
+            raw_bytes = base64.b64decode(image.data)
+        except Exception as error:
+            raise HTTPException(status_code=400, detail=f"Could not decode image data: {error}") from error
+        if len(raw_bytes) > MAX_ATTACHMENT_BYTES:
+            raise HTTPException(status_code=400, detail=f"Image exceeds the {MAX_ATTACHMENT_BYTES // (1024*1024)}MB limit.")
+        image_block = build_content_block(image.media_type, image.filename, raw_bytes)
+        if image_block.get("type") != "image":
+            raise HTTPException(status_code=400, detail=f"Unsupported image type: {image.media_type}")
+        image_blocks.append(image_block)
+    reply, history = await ti_analyze_chart(client, image_blocks, body.symbol, body.note)
+    return {"reply": reply, "history": history}
 
 
 class PositionReviewRequest(BaseModel):
@@ -1093,6 +1123,8 @@ class PositionReviewRequest(BaseModel):
     current_price: float
     stop_loss: float | None = None
     take_profit: float | None = None
+    history: list[dict[str, Any]] = []
+    message: str | None = None
 
 
 @app.post("/trade-intelligence/position-review")
@@ -1104,53 +1136,79 @@ async def trade_intelligence_position_review(
     # never reachable mid-conversation. Reasons only over the numbers
     # given here (trade_intelligence_agent's own hard boundary), never
     # assumes this represents a real open account position.
+    client = AsyncAnthropic(api_key=_require_api_key())
+    if body.history:
+        if not body.message:
+            raise HTTPException(status_code=400, detail="message is required for a follow-up turn")
+        history = body.history + [{"role": "user", "content": body.message}]
+        reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history)
+        return {"reply": reply, "history": history}
+
     if body.direction not in ("long", "short"):
         raise HTTPException(status_code=400, detail=f"direction must be 'long' or 'short', got {body.direction!r}")
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
-    client = AsyncAnthropic(api_key=api_key)
-    review = await ti_review_position(
+    reply, history = await ti_review_position(
         client, body.symbol, body.direction, body.entry_price, body.size, body.current_price,
         body.stop_loss, body.take_profit,
     )
-    return {"review": review}
+    return {"reply": reply, "history": history}
 
 
 class TradeSignalRequest(BaseModel):
     symbol: str = "NDX"
+    history: list[dict[str, Any]] = []
+    message: str | None = None
 
 
 @app.post("/trade-intelligence/signal")
 async def trade_intelligence_signal(body: TradeSignalRequest, _: None = Depends(verify_token)) -> dict:
     # Advisory-only -- see PositionReviewRequest's own comment above for
     # the shared reasoning. Output only: no order is ever placed.
+    # WEB_SEARCH_TOOL stays available on follow-up turns too, so a later
+    # question ("what about after the Fed decision") can trigger a fresh
+    # search rather than reasoning off stale seed-turn context.
+    client = AsyncAnthropic(api_key=_require_api_key())
+    if body.history:
+        if not body.message:
+            raise HTTPException(status_code=400, detail="message is required for a follow-up turn")
+        history = body.history + [{"role": "user", "content": body.message}]
+        reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history, tools=[WEB_SEARCH_TOOL])
+        return {"reply": reply, "history": history}
+
     if not body.symbol.strip():
         raise HTTPException(status_code=400, detail="symbol is required")
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
-    client = AsyncAnthropic(api_key=api_key)
-    signal = await ti_generate_signal(client, body.symbol)
-    return {"signal": signal}
+    reply, history = await ti_generate_signal(client, body.symbol)
+    return {"reply": reply, "history": history}
 
 
-@app.get("/trade-intelligence/trades/breakdown")
-async def trade_intelligence_breakdown(request: Request, _: None = Depends(verify_token)) -> dict:
+class TradeBreakdownRequest(BaseModel):
+    history: list[dict[str, Any]] = []
+    message: str | None = None
+
+
+@app.post("/trade-intelligence/trades/breakdown")
+async def trade_intelligence_breakdown(
+    body: TradeBreakdownRequest, request: Request, _: None = Depends(verify_token)
+) -> dict:
     # Deterministic stats (compute_breakdown_stats) computed first and
     # verified independently before ever being narrated -- the agent only
     # ever narrates these already-correct numbers, per its own system
     # prompt, never recomputing or eyeballing the raw trade log itself.
+    # `stats` is only included on the seed response -- a follow-up
+    # doesn't need it resent, the client already has it from the seed.
+    client = AsyncAnthropic(api_key=_require_api_key())
+    if body.history:
+        if not body.message:
+            raise HTTPException(status_code=400, detail="message is required for a follow-up turn")
+        history = body.history + [{"role": "user", "content": body.message}]
+        reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history)
+        return {"reply": reply, "history": history}
+
     postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
     stats = await ti_compute_breakdown_stats(postgres_conn)
     if stats["closed_trades"] == 0:
-        return {"stats": stats, "narrative": "No closed trades logged yet -- nothing to break down."}
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
-    client = AsyncAnthropic(api_key=api_key)
-    narrative = await narrate_trade_breakdown(client, stats)
-    return {"stats": stats, "narrative": narrative}
+        return {"reply": "No closed trades logged yet -- nothing to break down.", "history": [], "stats": stats}
+    reply, history = await narrate_trade_breakdown(client, stats)
+    return {"reply": reply, "history": history, "stats": stats}
 
 
 @app.get("/personal/dashboard")

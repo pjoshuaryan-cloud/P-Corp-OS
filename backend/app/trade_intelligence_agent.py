@@ -1,7 +1,8 @@
 """
-Trade Intelligence Agent (2026-09-20) -- a genuinely separate specialist
-from trading_division_agent.py's TRADING_DIVISION_AGENT, not an extension
-of it. That agent is hard-barred from ever stating bias, a recommendation,
+Trade Intelligence Agent (2026-09-20, extended 2026-09-21 for real
+follow-up conversations) -- a genuinely separate specialist from
+trading_division_agent.py's TRADING_DIVISION_AGENT, not an extension of
+it. That agent is hard-barred from ever stating bias, a recommendation,
 or a specific price level (its own system prompt, "you never recommend,
 suggest, or imply a specific trade..."). This one is explicitly the
 opposite: Chart Analysis, Trading Signals, Position Review, and Trade
@@ -21,13 +22,29 @@ Every function's output is shown directly in the UI, not relayed through
 Frank -- the system prompt below speaks to Josh in second person
 directly, unlike the read-only agent's own "Frank will relay what you
 say" framing.
+
+Real follow-up conversations (2026-09-21, "I want to be able to respond"):
+history is entirely client-held and opaque, no new DB/session state --
+main.py's routes return the updated history verbatim and the client
+resends it, appended with the next turn, on every follow-up. Same shape
+Frank's own main chat loop already proves out (websocket_chat's own
+`history` list), not a new pattern invented for this feature: assistant
+turns are always flattened to plain extracted text (matching
+load_history()'s own persisted shape -- raw tool-use scaffolding never
+needs to survive a turn boundary), while a chart-analysis conversation's
+first user turn keeps its real image content blocks in history so a
+follow-up question can still reference the chart(s). web_search is a
+server-executed tool (confirmed live: a single messages.create call
+already returns server_tool_use/web_search_tool_result/text blocks
+together), so no client-side tool-execution loop is needed here at all,
+unlike Frank's own tool-calling loop.
 """
 
 from anthropic import AsyncAnthropic
 
 from app.web_tools import WEB_SEARCH_TOOL
 
-TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT = """You are the Trade Intelligence Agent inside P Corp OS's Trading Division tab -- a separate, advisory specialist from the read-only Trading Division Agent elsewhere in this app. Your output is shown directly to Josh in the UI, not relayed through Frank -- speak to him in second person directly.
+TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT = """You are the Trade Intelligence Agent inside P Corp OS's Trading Division tab -- a separate, advisory specialist from the read-only Trading Division Agent elsewhere in this app. Your output is shown directly to Josh in the UI, not relayed through Frank -- speak to him in second person directly. This is a real back-and-forth conversation -- Josh can ask follow-up questions, and you should answer them directly rather than repeating your whole earlier analysis.
 
 Unlike the read-only Trading Division Agent (which is hard-barred from ever stating bias or a recommendation), you ARE explicitly allowed to: state a directional bias, name specific price levels (entry, stop-loss, take-profit, support/resistance), and give a hold/exit/adjust-risk recommendation on a described position. This is the one place in P Corp OS built specifically to do that.
 
@@ -35,58 +52,80 @@ HARD BOUNDARIES, still non-negotiable even though your role is advisory:
 - You have no path to place, modify, or close any real order, and you never claim to have done so or to be capable of it. Every response you give is analysis or a suggestion only -- acting on it is entirely Josh's own decision and his own action, never something you do.
 - You never claim to see a real open position, account balance, or live order beyond exactly what a given request's own inputs supply you. If Josh describes a position, reason only over the numbers he gave you -- don't assume they represent his full account or that you have any visibility beyond them.
 - Never assert false precision. A chart screenshot's pattern or level is often genuinely ambiguous -- say so plainly ("this could read as either a double top or a failed breakout -- not clear-cut") rather than presenting a guess as settled fact.
+- If you're given more than one chart image at once, they're related (e.g. different timeframes of the same setup) -- analyze them together and call out how they relate (does the higher timeframe trend agree with the lower timeframe entry trigger, do the levels line up), don't just describe each one in isolation.
 - For Trade Breakdown specifically: you are given already-computed statistics (win rate, expectancy, average P&L, grouped by setup/timeframe/session) -- your job is to narrate them honestly, never to recompute them yourself or eyeball the raw trade log. A small sample size (e.g. 3 trades in a group) is not statistically meaningful and you should say so directly, exactly the same honesty the read-only agent already applies to backtest results -- don't treat a handful of trades as a real track record.
 
 Within those boundaries: be direct and specific. A vague "it could go either way" is less useful than a clearly-stated view with your reasoning and its caveats -- Josh can weigh that better than a hedge that says nothing."""
 
 
-async def analyze_chart(client: AsyncAnthropic, image_block: dict, symbol: str | None, note: str | None) -> str:
+async def run_conversational_turn(
+    client: AsyncAnthropic, system_prompt: str, history: list[dict], tools: list | None = None, max_tokens: int = 4096
+) -> str:
+    """Shared turn-runner for both a seed message and every follow-up.
+    `history` already contains the new user turn when this is called --
+    mutated in place with the flattened assistant reply appended, so the
+    caller's own `history` variable is the updated one afterward (also
+    returned as the reply text, since that's what callers actually need
+    to relay). One-shot, non-streaming (client.messages.create) -- this
+    is a plain REST response, not a chat turn with live text to relay
+    token-by-token."""
+    response = await client.messages.create(
+        model="claude-sonnet-5",
+        max_tokens=max_tokens,
+        system=system_prompt,
+        messages=history,
+        tools=tools or [],
+    )
+    reply_text = "".join(block.text for block in response.content if block.type == "text")
+    history.append({"role": "assistant", "content": reply_text})
+    return reply_text
+
+
+async def analyze_chart(
+    client: AsyncAnthropic, image_blocks: list[dict], symbol: str | None, note: str | None
+) -> tuple[str, list[dict]]:
     """Chart Analysis -- plain-language read of what's visually present in
-    an uploaded chart screenshot (candlestick patterns, apparent support/
-    resistance, trend structure), not a calibrated numeric TA engine.
-    Reuses the same image content-block shape the websocket chat path
-    already builds (document_attachments.build_content_block) -- this
-    function just wraps it as this agent's one-shot vision call."""
+    1-4 uploaded chart screenshots (candlestick patterns, apparent
+    support/resistance, trend structure), not a calibrated numeric TA
+    engine. image_blocks are pre-built by the route (document_attachments.
+    build_content_block) -- this function just seeds the conversation
+    with them. Returns (reply, history) -- history's first turn keeps the
+    real image blocks so a follow-up question can still reference them."""
     context_parts = []
     if symbol:
         context_parts.append(f"This is a chart for {symbol}.")
+    if len(image_blocks) > 1:
+        context_parts.append(f"These are {len(image_blocks)} related charts (e.g. different timeframes of the same setup).")
     if note:
         context_parts.append(f"Josh's own note: {note}")
     context_parts.append(
         "Describe what's visually present: candlestick patterns, apparent support/resistance levels, and "
-        "trend structure. Flag anything ambiguous rather than asserting a confident read where the chart "
-        "doesn't clearly support one."
+        "trend structure. Flag anything ambiguous rather than asserting a confident read where the chart(s) "
+        "don't clearly support one."
     )
     prompt_text = " ".join(context_parts)
-    response = await client.messages.create(
-        model="claude-sonnet-5",
-        max_tokens=4096,
-        system=TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": [image_block, {"type": "text", "text": prompt_text}]}],
-    )
-    return "".join(block.text for block in response.content if block.type == "text")
+    history = [{"role": "user", "content": [*image_blocks, {"type": "text", "text": prompt_text}]}]
+    reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history)
+    return reply, history
 
 
-async def generate_signal(client: AsyncAnthropic, symbol: str) -> str:
+async def generate_signal(client: AsyncAnthropic, symbol: str) -> tuple[str, list[dict]]:
     """Trading Signals -- a real buy/sell suggestion with entry/stop/
     target levels for the given symbol. Given WEB_SEARCH_TOOL so a stated
     level is grounded in symbol's actual current price, not hallucinated
     -- same reasoning get_holding_update already uses for its own web
-    grounding. Output only; no order is ever placed."""
+    grounding. Output only; no order is ever placed. Route keeps passing
+    WEB_SEARCH_TOOL on follow-up turns too, so a later question can
+    trigger a fresh search."""
     prompt = (
         f"Generate a trading signal for {symbol}: search for its real current price and recent price action, "
         f"then give me a clear directional bias (long/short/no clear setup right now) with a suggested entry, "
         f"stop-loss, and take-profit level, and your reasoning. This is a suggestion for me to evaluate myself, "
         f"not an instruction -- I'm not asking you to place anything."
     )
-    response = await client.messages.create(
-        model="claude-sonnet-5",
-        max_tokens=4096,
-        system=TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-        tools=[WEB_SEARCH_TOOL],
-    )
-    return "".join(block.text for block in response.content if block.type == "text")
+    history = [{"role": "user", "content": prompt}]
+    reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history, tools=[WEB_SEARCH_TOOL])
+    return reply, history
 
 
 async def review_position(
@@ -98,7 +137,7 @@ async def review_position(
     current_price: float,
     stop_loss: float | None,
     take_profit: float | None,
-) -> str:
+) -> tuple[str, list[dict]]:
     """Position Review -- hold/exit/adjust-risk advice on a described
     active trade. Reasons only over the numbers given here, per the
     system prompt's own hard boundary -- never assumes this represents a
@@ -109,16 +148,12 @@ async def review_position(
         f"Review this {direction} position on {symbol}: entry price {entry_price}, size {size}, current price "
         f"{current_price}, {levels}. Give me your honest hold/exit/adjust-risk view and your reasoning."
     )
-    response = await client.messages.create(
-        model="claude-sonnet-5",
-        max_tokens=4096,
-        system=TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return "".join(block.text for block in response.content if block.type == "text")
+    history = [{"role": "user", "content": prompt}]
+    reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history)
+    return reply, history
 
 
-async def narrate_trade_breakdown(client: AsyncAnthropic, stats: dict) -> str:
+async def narrate_trade_breakdown(client: AsyncAnthropic, stats: dict) -> tuple[str, list[dict]]:
     """Trade Breakdown's narration layer -- stats is already-computed
     deterministic SQL/Python aggregation (trade_intelligence_db.
     compute_breakdown_stats), never raw trade rows. This call's only job
@@ -130,10 +165,6 @@ async def narrate_trade_breakdown(client: AsyncAnthropic, stats: dict) -> str:
         f"sample size is too small to draw a real conclusion yet. Don't recompute anything yourself; these "
         f"numbers are already correct."
     )
-    response = await client.messages.create(
-        model="claude-sonnet-5",
-        max_tokens=4096,
-        system=TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return "".join(block.text for block in response.content if block.type == "text")
+    history = [{"role": "user", "content": prompt}]
+    reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history)
+    return reply, history

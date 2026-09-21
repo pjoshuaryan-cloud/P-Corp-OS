@@ -6,6 +6,27 @@ import Foundation
 public let setupTagOptions = ["trend_continuation", "reversal", "breakout", "range_bound", "news_event", "other"]
 public let timeframeOptions = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
 
+/// One turn in a real Trade Intelligence conversation (2026-09-21, "I
+/// want to be able to respond"). Purely a display model -- the real
+/// conversation state the backend needs (Anthropic's own message/content-
+/// block shape) is an opaque JSON blob TradeIntelligenceClient threads
+/// through untouched; this struct never needs to represent that shape,
+/// only what's shown on screen. `imageDataList` is never resent after
+/// the turn that attached it -- it's cached here purely so the UI can
+/// keep showing the user's own thumbnails in the thread.
+public struct TradeIntelligenceMessage: Identifiable {
+    public let id = UUID()
+    public let role: String
+    public let text: String
+    public let imageDataList: [Data]
+
+    public init(role: String, text: String, imageDataList: [Data] = []) {
+        self.role = role
+        self.text = text
+        self.imageDataList = imageDataList
+    }
+}
+
 public struct Trade: Identifiable, Decodable {
     public let id: Int
     public let symbol: String
@@ -138,9 +159,4 @@ public struct TradeBreakdownStats: Decodable {
         case byTimeframe = "by_timeframe"
         case bySession = "by_session"
     }
-}
-
-public struct TradeBreakdown: Decodable {
-    public let stats: TradeBreakdownStats
-    public let narrative: String
 }
