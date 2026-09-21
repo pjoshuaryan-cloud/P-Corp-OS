@@ -5,10 +5,11 @@ trading_division_agent.py's TRADING_DIVISION_AGENT, not an extension of
 it. That agent is hard-barred from ever stating bias, a recommendation,
 or a specific price level (its own system prompt, "you never recommend,
 suggest, or imply a specific trade..."). This one is explicitly the
-opposite: Chart Analysis, Trading Signals, Position Review, and Trade
-Breakdown all live here specifically because they're allowed to.
+opposite: Chart Analysis, Trading Signals, Position Review, Trade
+Breakdown, and Trade Setup all live here specifically because they're
+allowed to.
 
-Structural separation, not just a different prompt: none of these four
+Structural separation, not just a different prompt: none of these five
 functions are registered as a Frank chat tool anywhere (no *_TOOL dict, no
 *_TOOL_NAMES set, nothing added to main.py's tools=[...] list) -- each is
 called directly from its own dedicated REST route (main.py's
@@ -42,7 +43,7 @@ unlike Frank's own tool-calling loop.
 
 from anthropic import AsyncAnthropic
 
-from app.web_tools import WEB_SEARCH_TOOL
+from app.web_tools import WEB_FETCH_TOOL, WEB_SEARCH_TOOL
 
 TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT = """You are the Trade Intelligence Agent inside P Corp OS's Trading Division tab -- a separate, advisory specialist from the read-only Trading Division Agent elsewhere in this app. Your output is shown directly to Josh in the UI, not relayed through Frank -- speak to him in second person directly. This is a real back-and-forth conversation -- Josh can ask follow-up questions, and you should answer them directly rather than repeating your whole earlier analysis.
 
@@ -54,6 +55,8 @@ HARD BOUNDARIES, still non-negotiable even though your role is advisory:
 - Never assert false precision. A chart screenshot's pattern or level is often genuinely ambiguous -- say so plainly ("this could read as either a double top or a failed breakout -- not clear-cut") rather than presenting a guess as settled fact.
 - If you're given more than one chart image at once, they're related (e.g. different timeframes of the same setup) -- analyze them together and call out how they relate (does the higher timeframe trend agree with the lower timeframe entry trigger, do the levels line up), don't just describe each one in isolation.
 - For Trade Breakdown specifically: you are given already-computed statistics (win rate, expectancy, average P&L, grouped by setup/timeframe/session) -- your job is to narrate them honestly, never to recompute them yourself or eyeball the raw trade log. A small sample size (e.g. 3 trades in a group) is not statistically meaningful and you should say so directly, exactly the same honesty the read-only agent already applies to backtest results -- don't treat a handful of trades as a real track record.
+- When you're given Josh's real account balance/equity (Trade Setup) and he's asked about position size or risk, show the actual arithmetic rather than asserting a number: risk amount = equity x risk % (default to 1% if he hasn't named one), position size = risk amount / stop distance in price. This is simple, single-step arithmetic you should just do correctly and show your work for, not something to hedge on.
+- When you're given Josh's own real historical trade statistics as background (Trade Setup), you can reference them where genuinely relevant (e.g. "your own logged breakout trades on M15 have a 65% win rate") -- but don't force a connection to a specific setup type if the current chart/question doesn't clearly match one of his logged categories.
 
 Within those boundaries: be direct and specific. A vague "it could go either way" is less useful than a clearly-stated view with your reasoning and its caveats -- Josh can weigh that better than a hedge that says nothing."""
 
@@ -111,12 +114,16 @@ async def analyze_chart(
 
 async def generate_signal(client: AsyncAnthropic, symbol: str) -> tuple[str, list[dict]]:
     """Trading Signals -- a real buy/sell suggestion with entry/stop/
-    target levels for the given symbol. Given WEB_SEARCH_TOOL so a stated
-    level is grounded in symbol's actual current price, not hallucinated
-    -- same reasoning get_holding_update already uses for its own web
-    grounding. Output only; no order is ever placed. Route keeps passing
-    WEB_SEARCH_TOOL on follow-up turns too, so a later question can
-    trigger a fresh search."""
+    target levels for the given symbol. Given WEB_SEARCH_TOOL + WEB_FETCH_TOOL
+    (2026-09-22: added web_fetch alongside search so a real economic-
+    calendar check, e.g. forexfactory.com, is possible here too -- same
+    "always pair search+fetch" fix confirmed necessary for
+    trading_division_agent.py's own ForexFactory capability, web_fetch
+    alone fails with "blocked as not previously accessed") so a stated
+    level is grounded in symbol's actual current price and real upcoming
+    events, not hallucinated. Output only; no order is ever placed. Route
+    keeps passing both tools on follow-up turns too, so a later question
+    can trigger a fresh search/fetch."""
     prompt = (
         f"Generate a trading signal for {symbol}: search for its real current price and recent price action, "
         f"then give me a clear directional bias (long/short/no clear setup right now) with a suggested entry, "
@@ -124,7 +131,9 @@ async def generate_signal(client: AsyncAnthropic, symbol: str) -> tuple[str, lis
         f"not an instruction -- I'm not asking you to place anything."
     )
     history = [{"role": "user", "content": prompt}]
-    reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history, tools=[WEB_SEARCH_TOOL])
+    reply = await run_conversational_turn(
+        client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history, tools=[WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
+    )
     return reply, history
 
 
@@ -150,6 +159,49 @@ async def review_position(
     )
     history = [{"role": "user", "content": prompt}]
     reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history)
+    return reply, history
+
+
+DEFAULT_TRADE_SETUP_QUESTION = (
+    "Where should I buy or sell, and why? How long should I hold? Where should I put my stop-loss?"
+)
+
+
+async def analyze_trade_setup(
+    client: AsyncAnthropic,
+    image_blocks: list[dict],
+    symbol: str | None,
+    question: str | None,
+    account_context: str,
+    historical_context: dict,
+) -> tuple[str, list[dict]]:
+    """Trade Setup (2026-09-22, "give me all the tools I need... even
+    the ones I haven't thought of") -- the comprehensive, one-answer
+    version of "should I take this trade": 0-4 optional chart images plus
+    a free-text question (defaults to the canonical entry/hold/stop ask),
+    grounded in real current price/news (web_search + web_fetch, same
+    ForexFactory economic-calendar capability generate_signal now has),
+    Josh's own real account balance/equity (live_account_summary,
+    trading_division.py -- account-level only, same data Trading
+    Division's own Live Account card already shows, never a real open
+    position or order), and his own real logged trade history
+    (compute_breakdown_stats, already built for Trade Breakdown).
+    Doesn't replace Chart Analysis/Signals/Position Review -- those stay
+    as fast, narrow tools; this is the deliberately richer one."""
+    context_parts = [f"Here's my real account context: {account_context}"]
+    if historical_context.get("closed_trades", 0) > 0:
+        context_parts.append(f"Here's my own real logged trade history for context: {historical_context}")
+    if symbol:
+        context_parts.append(f"This is about {symbol}.")
+    if len(image_blocks) > 1:
+        context_parts.append(f"These are {len(image_blocks)} related charts (e.g. different timeframes of the same setup).")
+    context_parts.append(question.strip() if question and question.strip() else DEFAULT_TRADE_SETUP_QUESTION)
+    prompt_text = " ".join(context_parts)
+    content: list[dict] = [*image_blocks, {"type": "text", "text": prompt_text}] if image_blocks else prompt_text
+    history = [{"role": "user", "content": content}]
+    reply = await run_conversational_turn(
+        client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history, tools=[WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
+    )
     return reply, history
 
 

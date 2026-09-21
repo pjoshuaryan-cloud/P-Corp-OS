@@ -141,7 +141,11 @@ from app.finance import (
     maybe_snapshot_luno,
 )
 from app.market_movers import maybe_snapshot_market_prices
-from app.trading_division import build_trading_division_block, dashboard_snapshot as trading_division_dashboard_snapshot
+from app.trading_division import (
+    build_trading_division_block,
+    dashboard_snapshot as trading_division_dashboard_snapshot,
+    live_account_summary,
+)
 from app.trading_division_agent import (
     TRADING_DIVISION_AGENT_TOOL_NAMES,
     TRADING_DIVISION_AGENT_TOOLS,
@@ -161,6 +165,7 @@ from app.trade_intelligence_db import (
 from app.trade_intelligence_agent import (
     TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT,
     analyze_chart as ti_analyze_chart,
+    analyze_trade_setup,
     generate_signal as ti_generate_signal,
     narrate_trade_breakdown,
     review_position as ti_review_position,
@@ -170,7 +175,7 @@ from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES, LEGACY_VAULT_TOOLS, execut
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES, MEMORY_AGENT_TOOLS, execute_memory_agent_tool_call
 from app.operations_agent import OPERATIONS_TOOL_NAMES, OPERATIONS_TOOLS, build_operations_block, execute_operations_tool_call
 from app.research_agent import RESEARCH_AGENT_TOOL_NAMES, RESEARCH_AGENT_TOOLS, execute_research_agent_tool_call
-from app.web_tools import SERVER_TOOL_LABELS, WEB_SEARCH_TOOL, WEB_TOOLS
+from app.web_tools import SERVER_TOOL_LABELS, WEB_FETCH_TOOL, WEB_SEARCH_TOOL, WEB_TOOLS
 from app.engineering_agent import (
     ENGINEERING_AGENT_TOOL_NAMES,
     ENGINEERING_AGENT_TOOLS,
@@ -1081,6 +1086,29 @@ def _require_api_key() -> str:
     return api_key
 
 
+def _decode_image_payloads(images: list[ImagePayload]) -> list[dict]:
+    # Shared by chart-analysis and trade-setup -- reuses the same
+    # base64-decode + build_content_block path the websocket chat
+    # attachment flow already uses (main.py's websocket_chat), no new
+    # image-encoding logic invented. Same per-image MAX_ATTACHMENT_BYTES
+    # cap as chat attachments.
+    if len(images) > 4:
+        raise HTTPException(status_code=400, detail="Attach at most 4 images at once.")
+    image_blocks = []
+    for image in images:
+        try:
+            raw_bytes = base64.b64decode(image.data)
+        except Exception as error:
+            raise HTTPException(status_code=400, detail=f"Could not decode image data: {error}") from error
+        if len(raw_bytes) > MAX_ATTACHMENT_BYTES:
+            raise HTTPException(status_code=400, detail=f"Image exceeds the {MAX_ATTACHMENT_BYTES // (1024*1024)}MB limit.")
+        image_block = build_content_block(image.media_type, image.filename, raw_bytes)
+        if image_block.get("type") != "image":
+            raise HTTPException(status_code=400, detail=f"Unsupported image type: {image.media_type}")
+        image_blocks.append(image_block)
+    return image_blocks
+
+
 @app.post("/trade-intelligence/chart-analysis")
 async def trade_intelligence_chart_analysis(body: ChartAnalysisRequest, _: None = Depends(verify_token)) -> dict:
     client = AsyncAnthropic(api_key=_require_api_key())
@@ -1093,25 +1121,48 @@ async def trade_intelligence_chart_analysis(body: ChartAnalysisRequest, _: None 
 
     if not body.images:
         raise HTTPException(status_code=400, detail="At least one image is required to start a chart analysis.")
-    if len(body.images) > 4:
-        raise HTTPException(status_code=400, detail="Attach at most 4 chart images at once.")
-    # Reuses the same base64-decode + build_content_block path the
-    # websocket chat attachment flow already uses (main.py's
-    # websocket_chat) -- no new image-encoding logic invented. Same
-    # per-image MAX_ATTACHMENT_BYTES cap as chat attachments.
-    image_blocks = []
-    for image in body.images:
-        try:
-            raw_bytes = base64.b64decode(image.data)
-        except Exception as error:
-            raise HTTPException(status_code=400, detail=f"Could not decode image data: {error}") from error
-        if len(raw_bytes) > MAX_ATTACHMENT_BYTES:
-            raise HTTPException(status_code=400, detail=f"Image exceeds the {MAX_ATTACHMENT_BYTES // (1024*1024)}MB limit.")
-        image_block = build_content_block(image.media_type, image.filename, raw_bytes)
-        if image_block.get("type") != "image":
-            raise HTTPException(status_code=400, detail=f"Unsupported image type: {image.media_type}")
-        image_blocks.append(image_block)
+    image_blocks = _decode_image_payloads(body.images)
     reply, history = await ti_analyze_chart(client, image_blocks, body.symbol, body.note)
+    return {"reply": reply, "history": history}
+
+
+class TradeSetupRequest(BaseModel):
+    images: list[ImagePayload] = []
+    symbol: str | None = None
+    question: str | None = None
+    history: list[dict[str, Any]] = []
+    message: str | None = None
+
+
+@app.post("/trade-intelligence/setup")
+async def trade_intelligence_setup(
+    body: TradeSetupRequest, request: Request, _: None = Depends(verify_token)
+) -> dict:
+    # The comprehensive "should I take this trade" flow (2026-09-22) --
+    # unlike chart-analysis/signal/position-review, the seed turn pulls
+    # REAL account balance (live_account_summary) and Josh's own real
+    # logged trade history (compute_breakdown_stats) as grounding, so
+    # position-sizing/hold-duration advice is genuinely personalized, not
+    # generic. Images are optional here (0-4) -- Josh may ask a pure text
+    # question with no chart. Doesn't replace Chart Analysis/Signals/
+    # Position Review; those stay as fast, narrow tools.
+    client = AsyncAnthropic(api_key=_require_api_key())
+    if body.history:
+        if not body.message:
+            raise HTTPException(status_code=400, detail="message is required for a follow-up turn")
+        history = body.history + [{"role": "user", "content": body.message}]
+        reply = await run_conversational_turn(
+            client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history, tools=[WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
+        )
+        return {"reply": reply, "history": history}
+
+    image_blocks = _decode_image_payloads(body.images)
+    postgres_conn = getattr(request.app.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    account_context = await live_account_summary(postgres_conn)
+    historical_context = await ti_compute_breakdown_stats(postgres_conn)
+    reply, history = await analyze_trade_setup(
+        client, image_blocks, body.symbol, body.question, account_context, historical_context
+    )
     return {"reply": reply, "history": history}
 
 
@@ -1163,15 +1214,18 @@ class TradeSignalRequest(BaseModel):
 async def trade_intelligence_signal(body: TradeSignalRequest, _: None = Depends(verify_token)) -> dict:
     # Advisory-only -- see PositionReviewRequest's own comment above for
     # the shared reasoning. Output only: no order is ever placed.
-    # WEB_SEARCH_TOOL stays available on follow-up turns too, so a later
-    # question ("what about after the Fed decision") can trigger a fresh
-    # search rather than reasoning off stale seed-turn context.
+    # WEB_SEARCH_TOOL + WEB_FETCH_TOOL stay available on follow-up turns
+    # too, so a later question ("what about after the Fed decision") can
+    # trigger a fresh search/real economic-calendar fetch rather than
+    # reasoning off stale seed-turn context.
     client = AsyncAnthropic(api_key=_require_api_key())
     if body.history:
         if not body.message:
             raise HTTPException(status_code=400, detail="message is required for a follow-up turn")
         history = body.history + [{"role": "user", "content": body.message}]
-        reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history, tools=[WEB_SEARCH_TOOL])
+        reply = await run_conversational_turn(
+            client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history, tools=[WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
+        )
         return {"reply": reply, "history": history}
 
     if not body.symbol.strip():

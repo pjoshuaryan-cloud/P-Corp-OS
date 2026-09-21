@@ -20,6 +20,11 @@ import Foundation
 /// actually renders (TradeIntelligenceMessage, TradeIntelligenceModels.swift).
 @MainActor
 public final class TradeIntelligenceClient: ObservableObject {
+    @Published public private(set) var setupMessages: [TradeIntelligenceMessage] = []
+    @Published public private(set) var isAnalyzingSetup = false
+    @Published public private(set) var setupError: String?
+    private var setupHistory: [Any] = []
+
     @Published public private(set) var chartMessages: [TradeIntelligenceMessage] = []
     @Published public private(set) var isAnalyzingChart = false
     @Published public private(set) var chartAnalysisError: String?
@@ -80,6 +85,63 @@ public final class TradeIntelligenceClient: ObservableObject {
         } catch {
             return .failure("Couldn't reach the backend — is it running?")
         }
+    }
+
+    // MARK: - Trade Setup (the comprehensive "should I take this trade" flow)
+
+    /// images may be empty here (unlike Chart Analysis, where at least
+    /// one is required) -- Josh can ask a pure text question with no
+    /// chart. The backend always grounds the seed turn in his real
+    /// account balance and real logged trade history; nothing extra
+    /// needs sending from here for that.
+    public func analyzeTradeSetup(images: [(data: Data, mediaType: String, filename: String)], symbol: String?, question: String?) async {
+        isAnalyzingSetup = true
+        setupError = nil
+        let body: [String: Any] = [
+            "images": images.map { ["media_type": $0.mediaType, "filename": $0.filename, "data": $0.data.base64EncodedString()] },
+            "symbol": symbol ?? "",
+            "question": question ?? "",
+        ]
+        switch await postConversational(path: "/trade-intelligence/setup", body: body) {
+        case .success(let json):
+            guard let reply = json["reply"] as? String, let history = json["history"] as? [Any] else {
+                setupError = "Unexpected response from the backend."
+                break
+            }
+            setupHistory = history
+            let questionText = (question?.isEmpty == false) ? question! : "Where should I buy or sell, and why? How long should I hold? Where should I put my stop-loss?"
+            setupMessages = [
+                TradeIntelligenceMessage(role: "user", text: questionText, imageDataList: images.map { $0.data }),
+                TradeIntelligenceMessage(role: "assistant", text: reply),
+            ]
+        case .failure(let message):
+            setupError = message
+        }
+        isAnalyzingSetup = false
+    }
+
+    public func sendSetupFollowUp(_ text: String) async {
+        isAnalyzingSetup = true
+        setupError = nil
+        setupMessages.append(TradeIntelligenceMessage(role: "user", text: text))
+        switch await postConversational(path: "/trade-intelligence/setup", body: ["history": setupHistory, "message": text]) {
+        case .success(let json):
+            guard let reply = json["reply"] as? String, let history = json["history"] as? [Any] else {
+                setupError = "Unexpected response from the backend."
+                break
+            }
+            setupHistory = history
+            setupMessages.append(TradeIntelligenceMessage(role: "assistant", text: reply))
+        case .failure(let message):
+            setupError = message
+        }
+        isAnalyzingSetup = false
+    }
+
+    public func resetSetup() {
+        setupMessages = []
+        setupHistory = []
+        setupError = nil
     }
 
     // MARK: - Chart Analysis

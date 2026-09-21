@@ -24,13 +24,14 @@ struct TradeIntelligenceView: View {
     @EnvironmentObject private var toastCenter: ToastCenter
 
     private enum Section: String, CaseIterable, Identifiable {
+        case setup = "Setup"
         case chart = "Chart"
         case signal = "Signal"
         case position = "Position"
         case breakdown = "Breakdown"
         var id: String { rawValue }
     }
-    @State private var selectedSection: Section = .chart
+    @State private var selectedSection: Section = .setup
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -51,6 +52,7 @@ struct TradeIntelligenceView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     switch selectedSection {
+                    case .setup: tradeSetupSection
                     case .chart: chartAnalysisSection
                     case .signal: signalSection
                     case .position: positionReviewSection
@@ -84,6 +86,75 @@ struct TradeIntelligenceView: View {
             .font(PCorpFont.body(12.5))
             .padding(10)
             .cardSurface(radius: 8)
+    }
+
+    // MARK: - Trade Setup (the comprehensive "should I take this trade" flow)
+
+    @State private var setupImages: [(data: Data, mediaType: String, filename: String)] = []
+    @State private var setupSymbol = "NDX"
+    @State private var setupQuestion = ""
+
+    @ViewBuilder
+    private var tradeSetupSection: some View {
+        sectionLabel("TRADE SETUP")
+        Text("The comprehensive one: drop in a chart (optional, up to 4) and ask anything. Grounded in your real account balance, your own logged trade history, and live price/news.")
+            .font(PCorpFont.body(11))
+            .foregroundStyle(theme.textTertiary)
+
+        if client.setupMessages.isEmpty {
+            if !setupImages.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(Array(setupImages.enumerated()), id: \.offset) { index, image in
+                        if let nsImage = NSImage(data: image.data) {
+                            ZStack(alignment: .topTrailing) {
+                                Image(nsImage: nsImage)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 64, height: 64)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                Button { setupImages.remove(at: index) } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(theme.textPrimary)
+                                        .background(Circle().fill(theme.background))
+                                }
+                                .buttonStyle(.plain)
+                                .offset(x: 4, y: -4)
+                            }
+                        }
+                    }
+                }
+            }
+            Button(setupImages.isEmpty ? "Attach Chart (optional)…" : "Add More…") { pickSetupImages() }
+                .buttonStyle(.bordered)
+                .disabled(setupImages.count >= 4)
+
+            plainField("Symbol (optional)", text: $setupSymbol)
+            plainField("Where should I buy or sell, and why? How long should I hold? Where should stops go?", text: $setupQuestion)
+
+            if let error = client.setupError { errorText(error) }
+            Button("Analyze Setup") { Task { await client.analyzeTradeSetup(images: setupImages, symbol: setupSymbol.isEmpty ? nil : setupSymbol, question: setupQuestion.isEmpty ? nil : setupQuestion) } }
+                .buttonStyle(.actionFilled)
+                .disabled(client.isAnalyzingSetup)
+        } else {
+            AdvisoryConversationThread(
+                messages: client.setupMessages, isSending: client.isAnalyzingSetup, errorMessage: client.setupError,
+                onSend: { text in Task { await client.sendSetupFollowUp(text) } },
+                onReset: { client.resetSetup(); setupImages = []; setupQuestion = "" }
+            )
+        }
+    }
+
+    private func pickSetupImages() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard setupImages.count < 4, let data = try? Data(contentsOf: url) else { continue }
+            let mediaType = url.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg"
+            setupImages.append((data: data, mediaType: mediaType, filename: url.lastPathComponent))
+        }
     }
 
     // MARK: - Chart Analysis
