@@ -15,7 +15,7 @@ private struct NavGroup {
 
 private let navGroups: [NavGroup] = [
     NavGroup(label: "CORE", itemTitles: ["War Room", "Frank"]),
-    NavGroup(label: "DIVISIONS", itemTitles: ["Alpha Mode Media", "Joshx", "Trading Division", "Finance"]),
+    NavGroup(label: "DIVISIONS", itemTitles: ["Alpha Mode Media", "Joshx", "Trading Division", "Ventures", "Finance"]),
     NavGroup(label: "LIFE", itemTitles: ["Personal", "Calendar"]),
     NavGroup(label: "INTELLIGENCE", itemTitles: ["Knowledge", "Agents", "Automations", "Triggers"]),
     NavGroup(label: "SYSTEM", itemTitles: ["Settings"]),

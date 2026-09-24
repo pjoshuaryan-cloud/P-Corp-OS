@@ -20,6 +20,7 @@ struct TradeIntelligenceView: View {
         case signal = "Signal"
         case position = "Position"
         case breakdown = "Breakdown"
+        case propose = "Propose"
         var id: String { rawValue }
     }
     @State private var selectedSection: Section = .setup
@@ -36,7 +37,10 @@ struct TradeIntelligenceView: View {
                 }
         }
         .presentationDetents([.large])
-        .task { await client.fetchTrades() }
+        .task {
+            await client.fetchTrades()
+            await client.fetchProposals()
+        }
     }
 
     private var content: some View {
@@ -62,6 +66,7 @@ struct TradeIntelligenceView: View {
                     case .signal: signalSection
                     case .position: positionReviewSection
                     case .breakdown: breakdownSection
+                    case .propose: proposeSection
                     }
                 }
                 .padding(16)
@@ -146,12 +151,19 @@ struct TradeIntelligenceView: View {
             Button("Analyze Setup") { Task { await client.analyzeTradeSetup(images: setupImages, symbol: setupSymbol.isEmpty ? nil : setupSymbol, question: setupQuestion.isEmpty ? nil : setupQuestion) } }
                 .buttonStyle(.borderedProminent)
                 .disabled(client.isAnalyzingSetup)
+            // Real gap found live (2026-09-22, "I want to know if it's
+            // doing something") -- a disabled button alone gives no
+            // signal that anything is happening, especially here where a
+            // real call with an attached image + web search can
+            // genuinely take upwards of a minute.
+            if client.isAnalyzingSetup { inFlightRow("Analyzing…") }
         } else {
             AdvisoryConversationThread(
                 messages: client.setupMessages, isSending: client.isAnalyzingSetup, errorMessage: client.setupError,
                 onSend: { text in Task { await client.sendSetupFollowUp(text) } },
                 onReset: { client.resetSetup(); setupImages = []; setupQuestion = ""; setupPhotoItems = [] }
             )
+            proposeThisTradeButton(client.setupSuggestedTrade)
         }
     }
 
@@ -216,12 +228,14 @@ struct TradeIntelligenceView: View {
             Button("Analyze Chart\(chartImages.count > 1 ? "s" : "")") { Task { await analyzeChart() } }
                 .buttonStyle(.borderedProminent)
                 .disabled(chartImages.isEmpty || client.isAnalyzingChart)
+            if client.isAnalyzingChart { inFlightRow("Analyzing…") }
         } else {
             AdvisoryConversationThread(
                 messages: client.chartMessages, isSending: client.isAnalyzingChart, errorMessage: client.chartAnalysisError,
                 onSend: { text in Task { await client.sendChartFollowUp(text) } },
                 onReset: { client.resetChart(); chartImages = []; chartNote = ""; chartPhotoItems = [] }
             )
+            proposeThisTradeButton(client.chartSuggestedTrade)
         }
     }
 
@@ -243,12 +257,14 @@ struct TradeIntelligenceView: View {
             Button("Generate Signal") { Task { await client.generateSignal(symbol: signalSymbol) } }
                 .buttonStyle(.borderedProminent)
                 .disabled(signalSymbol.trimmingCharacters(in: .whitespaces).isEmpty || client.isGeneratingSignal)
+            if client.isGeneratingSignal { inFlightRow("Generating…") }
         } else {
             AdvisoryConversationThread(
                 messages: client.signalMessages, isSending: client.isGeneratingSignal, errorMessage: client.signalError,
                 onSend: { text in Task { await client.sendSignalFollowUp(text) } },
                 onReset: { client.resetSignal() }
             )
+            proposeThisTradeButton(client.signalSuggestedTrade)
         }
     }
 
@@ -288,6 +304,7 @@ struct TradeIntelligenceView: View {
             Button("Review Position") { Task { await reviewPosition() } }
                 .buttonStyle(.borderedProminent)
                 .disabled(!canReviewPosition || client.isReviewingPosition)
+            if client.isReviewingPosition { inFlightRow("Reviewing…") }
         } else {
             AdvisoryConversationThread(
                 messages: client.positionMessages, isSending: client.isReviewingPosition, errorMessage: client.positionReviewError,
@@ -448,6 +465,153 @@ struct TradeIntelligenceView: View {
         }
     }
 
+    // MARK: - Trade Proposals (approval-gated execution, 2026-09-22)
+    //
+    // Josh fills this in himself from a Setup/Signal/Chart reply he's
+    // already read -- no auto-parsing of numbers out of the LLM's own
+    // prose, same "human decides what becomes a proposal" boundary the
+    // whole feature exists to enforce. Approving here does NOT itself
+    // place a trade: it only flips the row to 'approved', which a
+    // Mac-only backend loop then hands to a separate MQL5 EA
+    // (PCorpExecutionBridge.mq5) that re-validates everything against
+    // real live broker state before ever executing anything.
+
+    @State private var proposalSymbol = "USA100"
+    @State private var proposalDirection = "long"
+    @State private var proposalEntryPrice = ""
+    @State private var proposalStopLoss = ""
+    @State private var proposalTakeProfit = ""
+    @State private var proposalRiskPct = "1.0"
+    @State private var proposalReasoning = ""
+
+    // "Propose This Trade" (2026-09-22) -- pre-fills the form above from
+    // a real, structured suggestion the agent included in a Setup/Chart/
+    // Signal reply (never parsed from free-form prose -- see
+    // SuggestedTrade's own docstring). Still a fully editable draft,
+    // switching to the Propose tab rather than submitting anything.
+    @ViewBuilder
+    private func proposeThisTradeButton(_ suggestion: SuggestedTrade?) -> some View {
+        if let suggestion {
+            Button("Propose This Trade") { prefillProposal(from: suggestion) }
+                .buttonStyle(.bordered)
+        }
+    }
+
+    private func prefillProposal(from suggestion: SuggestedTrade) {
+        proposalSymbol = suggestion.symbol
+        proposalDirection = suggestion.direction
+        proposalEntryPrice = String(suggestion.entryPrice)
+        proposalStopLoss = String(suggestion.stopLoss)
+        proposalTakeProfit = String(suggestion.takeProfit)
+        proposalRiskPct = String(suggestion.riskPct)
+        proposalReasoning = "Suggested by the Trade Intelligence Agent -- reviewed and confirmed by Josh."
+        selectedSection = .propose
+    }
+
+    private var canCreateProposal: Bool {
+        guard !proposalSymbol.trimmingCharacters(in: .whitespaces).isEmpty,
+              let entry = Double(proposalEntryPrice), let stop = Double(proposalStopLoss),
+              Double(proposalTakeProfit) != nil, let risk = Double(proposalRiskPct)
+        else { return false }
+        return entry != stop && risk > 0 && risk <= 2.0 && !proposalReasoning.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    @ViewBuilder
+    private var proposeSection: some View {
+        sectionLabel("PROPOSE A TRADE")
+        Text("Turns a trade you've already decided on into something you can approve for real execution. Nothing happens until you tap Approve below, and even then a separate safety check on the Mac re-verifies live price, market hours, and combined account risk before anything reaches the account. Max risk per proposal: 2%.")
+            .font(PCorpFont.body(11))
+            .foregroundStyle(theme.textTertiary)
+
+        VStack(alignment: .leading, spacing: 8) {
+            plainField("Symbol", text: $proposalSymbol)
+            Picker("Direction", selection: $proposalDirection) {
+                Text("Long").tag("long")
+                Text("Short").tag("short")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            plainField("Entry price", text: $proposalEntryPrice)
+            plainField("Stop-loss", text: $proposalStopLoss)
+            plainField("Take-profit", text: $proposalTakeProfit)
+            plainField("Risk % (max 2.0)", text: $proposalRiskPct)
+            plainField("Reasoning (why this trade)", text: $proposalReasoning)
+
+            AsyncButton(action: submitProposal) {
+                Text("Create Proposal")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canCreateProposal)
+
+            if let error = client.proposalsError { errorText(error) }
+        }
+        .padding(12)
+        .cardSurface(radius: 10)
+
+        Divider().overlay(theme.divider).padding(.vertical, 4)
+
+        // In-app banner for the automated hourly scan (2026-09-22) --
+        // confirmed with Josh directly: no push notification (needs a
+        // paid Apple Developer account), so this is the actual signal
+        // that something new is ready to look at.
+        if client.pendingScanProposalCount > 0 {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(theme.statusHot)
+                Text(client.pendingScanProposalCount == 1
+                     ? "1 new automated trade idea ready to review"
+                     : "\(client.pendingScanProposalCount) new automated trade ideas ready to review")
+                    .font(PCorpFont.body(12, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(theme.statusHot.opacity(0.12)))
+        }
+
+        sectionLabel("PENDING & RECENT")
+        if client.isLoadingProposals && client.proposals.isEmpty {
+            SkeletonList(count: 2)
+        } else if client.proposals.isEmpty {
+            Text("No proposals yet.")
+                .font(PCorpFont.body(12))
+                .foregroundStyle(theme.textSecondary)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(client.proposals) { proposal in
+                    TradeProposalRow(
+                        proposal: proposal,
+                        onApprove: { Task { await approveProposal(proposal.id) } },
+                        onReject: { Task { await client.rejectProposal(id: proposal.id) } },
+                        onDelete: { Task { await client.deleteProposal(id: proposal.id) } }
+                    )
+                }
+            }
+        }
+    }
+
+    private func submitProposal() async {
+        guard let entry = Double(proposalEntryPrice), let stop = Double(proposalStopLoss),
+              let target = Double(proposalTakeProfit), let risk = Double(proposalRiskPct)
+        else { return }
+        let draft = TradeProposalDraft(
+            symbol: proposalSymbol, direction: proposalDirection, entryPrice: entry, stopLoss: stop,
+            takeProfit: target, riskPct: risk, reasoning: proposalReasoning
+        )
+        if let _ = await client.createProposal(draft) {
+            toastCenter.show("Proposal created", style: .success)
+            proposalEntryPrice = ""; proposalStopLoss = ""; proposalTakeProfit = ""; proposalReasoning = ""
+        }
+    }
+
+    private func approveProposal(_ id: Int) async {
+        let localNodeOnline = await client.approveProposal(id: id)
+        toastCenter.show(
+            localNodeOnline ? "Approved — the Mac will pick this up shortly" : "Approved, but the Mac looks offline right now — it'll execute once it's back",
+            style: localNodeOnline ? .success : .warning
+        )
+    }
+
     // MARK: - Shared row helpers
 
     private func inFlightRow(_ label: String) -> some View {
@@ -497,6 +661,86 @@ private struct TradeHistoryRow: View {
                     .foregroundStyle(theme.textTertiary)
             }
             .buttonStyle(.plain)
+        }
+        .padding(10)
+        .cardSurface(radius: 8)
+    }
+}
+
+private struct TradeProposalRow: View {
+    let proposal: TradeProposal
+    let onApprove: () -> Void
+    let onReject: () -> Void
+    let onDelete: () -> Void
+    @Environment(\.appTheme) private var theme
+
+    private var statusColor: Color {
+        switch proposal.status {
+        case "executed": return theme.statusGood
+        case "failed", "rejected": return theme.statusRisk
+        case "approved": return theme.statusHot
+        default: return theme.textSecondary
+        }
+    }
+
+    private var isScanGenerated: Bool {
+        proposal.reasoning.hasPrefix(TradeIntelligenceClient.scanProposalReasoningPrefix)
+    }
+
+    private var displayedReasoning: String {
+        isScanGenerated
+            ? String(proposal.reasoning.dropFirst(TradeIntelligenceClient.scanProposalReasoningPrefix.count))
+            : proposal.reasoning
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(proposal.symbol)
+                    .font(PCorpFont.body(13, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                Text(proposal.direction.uppercased())
+                    .font(PCorpFont.label(8.5))
+                    .trackedLabel(0.8)
+                    .foregroundStyle(proposal.direction == "long" ? theme.statusGood : theme.statusRisk)
+                if isScanGenerated {
+                    Text("AUTO")
+                        .font(PCorpFont.label(8.5))
+                        .trackedLabel(0.8)
+                        .foregroundStyle(theme.statusHot)
+                }
+                Spacer()
+                Text(proposal.status.uppercased())
+                    .font(PCorpFont.label(8.5))
+                    .trackedLabel(0.8)
+                    .foregroundStyle(statusColor)
+            }
+            Text("Entry \(proposal.entryPrice, specifier: "%.2f") · SL \(proposal.stopLoss, specifier: "%.2f") · TP \(proposal.takeProfit, specifier: "%.2f") · Risk \(proposal.riskPct, specifier: "%.2f")%")
+                .font(PCorpFont.body(10.5))
+                .foregroundStyle(theme.textTertiary)
+            Text(displayedReasoning)
+                .font(PCorpFont.body(11))
+                .foregroundStyle(theme.textSecondary)
+            if let result = proposal.executedResult {
+                Text(result)
+                    .font(PCorpFont.body(10))
+                    .foregroundStyle(theme.textTertiary)
+            }
+            if proposal.status == "pending" {
+                HStack(spacing: 8) {
+                    Button("Approve", action: onApprove)
+                        .buttonStyle(.borderedProminent)
+                    Button("Reject", action: onReject)
+                        .buttonStyle(.bordered)
+                }
+            } else {
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(10)
         .cardSurface(radius: 8)

@@ -41,6 +41,9 @@ together), so no client-side tool-execution loop is needed here at all,
 unlike Frank's own tool-calling loop.
 """
 
+import json
+import re
+
 from anthropic import AsyncAnthropic
 
 from app.web_tools import WEB_FETCH_TOOL, WEB_SEARCH_TOOL
@@ -60,9 +63,69 @@ HARD BOUNDARIES, still non-negotiable even though your role is advisory:
 
 Within those boundaries: be direct and specific. A vague "it could go either way" is less useful than a clearly-stated view with your reasoning and its caveats -- Josh can weigh that better than a hedge that says nothing."""
 
+# Appended only for the three capabilities that can reason about a NEW
+# entry (Chart Analysis, Signals, Trade Setup) -- not Position Review
+# (an existing position, not a new one) or Trade Breakdown (historical
+# narration). "Propose This Trade" (2026-09-22) -- deliberately NOT
+# regex-parsing numbers out of free-form prose (already tried and
+# rejected as fragile, see this module's own 2026-09-21 history):
+# instead the model is asked to emit one well-defined, deterministic
+# marker when it has real numbers, which extract_trade_suggestion below
+# either finds intact or treats as absent -- never a best-effort guess.
+TRADE_SUGGESTION_INSTRUCTION = """
+
+When your analysis reaches a specific, concrete trade you're confident enough in that Josh could reasonably turn it into a real proposal, end your reply with a fenced block in exactly this format (the literal language tag `trade-suggestion`, valid JSON inside, nothing else in the block):
+```trade-suggestion
+{"symbol": "...", "direction": "long", "entry_price": 0.0, "stop_loss": 0.0, "take_profit": 0.0, "risk_pct": 1.0}
+```
+direction is "long" or "short". risk_pct is your own suggested risk percentage, never above 2.0 (Josh's own confirmed per-trade cap). Only include this block when you have real, specific numbers grounded in the actual chart/price/data you were given -- never fabricate one just to have something to show, and omit it entirely if you're appropriately uncertain or the request doesn't call for a concrete new trade idea. This block is parsed by the app to pre-fill a proposal form for Josh's own review and edit -- it is never submitted or acted on automatically, and you should still state the same levels in your normal prose too; the block is an addition, not a replacement."""
+
+TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT_WITH_SUGGESTION = (
+    TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT + TRADE_SUGGESTION_INSTRUCTION
+)
+
+_TRADE_SUGGESTION_BLOCK_RE = re.compile(r"```trade-suggestion\s*\n(.*?)\n```", re.DOTALL)
+
+
+def extract_trade_suggestion(reply_text: str) -> tuple[str, dict | None]:
+    """Looks for the trailing fenced block TRADE_SUGGESTION_INSTRUCTION
+    asks for -- a well-defined, deterministic marker, not prose-parsing.
+    Strips it from what's shown to Josh and returns the parsed dict
+    separately for the UI to pre-fill a proposal draft with (still fully
+    editable there, never submitted automatically). Fails closed: any
+    missing field, bad type, or invalid value means no suggestion at
+    all, never a partial or best-effort guess."""
+    match = _TRADE_SUGGESTION_BLOCK_RE.search(reply_text)
+    if not match:
+        return reply_text, None
+    cleaned = (reply_text[: match.start()] + reply_text[match.end() :]).strip()
+    try:
+        data = json.loads(match.group(1))
+        direction = str(data["direction"])
+        if direction not in ("long", "short"):
+            return cleaned, None
+        entry_price = float(data["entry_price"])
+        stop_loss = float(data["stop_loss"])
+        take_profit = float(data["take_profit"])
+        if entry_price == stop_loss:
+            return cleaned, None
+        risk_pct = float(data.get("risk_pct", 1.0))
+        if not (0 < risk_pct <= 2.0):
+            return cleaned, None
+        return cleaned, {
+            "symbol": str(data["symbol"]),
+            "direction": direction,
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "risk_pct": risk_pct,
+        }
+    except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+        return cleaned, None
+
 
 async def run_conversational_turn(
-    client: AsyncAnthropic, system_prompt: str, history: list[dict], tools: list | None = None, max_tokens: int = 4096
+    client: AsyncAnthropic, system_prompt: str, history: list[dict], tools: list | None = None, max_tokens: int = 8192
 ) -> str:
     """Shared turn-runner for both a seed message and every follow-up.
     `history` already contains the new user turn when this is called --
@@ -108,7 +171,7 @@ async def analyze_chart(
     )
     prompt_text = " ".join(context_parts)
     history = [{"role": "user", "content": [*image_blocks, {"type": "text", "text": prompt_text}]}]
-    reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history)
+    reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT_WITH_SUGGESTION, history)
     return reply, history
 
 
@@ -132,7 +195,7 @@ async def generate_signal(client: AsyncAnthropic, symbol: str) -> tuple[str, lis
     )
     history = [{"role": "user", "content": prompt}]
     reply = await run_conversational_turn(
-        client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history, tools=[WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
+        client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT_WITH_SUGGESTION, history, tools=[WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
     )
     return reply, history
 
@@ -200,7 +263,7 @@ async def analyze_trade_setup(
     content: list[dict] = [*image_blocks, {"type": "text", "text": prompt_text}] if image_blocks else prompt_text
     history = [{"role": "user", "content": content}]
     reply = await run_conversational_turn(
-        client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT, history, tools=[WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
+        client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT_WITH_SUGGESTION, history, tools=[WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
     )
     return reply, history
 

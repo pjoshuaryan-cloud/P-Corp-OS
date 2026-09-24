@@ -20,8 +20,9 @@ as Trading Division's own read of research.sqlite.
 
 import json
 from pathlib import Path
+from typing import Any
 
-BALANCE_FILE_PATH = (
+MQL5_FILES_DIR = (
     Path.home()
     / "Library"
     / "Application Support"
@@ -31,8 +32,20 @@ BALANCE_FILE_PATH = (
     / "MetaTrader 5"
     / "MQL5"
     / "Files"
-    / "pcorp_balance.json"
 )
+
+BALANCE_FILE_PATH = MQL5_FILES_DIR / "pcorp_balance.json"
+
+# Approval-gated trade execution bridge (2026-09-22) -- the same MQL5
+# Files directory as the balance export above, now shared with
+# PCorpExecutionBridge.mq5 (a separate EA, own magic number, see the plan
+# doc). PENDING_ORDER is written here by the Mac-only proposal sync loop
+# (main.py) only after Josh has approved a specific proposal; the bridge
+# EA polls for it, validates it against real live broker state, and
+# writes ORDER_RESULT back. Neither file gives the bridge any standing
+# authority -- one file in, one result out, per approved trade.
+PENDING_ORDER_FILE_PATH = MQL5_FILES_DIR / "pcorp_pending_order.json"
+ORDER_RESULT_FILE_PATH = MQL5_FILES_DIR / "pcorp_order_result.json"
 
 
 def read_balance() -> dict | None:
@@ -46,3 +59,41 @@ def read_balance() -> dict | None:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def write_pending_order(command: dict[str, Any]) -> None:
+    """Called only from the Mac (the bridge EA's polling loop can only
+    ever see this Mac's own filesystem) and only after a proposal has
+    already been approved -- this function itself has no approval logic
+    of its own, it's a pure file write.
+
+    Compact separators (no space after ','/':') deliberately -- MQL5 has
+    no JSON library, so PCorpExecutionBridge.mq5 parses this with simple
+    StringFind/StringSubstr key lookups (see its JsonGetString/
+    JsonGetDouble helpers). A fixed, predictable format here is what
+    makes that minimal parser reliable rather than a plain string dump."""
+    MQL5_FILES_DIR.mkdir(parents=True, exist_ok=True)
+    with open(PENDING_ORDER_FILE_PATH, "w", encoding="utf-8") as f:
+        json.dump(command, f, separators=(",", ":"))
+
+
+def read_order_result() -> dict | None:
+    """Fails soft (None) if the bridge hasn't written a result yet -- the
+    sync loop just keeps polling."""
+    if not ORDER_RESULT_FILE_PATH.exists():
+        return None
+    try:
+        with open(ORDER_RESULT_FILE_PATH, "r", encoding="utf-8-sig") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def clear_order_result() -> None:
+    """Removes the consumed result file so the next proposal's result
+    isn't mistaken for this one's. Safe to call even if it's already
+    gone."""
+    try:
+        ORDER_RESULT_FILE_PATH.unlink()
+    except FileNotFoundError:
+        pass

@@ -214,6 +214,13 @@ async def init_db() -> None:
             await db.execute("ALTER TABLE app_state ADD COLUMN hf_markets_live_updated_at TEXT")
             await db.execute("ALTER TABLE app_state ADD COLUMN hf_markets_live_synced_at TEXT")
 
+        # Migration path: app_state existed before Ventures Phase 3's
+        # "Venture Delta" did (2026-09-24). Same "never viewed" == real,
+        # honest state as last_brief_viewed_at above -- Venture Delta
+        # treats NULL as "show everything," not an error.
+        if "last_ventures_viewed_at" not in columns:
+            await db.execute("ALTER TABLE app_state ADD COLUMN last_ventures_viewed_at TEXT")
+
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_records (
@@ -248,10 +255,19 @@ async def init_db() -> None:
                 decision TEXT NOT NULL,
                 reasoning TEXT,
                 alternatives TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                venture_id INTEGER
             )
             """
         )
+        # Migration path: decisions existed before Ventures Phase 4's
+        # minimal launch-decision linkage did (2026-09-24). Nullable --
+        # most decisions logged here aren't venture-related at all, and
+        # that's a real, honest state, not an error.
+        cursor = await db.execute("PRAGMA table_info(decisions)")
+        decisions_columns = {row[1] async for row in cursor}
+        if "venture_id" not in decisions_columns:
+            await db.execute("ALTER TABLE decisions ADD COLUMN venture_id INTEGER")
 
         # Memory Graph (2026-08-10) -- linking-only first pass: an edge
         # table over the two existing capture tables (memory_records,
@@ -391,6 +407,33 @@ async def mark_brief_viewed(postgres_conn: Any = None) -> None:
         return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE app_state SET last_brief_viewed_at = datetime('now') WHERE id = 1")
+        await db.commit()
+
+
+async def get_ventures_last_viewed_at(postgres_conn: Any = None) -> str | None:
+    """Ventures Phase 3's own 'since you last looked' state -- same
+    shape as get_brief_last_viewed_at, deliberately a separate column
+    rather than reusing the Brief's timestamp, since opening Ventures
+    and opening The Brief are different real actions."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("SELECT last_ventures_viewed_at FROM pcorp.app_state WHERE id = 1")
+            (last_viewed,) = await cur.fetchone()
+            return str(last_viewed) if last_viewed is not None else None
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT last_ventures_viewed_at FROM app_state WHERE id = 1")
+        (last_viewed,) = await cursor.fetchone()
+        return last_viewed
+
+
+async def mark_ventures_viewed(postgres_conn: Any = None) -> None:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("UPDATE pcorp.app_state SET last_ventures_viewed_at = (now() AT TIME ZONE 'utc') WHERE id = 1")
+        await postgres_conn.commit()
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE app_state SET last_ventures_viewed_at = datetime('now') WHERE id = 1")
         await db.commit()
 
 
@@ -845,23 +888,54 @@ async def save_memory_record(
 
 
 async def log_decision(
-    decision: str, reasoning: str | None = None, alternatives: str | None = None, postgres_conn: Any = None
+    decision: str, reasoning: str | None = None, alternatives: str | None = None, venture_id: int | None = None,
+    postgres_conn: Any = None,
 ) -> None:
     if postgres_conn is not None:
         async with postgres_conn.cursor() as cur:
             await cur.execute(
-                "INSERT INTO pcorp.decisions (decision, reasoning, alternatives, created_at) "
-                "VALUES (%s, %s, %s, (now() AT TIME ZONE 'utc'))",
-                (decision, reasoning, alternatives),
+                "INSERT INTO pcorp.decisions (decision, reasoning, alternatives, venture_id, created_at) "
+                "VALUES (%s, %s, %s, %s, (now() AT TIME ZONE 'utc'))",
+                (decision, reasoning, alternatives, venture_id),
             )
         await postgres_conn.commit()
         return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO decisions (decision, reasoning, alternatives) VALUES (?, ?, ?)",
-            (decision, reasoning, alternatives),
+            "INSERT INTO decisions (decision, reasoning, alternatives, venture_id) VALUES (?, ?, ?, ?)",
+            (decision, reasoning, alternatives, venture_id),
         )
         await db.commit()
+
+
+async def list_decisions_for_venture(venture_id: int, postgres_conn: Any = None) -> list[dict]:
+    """Minimal Ventures Phase 4 linkage -- most decisions logged via
+    log_decision() have no venture_id at all (nullable, and that's a
+    real, honest state, not a gap); this only ever returns rows that
+    were explicitly tagged with this venture at write time."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, decision, reasoning, alternatives, created_at FROM pcorp.decisions "
+                "WHERE venture_id = %s ORDER BY id DESC",
+                (venture_id,),
+            )
+            rows = await cur.fetchall()
+            return [
+                {
+                    "id": r[0], "decision": r[1], "reasoning": r[2], "alternatives": r[3],
+                    "created_at": str(r[4]) if r[4] is not None else None,
+                }
+                for r in rows
+            ]
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, decision, reasoning, alternatives, created_at FROM decisions "
+            "WHERE venture_id = ? ORDER BY id DESC",
+            (venture_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
 
 
 async def list_decisions(limit: int = 100, postgres_conn: Any = None) -> list[dict]:

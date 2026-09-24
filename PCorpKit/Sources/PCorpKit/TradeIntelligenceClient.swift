@@ -23,16 +23,19 @@ public final class TradeIntelligenceClient: ObservableObject {
     @Published public private(set) var setupMessages: [TradeIntelligenceMessage] = []
     @Published public private(set) var isAnalyzingSetup = false
     @Published public private(set) var setupError: String?
+    @Published public private(set) var setupSuggestedTrade: SuggestedTrade?
     private var setupHistory: [Any] = []
 
     @Published public private(set) var chartMessages: [TradeIntelligenceMessage] = []
     @Published public private(set) var isAnalyzingChart = false
     @Published public private(set) var chartAnalysisError: String?
+    @Published public private(set) var chartSuggestedTrade: SuggestedTrade?
     private var chartHistory: [Any] = []
 
     @Published public private(set) var signalMessages: [TradeIntelligenceMessage] = []
     @Published public private(set) var isGeneratingSignal = false
     @Published public private(set) var signalError: String?
+    @Published public private(set) var signalSuggestedTrade: SuggestedTrade?
     private var signalHistory: [Any] = []
 
     @Published public private(set) var positionMessages: [TradeIntelligenceMessage] = []
@@ -49,6 +52,10 @@ public final class TradeIntelligenceClient: ObservableObject {
     @Published public private(set) var trades: [Trade] = []
     @Published public private(set) var isLoadingTrades = false
     @Published public private(set) var tradesError: String?
+
+    @Published public private(set) var proposals: [TradeProposal] = []
+    @Published public private(set) var isLoadingProposals = false
+    @Published public private(set) var proposalsError: String?
 
     public init() {}
 
@@ -109,6 +116,7 @@ public final class TradeIntelligenceClient: ObservableObject {
                 break
             }
             setupHistory = history
+            setupSuggestedTrade = parseSuggestedTrade(json)
             let questionText = (question?.isEmpty == false) ? question! : "Where should I buy or sell, and why? How long should I hold? Where should I put my stop-loss?"
             setupMessages = [
                 TradeIntelligenceMessage(role: "user", text: questionText, imageDataList: images.map { $0.data }),
@@ -131,6 +139,7 @@ public final class TradeIntelligenceClient: ObservableObject {
                 break
             }
             setupHistory = history
+            setupSuggestedTrade = parseSuggestedTrade(json)
             setupMessages.append(TradeIntelligenceMessage(role: "assistant", text: reply))
         case .failure(let message):
             setupError = message
@@ -142,6 +151,7 @@ public final class TradeIntelligenceClient: ObservableObject {
         setupMessages = []
         setupHistory = []
         setupError = nil
+        setupSuggestedTrade = nil
     }
 
     // MARK: - Chart Analysis
@@ -161,6 +171,7 @@ public final class TradeIntelligenceClient: ObservableObject {
                 break
             }
             chartHistory = history
+            chartSuggestedTrade = parseSuggestedTrade(json)
             chartMessages = [
                 TradeIntelligenceMessage(role: "user", text: note ?? "", imageDataList: images.map { $0.data }),
                 TradeIntelligenceMessage(role: "assistant", text: reply),
@@ -182,6 +193,7 @@ public final class TradeIntelligenceClient: ObservableObject {
                 break
             }
             chartHistory = history
+            chartSuggestedTrade = parseSuggestedTrade(json)
             chartMessages.append(TradeIntelligenceMessage(role: "assistant", text: reply))
         case .failure(let message):
             chartAnalysisError = message
@@ -193,6 +205,7 @@ public final class TradeIntelligenceClient: ObservableObject {
         chartMessages = []
         chartHistory = []
         chartAnalysisError = nil
+        chartSuggestedTrade = nil
     }
 
     // MARK: - Trading Signals
@@ -207,6 +220,7 @@ public final class TradeIntelligenceClient: ObservableObject {
                 break
             }
             signalHistory = history
+            signalSuggestedTrade = parseSuggestedTrade(json)
             signalMessages = [
                 TradeIntelligenceMessage(role: "user", text: "Generate a signal for \(symbol)."),
                 TradeIntelligenceMessage(role: "assistant", text: reply),
@@ -228,6 +242,7 @@ public final class TradeIntelligenceClient: ObservableObject {
                 break
             }
             signalHistory = history
+            signalSuggestedTrade = parseSuggestedTrade(json)
             signalMessages.append(TradeIntelligenceMessage(role: "assistant", text: reply))
         case .failure(let message):
             signalError = message
@@ -239,6 +254,7 @@ public final class TradeIntelligenceClient: ObservableObject {
         signalMessages = []
         signalHistory = []
         signalError = nil
+        signalSuggestedTrade = nil
     }
 
     // MARK: - Position Review
@@ -360,6 +376,19 @@ public final class TradeIntelligenceClient: ObservableObject {
         return try? JSONDecoder().decode(TradeBreakdownStats.self, from: statsData)
     }
 
+    /// "Propose This Trade" (2026-09-22) -- `suggested_trade` is only
+    /// ever present when the backend's extract_trade_suggestion found
+    /// and validated a well-defined block in the reply; absent or null
+    /// otherwise. Returning nil for anything that doesn't decode cleanly
+    /// (same fail-closed posture as the backend side) rather than
+    /// showing a partial/garbled suggestion.
+    private func parseSuggestedTrade(_ json: [String: Any]) -> SuggestedTrade? {
+        guard let dict = json["suggested_trade"] as? [String: Any], JSONSerialization.isValidJSONObject(dict),
+              let data = try? JSONSerialization.data(withJSONObject: dict)
+        else { return nil }
+        return try? JSONDecoder().decode(SuggestedTrade.self, from: data)
+    }
+
     public func fetchBreakdown() async {
         isLoadingBreakdown = true
         breakdownError = nil
@@ -401,5 +430,119 @@ public final class TradeIntelligenceClient: ObservableObject {
         breakdownHistory = []
         breakdownStats = nil
         breakdownError = nil
+    }
+
+    // MARK: - Trade Proposals (approval-gated execution, 2026-09-22)
+    //
+    // Josh fills TradeProposalDraft in himself from a Trade Setup reply
+    // he's already read -- no auto-parsing of numbers out of the LLM's
+    // prose (see the plan doc's own explicit deferral of that). Approve/
+    // reject are the only actions that ever let a proposal reach the
+    // real account, and only via a separate Mac-only sync loop + MQL5
+    // bridge EA neither of which this client talks to directly.
+
+    private struct ProposalsListResponse: Decodable { let proposals: [TradeProposal] }
+    private struct ProposalCreateResponse: Decodable { let id: Int }
+    private struct ProposalApproveResponse: Decodable { let approved: Bool; let localNodeOnline: Bool
+        enum CodingKeys: String, CodingKey { case approved; case localNodeOnline = "local_node_online" }
+    }
+
+    /// Automated hourly market scan (2026-09-22) -- only ever creates an
+    /// inert, pending proposal, same as one Josh types himself; this is
+    /// purely the in-app "something's ready to look at" signal he asked
+    /// for instead of a push notification (which needs a paid Apple
+    /// Developer account he's declined). Matches main.py's own
+    /// MARKET_SCAN_REASONING_PREFIX exactly -- a plain string prefix,
+    /// not a separate column, so this is the one place both sides need
+    /// to agree on that literal text.
+    public static let scanProposalReasoningPrefix = "[Automated hourly scan] "
+
+    public var pendingScanProposalCount: Int {
+        proposals.filter { $0.status == "pending" && $0.reasoning.hasPrefix(Self.scanProposalReasoningPrefix) }.count
+    }
+
+    public func fetchProposals(status: String? = nil) async {
+        isLoadingProposals = true
+        proposalsError = nil
+        var path = "/trade-intelligence/proposals"
+        if let status { path += "?status=\(status)" }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url(path))
+            proposals = try JSONDecoder().decode(ProposalsListResponse.self, from: data).proposals
+        } catch {
+            proposalsError = "Couldn't reach the backend — is it running?"
+        }
+        isLoadingProposals = false
+    }
+
+    /// Returns the new proposal's id on success, so a "Propose This
+    /// Trade" button can confirm and clear its own form.
+    public func createProposal(_ draft: TradeProposalDraft) async -> Int? {
+        isLoadingProposals = true
+        proposalsError = nil
+        var request = URLRequest(url: url("/trade-intelligence/proposals"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(draft)
+        var newId: Int?
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                proposalsError = errorMessage(from: data, http: http)
+            } else {
+                newId = try? JSONDecoder().decode(ProposalCreateResponse.self, from: data).id
+            }
+        } catch {
+            proposalsError = "Couldn't reach the backend — is it running?"
+        }
+        isLoadingProposals = false
+        if newId != nil { await fetchProposals(status: "pending") }
+        return newId
+    }
+
+    /// Returns whether the Mac (and so the execution bridge) is online
+    /// right now, per the backend's own local_node heartbeat check --
+    /// the approval itself always succeeds; this is just honest,
+    /// immediate feedback instead of a silently-stuck approval when the
+    /// Mac happens to be asleep or closed.
+    @discardableResult
+    public func approveProposal(id: Int) async -> Bool {
+        var request = URLRequest(url: url("/trade-intelligence/proposals/\(id)/approve"))
+        request.httpMethod = "POST"
+        var localNodeOnline = false
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                proposalsError = errorMessage(from: data, http: http)
+            } else {
+                localNodeOnline = (try? JSONDecoder().decode(ProposalApproveResponse.self, from: data).localNodeOnline) ?? false
+            }
+        } catch {
+            proposalsError = "Couldn't reach the backend — is it running?"
+        }
+        await fetchProposals()
+        return localNodeOnline
+    }
+
+    public func rejectProposal(id: Int) async {
+        var request = URLRequest(url: url("/trade-intelligence/proposals/\(id)/reject"))
+        request.httpMethod = "POST"
+        do {
+            _ = try await URLSession.shared.data(for: request)
+        } catch {
+            proposalsError = "Couldn't reach the backend — is it running?"
+        }
+        await fetchProposals()
+    }
+
+    public func deleteProposal(id: Int) async {
+        var request = URLRequest(url: url("/trade-intelligence/proposals/\(id)"))
+        request.httpMethod = "DELETE"
+        do {
+            _ = try await URLSession.shared.data(for: request)
+        } catch {
+            proposalsError = "Couldn't reach the backend — is it running?"
+        }
+        await fetchProposals()
     }
 }

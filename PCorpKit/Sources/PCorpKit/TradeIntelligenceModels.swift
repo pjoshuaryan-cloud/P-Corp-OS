@@ -143,6 +143,101 @@ public struct TradeBreakdownGroup: Decodable, Identifiable {
     }
 }
 
+/// Approval-gated trade execution (2026-09-22) -- mirrors backend/app/
+/// trade_proposals_db.py's own row shape exactly. Josh fills this in
+/// himself from a Trade Setup reply he's already read (deliberately no
+/// auto-parsing of numbers out of the LLM's free-form prose -- see the
+/// plan doc's own "explicitly NOT doing this pass" note); this struct is
+/// what that manual form submits and what the pending-approvals list
+/// reads back.
+public struct TradeProposalDraft: Encodable {
+    public var symbol: String
+    public var direction: String
+    public var entryPrice: Double
+    public var stopLoss: Double
+    public var takeProfit: Double
+    public var riskPct: Double
+    public var reasoning: String
+    public var computedLotsEstimate: Double?
+
+    public init(
+        symbol: String, direction: String, entryPrice: Double, stopLoss: Double, takeProfit: Double,
+        riskPct: Double, reasoning: String, computedLotsEstimate: Double? = nil
+    ) {
+        self.symbol = symbol
+        self.direction = direction
+        self.entryPrice = entryPrice
+        self.stopLoss = stopLoss
+        self.takeProfit = takeProfit
+        self.riskPct = riskPct
+        self.reasoning = reasoning
+        self.computedLotsEstimate = computedLotsEstimate
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case symbol, direction, reasoning
+        case entryPrice = "entry_price"
+        case stopLoss = "stop_loss"
+        case takeProfit = "take_profit"
+        case riskPct = "risk_pct"
+        case computedLotsEstimate = "computed_lots_estimate"
+    }
+}
+
+public struct TradeProposal: Identifiable, Decodable {
+    public let id: Int
+    public let symbol: String
+    public let direction: String
+    public let entryPrice: Double
+    public let stopLoss: Double
+    public let takeProfit: Double
+    public let riskPct: Double
+    public let computedLotsEstimate: Double?
+    public let reasoning: String
+    public let status: String
+    public let createdAt: String
+    public let resolvedAt: String?
+    public let executedTicket: String?
+    public let executedResult: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, symbol, direction, status, reasoning
+        case entryPrice = "entry_price"
+        case stopLoss = "stop_loss"
+        case takeProfit = "take_profit"
+        case riskPct = "risk_pct"
+        case computedLotsEstimate = "computed_lots_estimate"
+        case createdAt = "created_at"
+        case resolvedAt = "resolved_at"
+        case executedTicket = "executed_ticket"
+        case executedResult = "executed_result"
+    }
+}
+
+/// "Propose This Trade" (2026-09-22) -- a structured suggestion the
+/// Trade Intelligence Agent optionally includes in a Setup/Chart/Signal
+/// reply when it has real, specific numbers (backend/app/
+/// trade_intelligence_agent.py's extract_trade_suggestion parses a
+/// well-defined fenced block, never free-form prose). Pre-fills the
+/// Propose tab's form -- still fully editable there, never submitted
+/// automatically.
+public struct SuggestedTrade: Decodable {
+    public let symbol: String
+    public let direction: String
+    public let entryPrice: Double
+    public let stopLoss: Double
+    public let takeProfit: Double
+    public let riskPct: Double
+
+    enum CodingKeys: String, CodingKey {
+        case symbol, direction
+        case entryPrice = "entry_price"
+        case stopLoss = "stop_loss"
+        case takeProfit = "take_profit"
+        case riskPct = "risk_pct"
+    }
+}
+
 public struct TradeBreakdownStats: Decodable {
     public let totalTrades: Int
     public let closedTrades: Int

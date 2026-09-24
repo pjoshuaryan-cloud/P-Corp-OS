@@ -30,6 +30,16 @@ struct ContentView: View {
             }
         }
         .environment(\.appTheme, darkModeEnabled ? .dark : .light)
+        // Environment-based, so setting it once here covers every
+        // ScrollView/List in the app, not just WarRoomView's own existing
+        // .scrollDismissesKeyboard call -- a screen can still override
+        // this locally if a specific case ever needs to.
+        .scrollDismissesKeyboard(.interactively)
+        // UIKit window-level, not a SwiftUI gesture modifier -- see
+        // KeyboardDismissal.swift's own docstring for why a plain
+        // .simultaneousGesture here (the first attempt) never reached
+        // anything presented via .sheet/.popover, confirmed live.
+        .installsGlobalKeyboardDismiss()
         .onReceive(NotificationCenter.default.publisher(for: .pcorpDidDisconnect)) { _ in
             storedToken = ""
         }

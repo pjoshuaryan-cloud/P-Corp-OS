@@ -51,6 +51,8 @@ struct ContentView: View {
                     FinanceView()
                 case "Trading Division":
                     TradingDivisionView()
+                case "Ventures":
+                    VenturesView()
                 case "Personal":
                     PersonalView()
                 case "Calendar":

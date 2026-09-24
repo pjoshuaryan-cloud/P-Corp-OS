@@ -55,6 +55,7 @@ extension View {
 public struct ActionButtonStyle: ButtonStyle {
     var filled: Bool = true
     @Environment(\.appTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     public init(filled: Bool = true) {
@@ -70,11 +71,20 @@ public struct ActionButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: Radius.md).fill(fillColor(pressed: configuration.isPressed))
             )
             .foregroundStyle(filled ? theme.accentText : theme.textPrimary)
-            .opacity(configuration.isPressed ? 0.9 : 1)
-            .scaleEffect(configuration.isPressed ? 0.97 : (isHovering ? 1.015 : 1))
+            // Real bug found live (2026-09-22): this style never checked
+            // isEnabled at all, so a `.disabled(true)` button (e.g. a
+            // form with required fields still empty) looked exactly as
+            // clickable as an enabled one -- confirmed live via a
+            // screenshot of a genuinely-disabled "Create Proposal"
+            // button that gave no visual sign anything was wrong when
+            // tapped. Dimming + dropping hover/press feedback while
+            // disabled applies everywhere this style is already used,
+            // not just the one button that surfaced it.
+            .opacity(!isEnabled ? 0.4 : (configuration.isPressed ? 0.9 : 1))
+            .scaleEffect(isEnabled && configuration.isPressed ? 0.97 : (isEnabled && isHovering ? 1.015 : 1))
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
             .animation(.easeOut(duration: 0.12), value: isHovering)
-            .onHover { isHovering = $0 }
+            .onHover { isHovering = isEnabled && $0 }
     }
 
     private func fillColor(pressed: Bool) -> Color {

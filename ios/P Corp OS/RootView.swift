@@ -84,6 +84,8 @@ struct RootView: View {
                         JoshxView()
                     case "Trading Division":
                         TradingDivisionView()
+                    case "Ventures":
+                        VenturesView()
                     case "Personal":
                         PersonalView()
                     case "Finance":
