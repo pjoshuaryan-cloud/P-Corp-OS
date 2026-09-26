@@ -29,6 +29,7 @@ from app.engineering_agent import ENGINEERING_AGENT_TOOL_NAMES
 from app.finance_tools import FINANCE_TOOL_NAMES
 from app.focus import FOCUS_TOOL_NAMES
 from app.joshx_tools import JOSHX_TOOL_NAMES
+from app.post_tools import POST_TOOL_NAMES
 from app.legacy_vault import LEGACY_VAULT_TOOL_NAMES
 from app.memory_agent import MEMORY_AGENT_TOOL_NAMES
 from app.memory_graph import MEMORY_GRAPH_TOOL_NAMES
@@ -130,6 +131,8 @@ def label_for_tool(tool_name: str) -> str:
         return "Updating your personal info"
     if tool_name in JOSHX_TOOL_NAMES:
         return "Updating Joshx"
+    if tool_name in POST_TOOL_NAMES:
+        return "Checking POST jobs"
     if tool_name in PEOPLE_TOOL_NAMES:
         return "Updating your contacts"
     if tool_name in FINANCE_TOOL_NAMES:

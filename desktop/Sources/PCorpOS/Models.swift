@@ -28,6 +28,7 @@ enum PlaceholderData {
         NavItem(title: "Alpha Mode Media", subtitle: "Business Operations", systemImage: "briefcase"),
         NavItem(title: "Trading Division", subtitle: "Markets & Strategies", systemImage: "chart.line.uptrend.xyaxis"),
         NavItem(title: "Ventures", subtitle: "Business Creation", systemImage: "lightbulb"),
+        NavItem(title: "POST", subtitle: "Post-Production Prep", systemImage: "film"),
         NavItem(title: "Personal", subtitle: "Life & Relationships", systemImage: "person"),
         NavItem(title: "Finance", subtitle: "Wealth & Investments", systemImage: "banknote"),
         NavItem(title: "Knowledge", subtitle: "Files & Insights", systemImage: "books.vertical"),

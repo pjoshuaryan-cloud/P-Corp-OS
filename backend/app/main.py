@@ -184,6 +184,12 @@ from app.trade_proposals_db import (
     record_execution_result,
     resolve_proposal,
 )
+from app.post_db import init_post_db, list_post_jobs, get_post_job, get_post_job_progress, create_post_job, update_post_job_status, delete_post_job, list_post_job_files, list_post_job_file_metadata, update_post_job_premiere_project, create_post_job_file_proxies_batch, list_post_job_file_proxies, DELIVERABLE_FORMATS, RESOLUTIONS, FRAME_RATES
+from app.post_media import compute_media_report, compute_proxy_recommendations
+from app.post_sources import list_source_volumes
+from app.post_profiles import POST_PROFILES, compute_destination_root
+from app.post_ingest import _post_ingest_loop
+from app.post_tools import POST_TOOLS, POST_TOOL_NAMES, execute_post_tool_call
 from app.ventures_db import (
     AUTOMATION_SUGGESTION_STATUSES,
     CHECKLIST_ITEM_STATUSES,
@@ -872,6 +878,7 @@ async def lifespan(app: FastAPI):
         await init_trade_intelligence_db()
         await init_trade_proposals_db()
         await init_ventures_db()
+        await init_post_db()
     # A single reused httpx client, not one per /speak call — real bug
     # found and fixed 2026-07-30: creating a fresh AsyncClient() per
     # request meant paying a full DNS+TLS handshake to ElevenLabs every
@@ -943,6 +950,7 @@ async def lifespan(app: FastAPI):
             await init_trade_intelligence_db(postgres_conn=conn)
             await init_trade_proposals_db(postgres_conn=conn)
             await init_ventures_db(postgres_conn=conn)
+            await init_post_db(postgres_conn=conn)
     # Cloud mode never runs these loops at all (2026-09-10): there's no
     # lock of any kind (advisory or otherwise) preventing the Mac and a
     # cloud instance from both independently running the daily digest,
@@ -957,6 +965,16 @@ async def lifespan(app: FastAPI):
             app.state.trigger_scheduler_task = asyncio.create_task(_trigger_scheduler_loop())
         if not hasattr(app.state, "calendar_sync_task"):
             app.state.calendar_sync_task = asyncio.create_task(_calendar_sync_loop())
+        # POST ingestion worker (2026-09-25) -- deliberately ungated on
+        # DATA_BACKEND, unlike the trade-proposal/venture loops below:
+        # those bridge a phone-approved action to Mac-only execution
+        # across shared Postgres, but POST has no such cross-device half
+        # to build (picking a source drive requires a live listing only
+        # this Mac can produce) -- it's solo Mac-only end to end and
+        # should work identically on plain local SQLite or Postgres,
+        # exactly like the calendar-sync loop just above.
+        if not hasattr(app.state, "post_ingest_task"):
+            app.state.post_ingest_task = asyncio.create_task(_post_ingest_loop(app))
         # HF Markets' live bridge (2026-09-12) -- Mac-only for the same
         # reason as the two loops above, plus there's simply nothing to
         # push in SQLite mode (no shared cloud DB for Render to read from).
@@ -985,6 +1003,9 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, "calendar_sync_task"):
         app.state.calendar_sync_task.cancel()
         del app.state.calendar_sync_task
+    if hasattr(app.state, "post_ingest_task"):
+        app.state.post_ingest_task.cancel()
+        del app.state.post_ingest_task
     if hasattr(app.state, "hf_markets_live_push_task"):
         app.state.hf_markets_live_push_task.cancel()
         del app.state.hf_markets_live_push_task
@@ -2491,6 +2512,285 @@ async def ventures_fulfillment_delete(
     return {"deleted": True}
 
 
+# ------------------------------------------------------------ POST (video post-production prep)
+# Static-path routes registered before /post/jobs/{job_id} -- the same
+# route-ordering discipline Ventures needed after a real bug (a plain
+# {param} path segment matches ANY non-empty string at the routing
+# level, silently shadowing a static route defined after it).
+
+@app.get("/post/profiles")
+async def post_profiles_catalog(_: None = Depends(verify_token)) -> dict:
+    return {"profiles": {name: {"label": p["label"], "folders": p["folders"]} for name, p in POST_PROFILES.items()}}
+
+
+@app.get("/post/jobs/sources")
+async def post_jobs_sources(_: None = Depends(verify_token)) -> dict:
+    return {"volumes": await list_source_volumes()}
+
+
+@app.get("/post/jobs")
+async def post_jobs_list(request: Request, status: str | None = None, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return {"jobs": await list_post_jobs(status, postgres_conn)}
+
+
+class PostJobCreateRequest(BaseModel):
+    profile: str
+    shoot_name: str
+    source_path: str
+    destination_volume_path: str
+    client_name: str | None = None
+    source_volume_name: str | None = None
+    source_volume_uuid: str | None = None
+    joshx_project_id: int | None = None
+    alpha_mode_project_id: int | None = None
+    # Phase 3: the spec's own NEW SHOOT flow always asked for these three --
+    # Phase 1 never captured them. Added now since Phase 3 (Premiere sequence
+    # preset selection, source/delivery mismatch warning) is what needs them.
+    deliverable_format: str | None = None
+    resolution: str | None = None
+    frame_rate: str | None = None
+
+
+@app.post("/post/jobs")
+async def post_jobs_create(body: PostJobCreateRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    if body.profile not in POST_PROFILES:
+        raise HTTPException(status_code=400, detail=f"profile must be one of {tuple(POST_PROFILES)}, got {body.profile!r}")
+    if body.profile == "alpha_mode" and not body.client_name:
+        raise HTTPException(status_code=400, detail="alpha_mode profile requires client_name")
+    if body.deliverable_format is not None and body.deliverable_format not in DELIVERABLE_FORMATS:
+        raise HTTPException(status_code=400, detail=f"deliverable_format must be one of {DELIVERABLE_FORMATS}, got {body.deliverable_format!r}")
+    if body.resolution is not None and body.resolution not in RESOLUTIONS:
+        raise HTTPException(status_code=400, detail=f"resolution must be one of {RESOLUTIONS}, got {body.resolution!r}")
+    if body.frame_rate is not None and body.frame_rate not in FRAME_RATES:
+        raise HTTPException(status_code=400, detail=f"frame_rate must be one of {FRAME_RATES}, got {body.frame_rate!r}")
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    # A fast INSERT only -- status starts 'created'. The scan (folder
+    # creation + source enumeration) happens in the background loop's own
+    # 'scanning' phase, never inline in this handler, so a slow card
+    # enumeration never blocks the request and a job interrupted mid-scan
+    # simply sits there for the loop's own restart to pick back up.
+    destination_root = str(compute_destination_root(body.profile, body.destination_volume_path, body.client_name, body.shoot_name))
+    job_id = await create_post_job(
+        body.profile, body.shoot_name, body.source_path, destination_root,
+        client_name=body.client_name, source_volume_name=body.source_volume_name,
+        source_volume_uuid=body.source_volume_uuid, joshx_project_id=body.joshx_project_id,
+        alpha_mode_project_id=body.alpha_mode_project_id,
+        deliverable_format=body.deliverable_format, resolution=body.resolution, frame_rate=body.frame_rate,
+        postgres_conn=postgres_conn,
+    )
+    await record_tool_call("post_job_create_ui", {"job_id": job_id, "shoot_name": body.shoot_name}, "ok", postgres_conn)
+    return {"id": job_id}
+
+
+@app.get("/post/jobs/{job_id}")
+async def post_job_get(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job_progress(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    return job
+
+
+@app.get("/post/jobs/{job_id}/files")
+async def post_job_files_list(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return {"files": await list_post_job_files(job_id, postgres_conn)}
+
+
+@app.post("/post/jobs/{job_id}/start")
+async def post_job_start(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """The one manual gate in Phase 1's whole pipeline: a freshly created
+    job sits inert (never picked up by the background loop) until this
+    is called, matching the spec's own NEW SHOOT -> review -> PREPARE
+    SHOOT flow. From here on (scan -> copy -> verify) runs as one
+    continuous background sequence with no further clicks needed --
+    this same route also doubles as the retry action for a job that
+    previously failed or was cancelled."""
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    started = await update_post_job_status(
+        job_id, "scanning", from_statuses=("created", "ingest_failed", "cancelled"), postgres_conn=postgres_conn,
+    )
+    if not started:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job must be 'created', 'ingest_failed', or 'cancelled' to start (currently {job['status']!r})",
+        )
+    await record_tool_call("post_job_start_ui", {"job_id": job_id}, "ok", postgres_conn)
+    return {"started": True}
+
+
+@app.post("/post/jobs/{job_id}/cancel")
+async def post_job_cancel(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    cancelled = await update_post_job_status(
+        job_id, "cancelled", from_statuses=("ready", "scanning", "ingesting", "verifying"), postgres_conn=postgres_conn
+    )
+    if not cancelled:
+        raise HTTPException(status_code=400, detail="Job is not in a cancellable state")
+    await record_tool_call("post_job_cancel_ui", {"job_id": job_id}, "ok", postgres_conn)
+    return {"cancelled": True}
+
+
+@app.delete("/post/jobs/{job_id}")
+async def post_job_delete(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    deleted = await delete_post_job(job_id, postgres_conn)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    await record_tool_call("post_job_delete_ui", {"job_id": job_id}, "ok", postgres_conn)
+    return {"deleted": True}
+
+
+@app.post("/post/jobs/{job_id}/analyze-media")
+async def post_job_analyze_media(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Phase 2's own manual gate (confirmed with Josh: a separate
+    deliberate step, not an automatic continuation of ingestion) -- a
+    fast guarded status flip only. The actual ffprobe work happens in
+    the background loop's own 'analyzing_media' phase, never inline
+    here, same 'route never blocks on the real work' discipline as
+    every other Phase 1 route. Also doubles as the re-analyze action."""
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    started = await update_post_job_status(
+        job_id, "analyzing_media", from_statuses=("ingested",), postgres_conn=postgres_conn,
+    )
+    if not started:
+        raise HTTPException(
+            status_code=400, detail=f"Job must be 'ingested' to analyze media (currently {job['status']!r})",
+        )
+    await record_tool_call("post_job_analyze_media_ui", {"job_id": job_id}, "ok", postgres_conn)
+    return {"started": True}
+
+
+@app.get("/post/jobs/{job_id}/media-report")
+async def post_job_media_report(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    if not job.get("media_analyzed_at"):
+        raise HTTPException(status_code=404, detail="Media analysis hasn't run for this job yet.")
+    return await compute_media_report(job_id, postgres_conn)
+
+
+@app.get("/post/jobs/{job_id}/proxy-recommendations")
+async def post_job_proxy_recommendations(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    if not job.get("media_analyzed_at"):
+        raise HTTPException(status_code=404, detail="Media analysis hasn't run for this job yet.")
+    return {"recommendations": await compute_proxy_recommendations(job_id, postgres_conn)}
+
+
+@app.post("/post/jobs/{job_id}/generate-proxies")
+async def post_job_generate_proxies(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Phase 4's own manual gate, same discipline as /analyze-media -- a
+    fast guarded status flip plus creating the 'queued' proxy rows for
+    every currently-recommended file (no per-file picker in v1, matching
+    this app's own YAGNI bias). The actual ffmpeg transcodes happen in
+    the background loop's own 'generating_proxies' phase, never inline
+    here."""
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    if not job.get("media_analyzed_at"):
+        raise HTTPException(status_code=400, detail="Media analysis hasn't run for this job yet -- run Analyze Media first.")
+    recommendations = await compute_proxy_recommendations(job_id, postgres_conn)
+    if not recommendations:
+        raise HTTPException(status_code=400, detail="No files currently need a proxy.")
+    started = await update_post_job_status(
+        job_id, "generating_proxies", from_statuses=("ingested",), postgres_conn=postgres_conn,
+    )
+    if not started:
+        raise HTTPException(
+            status_code=400, detail=f"Job must be 'ingested' to generate proxies (currently {job['status']!r})",
+        )
+    await create_post_job_file_proxies_batch([r["file_id"] for r in recommendations], postgres_conn=postgres_conn)
+    await record_tool_call("post_job_generate_proxies_ui", {"job_id": job_id, "file_count": len(recommendations)}, "ok", postgres_conn)
+    return {"started": True, "file_count": len(recommendations)}
+
+
+@app.get("/post/jobs/{job_id}/proxies")
+async def post_job_proxies_list(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return {"proxies": await list_post_job_file_proxies(job_id, postgres_conn)}
+
+
+@app.get("/post/jobs/{job_id}/premiere-prep")
+async def post_job_premiere_prep(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Phase 3 -- everything the UXP plugin needs to build a real Premiere
+    project: called BY THE PLUGIN, not by desktop/iOS, but it's the exact
+    same REST/token pattern -- the plugin is simply a third kind of client.
+    Requires media analysis to have already run so bins can be organized
+    by real metadata (camera/media type), not guesses."""
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    if job["status"] != "ingested":
+        raise HTTPException(status_code=400, detail=f"Job must be 'ingested' to prep for Premiere (currently {job['status']!r})")
+    if not job.get("media_analyzed_at"):
+        raise HTTPException(status_code=400, detail="Media analysis hasn't run for this job yet -- run Analyze Media first.")
+    files = await list_post_job_files(job_id, postgres_conn)
+    metadata_by_file_id = {m["file_id"]: m for m in await list_post_job_file_metadata(job_id, postgres_conn)}
+    # Phase 4: complete proxies only -- a queued/processing/failed row
+    # has no real proxy_path yet, so the plugin must not be told to
+    # attach one that doesn't exist.
+    proxy_path_by_file_id = {
+        p["file_id"]: p["proxy_path"] for p in await list_post_job_file_proxies(job_id, postgres_conn)
+        if p["status"] == "complete" and p["proxy_path"]
+    }
+    return {
+        "job_id": job_id,
+        "profile": job["profile"],
+        "shoot_name": job["shoot_name"],
+        "destination_root": job["destination_root"],
+        "deliverable_format": job["deliverable_format"],
+        "resolution": job["resolution"],
+        "frame_rate": job["frame_rate"],
+        "files": [
+            {
+                "relative_path": f["relative_path"],
+                "destination_path": f["destination_path"],
+                "media_type": (metadata_by_file_id.get(f["id"]) or {}).get("media_type"),
+                "camera_make": (metadata_by_file_id.get(f["id"]) or {}).get("camera_make"),
+                "camera_model": (metadata_by_file_id.get(f["id"]) or {}).get("camera_model"),
+                "width": (metadata_by_file_id.get(f["id"]) or {}).get("width"),
+                "height": (metadata_by_file_id.get(f["id"]) or {}).get("height"),
+                "proxy_path": proxy_path_by_file_id.get(f["id"]),
+            }
+            for f in files
+            if f["status"] == "verified"
+        ],
+    }
+
+
+class PremiereProjectCreatedRequest(BaseModel):
+    project_path: str
+
+
+@app.post("/post/jobs/{job_id}/premiere-project-created")
+async def post_job_premiere_project_created(
+    job_id: int, body: PremiereProjectCreatedRequest, request: Request, _: None = Depends(verify_token)
+) -> dict:
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    updated = await update_post_job_premiere_project(job_id, body.project_path, postgres_conn)
+    if not updated:
+        job = await get_post_job(job_id, postgres_conn)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+        raise HTTPException(status_code=400, detail=f"Job must be 'ingested' to report Premiere completion (currently {job['status']!r})")
+    await record_tool_call("post_job_premiere_project_created_ui", {"job_id": job_id, "project_path": body.project_path}, "ok", postgres_conn)
+    return {"updated": True}
 
 
 @app.get("/personal/dashboard")
@@ -3428,6 +3728,7 @@ async def run_claude_turn(
                 *TRADING_DIVISION_AGENT_TOOLS,
                 *PERSONAL_TOOLS,
                 *JOSHX_TOOLS,
+                *POST_TOOLS,
                 *PEOPLE_TOOLS,
                 *FINANCE_TOOLS,
                 *DOCUMENTS_TOOLS,
@@ -3559,6 +3860,8 @@ async def run_claude_turn(
                 result = await execute_personal_tool_call(block.name, block.input, postgres_conn)
             elif block.name in JOSHX_TOOL_NAMES:
                 result = await execute_joshx_tool_call(block.name, block.input, postgres_conn)
+            elif block.name in POST_TOOL_NAMES:
+                result = await execute_post_tool_call(block.name, block.input, postgres_conn)
             elif block.name in PEOPLE_TOOL_NAMES:
                 result = await execute_people_tool_call(block.name, block.input, postgres_conn)
             elif block.name in FINANCE_TOOL_NAMES:

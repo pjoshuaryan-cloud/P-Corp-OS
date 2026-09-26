@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            font-family: -apple-system, sans-serif;
+            background: #1e1e1e;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 12px;
+        }
+        h3 { margin-top: 0; font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 0.5px; }
+        p.hint { font-size: 11px; color: #888; line-height: 1.4; }
+        button {
+            background: #4a90d9;
+            color: white;
+            border: none;
+            padding: 8px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-bottom: 10px;
+        }
+        button:disabled { background: #555; cursor: default; }
+        button.secondary { background: #444; }
+        pre {
+            background: #111;
+            padding: 10px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-size: 11px;
+            line-height: 1.5;
+            max-height: 420px;
+            overflow-y: auto;
+        }
+        #tokenRow {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 10px;
+        }
+        #tokenRow input {
+            flex: 1;
+            background: #111;
+            color: #e0e0e0;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 6px;
+            font-size: 12px;
+            box-sizing: border-box;
+        }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <h3>P Corp POST</h3>
+    <p class="hint">Prepares the next ingested-and-analyzed POST job as a real Premiere project: bins, imported media, and an empty starting sequence. Never touches color, effects, music, or transitions.</p>
+
+    <div id="tokenRow">
+        <input id="tokenInput" type="text" placeholder="Paste your P Corp OS auth token here" />
+        <button id="saveTokenButton">Save</button>
+    </div>
+
+    <button id="runButton">Prepare POST Project</button>
+    <button id="settingsButton" class="secondary">Change Token</button>
+    <pre id="output">Ready.</pre>
+    <script src="./index.js"></script>
+</body>
+</html>
