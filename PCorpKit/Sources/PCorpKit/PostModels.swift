@@ -218,6 +218,16 @@ public struct MediaReport: Decodable {
             case frameRate = "frame_rate"
         }
     }
+    /// Phase 5 -- a file flagged for exposure or color-cast, distinct
+    /// from FlaggedFile since the flag is a category label ("warm",
+    /// "underexposed"), never a frame rate -- kept as its own small
+    /// struct rather than overloading FlaggedFile's frameRate field
+    /// with an unrelated meaning.
+    public struct ColorFlagFile: Decodable, Identifiable {
+        public let path: String
+        public let flag: String
+        public var id: String { path }
+    }
 
     public let totalFiles: Int
     public let mediaTypeCounts: [String: Int]
@@ -230,6 +240,15 @@ public struct MediaReport: Decodable {
     public let slowMotionFiles: [FlaggedFile]
     public let corruptFiles: [FlaggedFile]
     public let duplicateGroups: [[String]]
+    /// Phase 5 (2026-09-26) -- color intelligence: real color_transfer/
+    /// color_primaries-based HDR detection, a best-effort Log-gamma
+    /// guess from camera strings, and ffmpeg signalstats-based exposure/
+    /// color-cast flags. All explicitly labeled as computed/best-effort
+    /// in the UI, never asserted as color-managed measurements.
+    public let colorProfileCounts: [String: Int]
+    public let mixedColorSpaces: Bool
+    public let flaggedExposureFiles: [ColorFlagFile]
+    public let flaggedColorCastFiles: [ColorFlagFile]
 
     enum CodingKeys: String, CodingKey {
         case cameras, resolutions
@@ -241,6 +260,10 @@ public struct MediaReport: Decodable {
         case horizontalCount = "horizontal_count"
         case slowMotionFiles = "slow_motion_files"
         case corruptFiles = "corrupt_files"
+        case colorProfileCounts = "color_profile_counts"
+        case mixedColorSpaces = "mixed_color_spaces"
+        case flaggedExposureFiles = "flagged_exposure_files"
+        case flaggedColorCastFiles = "flagged_color_cast_files"
         case duplicateGroups = "duplicate_groups"
     }
 }

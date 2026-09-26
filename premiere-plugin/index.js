@@ -15,8 +15,13 @@
  * every other POST phase (/start, /analyze-media). Nothing here runs
  * automatically.
  *
- * Never touches color, effects, music, or transitions -- the created
- * sequence is an empty, correctly-named starting point only.
+ * Never touches creative color grading, other effects, music, or
+ * transitions -- the created sequence is an empty, correctly-named
+ * starting point only. Phase 5 (2026-09-26) adds Project-panel color
+ * LABELING only (a real, documented, non-destructive organizational
+ * flag -- never a Lumetri/grading change) for files P Corp OS's own
+ * media analysis flagged as corrupt, exposure-outlier, Log/HDR, or
+ * color-cast.
  */
 
 const output = document.getElementById("output");
@@ -32,6 +37,27 @@ const TOKEN_STORAGE_KEY = "pcorp_post_auth_token";
 const DRONE_MAKES = ["dji", "autel", "skydio", "parrot"];
 const PHONE_MAKES = ["apple", "iphone", "samsung", "google", "pixel"];
 const BIN_LABELS = { video: "Video", audio: "Audio", image: "Stills", drone: "Drone", phone: "Phone" };
+
+// Phase 5 -- Project-panel color label INDEXES (createSetColorLabelAction
+// takes an index, not a color name). Premiere's own label names/colors
+// are user-renameable per install, so these indexes are a starting
+// guess, not a confirmed color -- the panel logs which index it applied
+// to which category so Josh can check what that index actually shows as
+// on his own Premiere and rename this mapping if he wants different
+// colors for different concerns.
+const COLOR_LABEL_INDEX = { CORRUPT: 0, EXPOSURE: 1, LOG_OR_HDR: 2, COLOR_CAST: 3 };
+
+/** Priority when a file has more than one flag: corrupt (Phase 2's own
+ * probe_error) > exposure outlier > Log/HDR footage needing a LUT >
+ * color cast > no label at all. Returns null when nothing about this
+ * file needs visual flagging in the Project panel. */
+function colorLabelIndexForFile(file) {
+    if (file.probe_error) return COLOR_LABEL_INDEX.CORRUPT;
+    if (file.exposure_flag === "underexposed" || file.exposure_flag === "overexposed") return COLOR_LABEL_INDEX.EXPOSURE;
+    if (["log", "hdr_hlg", "hdr_pq"].includes(file.color_profile_guess)) return COLOR_LABEL_INDEX.LOG_OR_HDR;
+    if (file.color_cast_flag === "warm" || file.color_cast_flag === "cool") return COLOR_LABEL_INDEX.COLOR_CAST;
+    return null;
+}
 
 function log(line) {
     output.textContent += "\n" + line;
@@ -207,42 +233,75 @@ async function run() {
                 continue;
             }
 
+            // Look up each newly-imported ClipProjectItem by basename
+            // once per bin -- importFiles() doesn't hand these back
+            // directly, and both proxy attachment (Phase 4) and color
+            // labeling (Phase 5) need the same lookup.
+            let itemByName = {};
+            try {
+                const items = await targetBin.getItems();
+                for (const item of items) {
+                    const itemName = typeof item.name === "function" ? await item.name() : item.name;
+                    itemByName[itemName] = item;
+                }
+            } catch (e) {
+                log(`Warning: couldn't look up imported items in "${BIN_LABELS[category] || "root"}" (${e}).`);
+            }
+
             // Phase 4 -- attach a real proxy to each imported file that
-            // has one ready. importFiles() doesn't hand back the
-            // ClipProjectItems it just created, so they're found the
-            // same way the bins themselves were found above: by
-            // matching a basename against the target bin's own
-            // children. Wrapped in project.lockedAccess() as a
+            // has one ready. Wrapped in project.lockedAccess() as a
             // precaution -- Phase 3's own real lesson was that an
             // unfamiliar mutating call can silently need it -- verified
             // live rather than assumed either way.
-            const filesWithProxy = files.filter((f) => f.proxy_path);
-            if (filesWithProxy.length > 0) {
+            for (const file of files.filter((f) => f.proxy_path)) {
+                const baseName = file.destination_path.split("/").pop();
+                const clipItem = itemByName[baseName];
+                if (!clipItem) {
+                    log(`Warning: couldn't find imported clip for "${baseName}" to attach its proxy.`);
+                    continue;
+                }
                 try {
-                    const items = await targetBin.getItems();
-                    const itemByName = {};
-                    for (const item of items) {
-                        const itemName = typeof item.name === "function" ? await item.name() : item.name;
-                        itemByName[itemName] = item;
-                    }
-                    for (const file of filesWithProxy) {
-                        const baseName = file.destination_path.split("/").pop();
-                        const clipItem = itemByName[baseName];
-                        if (!clipItem) {
-                            log(`Warning: couldn't find imported clip for "${baseName}" to attach its proxy.`);
-                            continue;
-                        }
-                        try {
-                            await project.lockedAccess(async () => {
-                                await clipItem.attachProxy(file.proxy_path, false);
-                            });
-                            log(`Attached proxy for "${baseName}".`);
-                        } catch (e) {
-                            log(`Warning: attachProxy failed for "${baseName}": ${e}`);
-                        }
-                    }
+                    await project.lockedAccess(async () => {
+                        await clipItem.attachProxy(file.proxy_path, false);
+                    });
+                    log(`Attached proxy for "${baseName}".`);
                 } catch (e) {
-                    log(`Warning: couldn't look up imported items for proxy attachment (${e}).`);
+                    log(`Warning: attachProxy failed for "${baseName}": ${e}`);
+                }
+            }
+
+            // Phase 5 -- color-label each imported file that P Corp
+            // OS's own media analysis flagged, using the real,
+            // documented createSetColorLabelAction() API. All of a
+            // bin's label actions are batched into ONE
+            // executeTransaction() call -- Phase 3's own real bug was
+            // calling executeTransaction separately per action in a
+            // loop, which silently only applied the FIRST call; this is
+            // the fix pattern already proven for bin creation, reused
+            // here rather than risking the same mistake twice.
+            const labelTargets = [];
+            for (const file of files) {
+                const labelIndex = colorLabelIndexForFile(file);
+                if (labelIndex === null) continue;
+                const baseName = file.destination_path.split("/").pop();
+                const clipItem = itemByName[baseName];
+                if (!clipItem) continue;  // already warned about above if the lookup itself failed
+                labelTargets.push({ clipItem, labelIndex, baseName });
+            }
+            if (labelTargets.length > 0) {
+                try {
+                    await project.lockedAccess(async () => {
+                        await project.executeTransaction((compoundAction) => {
+                            for (const { clipItem, labelIndex } of labelTargets) {
+                                compoundAction.addAction(clipItem.createSetColorLabelAction(labelIndex));
+                            }
+                        });
+                    });
+                    log(`Color-labeled ${labelTargets.length} file(s) in "${BIN_LABELS[category] || "root"}" `
+                        + `(label indexes used: ${[...new Set(labelTargets.map((t) => t.labelIndex))].join(", ")} -- `
+                        + `check what these show as on your own Premiere install).`);
+                } catch (e) {
+                    log(`Warning: color-labeling failed for "${BIN_LABELS[category] || "root"}": ${e}`);
                 }
             }
         }

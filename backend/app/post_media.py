@@ -26,6 +26,8 @@ would crash the whole batch over one bad file.
 import asyncio
 import json
 import os
+import re
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -92,6 +94,14 @@ SLOW_MOTION_FPS_THRESHOLD = 48.0
 KNOWN_DRONE_MAKES = ("dji", "autel", "skydio", "parrot")
 KNOWN_PHONE_MAKES = ("apple", "iphone", "samsung", "google", "pixel")
 
+# Best-effort Log-gamma name fragments -- most cameras do NOT reliably
+# tag their own Log curve via ffprobe's standard color_transfer field
+# (it commonly reports "unspecified" or even "bt709" for Log-encoded
+# footage), so this matches against camera_make/camera_model/video_codec
+# strings instead, same "known list, never a confident guess beyond it"
+# discipline as KNOWN_DRONE_MAKES/KNOWN_PHONE_MAKES above.
+KNOWN_LOG_GAMMA_HINTS = ("s-log", "slog", "v-log", "vlog", "c-log", "clog", "n-log", "nlog", "log-c", "logc")
+
 
 async def probe_file(path: str) -> dict:
     """Runs ffprobe against one file. Never raises -- every failure mode
@@ -151,7 +161,7 @@ async def probe_file(path: str) -> dict:
         except (TypeError, ValueError):
             return None
 
-    return {
+    metadata = {
         "media_type": media_type,
         "duration_seconds": duration_seconds,
         "width": _int_or_none(video_stream.get("width")) if video_stream else None,
@@ -162,6 +172,13 @@ async def probe_file(path: str) -> dict:
         "bit_depth": _int_or_none(video_stream.get("bits_per_raw_sample")) if video_stream else None,
         "pixel_format": video_stream.get("pix_fmt") if video_stream else None,
         "color_space": video_stream.get("color_space") if video_stream else None,
+        # Phase 5 -- real ffprobe fields never captured in Phase 2 since
+        # nothing needed them yet: the transfer/gamma curve and color
+        # primaries (together, the real signal for HLG/PQ HDR detection)
+        # and whether levels are studio-range ("tv") or full-range ("pc").
+        "color_transfer": video_stream.get("color_transfer") if video_stream else None,
+        "color_primaries": video_stream.get("color_primaries") if video_stream else None,
+        "color_range": video_stream.get("color_range") if video_stream else None,
         "audio_channels": _int_or_none(audio_stream.get("channels")) if audio_stream else None,
         # Apple's own QuickTime tags first (most of Josh's own footage);
         # generic make/model tags as a fallback for other cameras.
@@ -174,6 +191,8 @@ async def probe_file(path: str) -> dict:
         # extracted in Phase 2 since nothing needed it yet.
         "bit_rate": _int_or_none(fmt.get("bit_rate")),
     }
+    metadata["color_profile_guess"] = guess_color_profile(metadata)
+    return metadata
 
 
 def _empty_metadata(probe_error: str) -> dict:
@@ -183,6 +202,7 @@ def _empty_metadata(probe_error: str) -> dict:
         "pixel_format": None, "color_space": None, "audio_channels": None,
         "camera_make": None, "camera_model": None, "creation_time": None, "probe_error": probe_error,
         "bit_rate": None,
+        "color_transfer": None, "color_primaries": None, "color_range": None, "color_profile_guess": None,
     }
 
 
@@ -199,18 +219,160 @@ def guess_device_category(camera_make: str | None, camera_model: str | None) -> 
     return None
 
 
+def guess_color_profile(metadata: dict) -> str | None:
+    """Best-effort ONLY -- 'hdr_hlg'/'hdr_pq' come from real, standard
+    ffprobe transfer-characteristic tags (a genuine signal, not a
+    guess); 'log' is a real guess from camera make/model/codec string
+    matching since most cameras do NOT reliably tag their own Log curve
+    via color_transfer (it commonly reports 'unspecified' or even
+    'bt709' for Log-encoded footage -- confirmed real-world ffprobe
+    behavior, not assumed). 'sdr' only when there's a real, standard,
+    non-HDR transfer tag actually present -- otherwise None (unknown),
+    never a false-confidence default. Surfaced in the UI as a guess for
+    the 'log' case specifically, matching guess_device_category's own
+    'never assert false precision' discipline."""
+    if metadata.get("media_type") != "video":
+        return None
+    transfer = (metadata.get("color_transfer") or "").lower()
+    if transfer == "arib-std-b67":
+        return "hdr_hlg"
+    if transfer == "smpte2084":
+        return "hdr_pq"
+    haystack = f"{metadata.get('camera_make') or ''} {metadata.get('camera_model') or ''} {metadata.get('video_codec') or ''}".lower()
+    if any(hint in haystack for hint in KNOWN_LOG_GAMMA_HINTS):
+        return "log"
+    if transfer in ("bt709", "bt470bg", "smpte170m", "srgb"):
+        return "sdr"
+    return None
+
+
+# Stated, adjustable assumptions -- a cost/coverage tradeoff (sampling,
+# not every frame, keeps a per-file scan cheap on long clips, same
+# performance bias as proxy generation's own '-preset fast') and
+# thresholds that are a starting point, not a lighting-expert judgment.
+# 8-bit luma/chroma scale (0-255) -- signalstats reports on this scale
+# regardless of the source's own bit depth.
+EXPOSURE_SAMPLE_INTERVAL_FRAMES = 60
+UNDEREXPOSED_LUMA_THRESHOLD = 40.0
+OVEREXPOSED_LUMA_THRESHOLD = 215.0
+NEUTRAL_CHROMA_MIDPOINT = 128.0
+COLOR_CAST_DEVIATION_THRESHOLD = 8.0
+
+
+async def probe_exposure(path: str, media_type: str | None) -> dict:
+    """Runs ffmpeg's real `signalstats` filter against SAMPLED frames
+    (every EXPOSURE_SAMPLE_INTERVAL_FRAMES-th, not every frame) and
+    averages the real YAVG/UAVG/VAVG values it reports across those
+    samples in plain Python -- same 'one source of truth, aggregate
+    real per-sample data ourselves' discipline as compute_media_report,
+    not a second computation path. Never raises -- a missing binary, an
+    unreadable video, or a parse failure all degrade to a dict of Nones,
+    same discipline as probe_file(). Skipped entirely for non-video
+    media -- there's no exposure concept for audio/stills/other."""
+    if media_type != "video":
+        return _empty_exposure()
+    fd, metadata_path = tempfile.mkstemp(prefix="post_signalstats_", suffix=".txt")
+    os.close(fd)
+    try:
+        # The comma inside select's own expression must be backslash-
+        # escaped or ffmpeg's filtergraph parser reads it as the next
+        # filter's own separator, not part of the expression.
+        filter_chain = f"select='not(mod(n\\,{EXPOSURE_SAMPLE_INTERVAL_FRAMES}))',signalstats,metadata=print:file={metadata_path}"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                FFMPEG_PATH, "-y", "-i", path, "-vf", filter_chain, "-f", "null", "-",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            return _empty_exposure()
+        await proc.communicate()
+        if proc.returncode != 0:
+            return _empty_exposure()
+        try:
+            text = Path(metadata_path).read_text(errors="replace")
+        except OSError:
+            return _empty_exposure()
+        y_values = [float(v) for v in re.findall(r"lavfi\.signalstats\.YAVG=([\d.]+)", text)]
+        u_values = [float(v) for v in re.findall(r"lavfi\.signalstats\.UAVG=([\d.]+)", text)]
+        v_values = [float(v) for v in re.findall(r"lavfi\.signalstats\.VAVG=([\d.]+)", text)]
+        if not y_values:
+            return _empty_exposure()
+        avg_luma = sum(y_values) / len(y_values)
+        avg_chroma_u = sum(u_values) / len(u_values) if u_values else None
+        avg_chroma_v = sum(v_values) / len(v_values) if v_values else None
+        return {
+            "avg_luma": avg_luma,
+            "avg_chroma_u": avg_chroma_u,
+            "avg_chroma_v": avg_chroma_v,
+            "exposure_flag": classify_exposure(avg_luma),
+            "color_cast_flag": classify_color_cast(avg_chroma_u, avg_chroma_v),
+        }
+    finally:
+        try:
+            os.unlink(metadata_path)
+        except OSError:
+            pass
+
+
+def _empty_exposure() -> dict:
+    return {"avg_luma": None, "avg_chroma_u": None, "avg_chroma_v": None, "exposure_flag": None, "color_cast_flag": None}
+
+
+def classify_exposure(avg_luma: float | None) -> str | None:
+    """'underexposed' / 'overexposed' / 'normal' / None (no data) --
+    deterministic, no LLM, matching compute_media_report's own
+    discipline. Thresholds are a stated assumption, not a lighting-
+    expert judgment -- flagged for Josh's own adjustment once he's seen
+    it run against real footage, same disclosed-assumption pattern as
+    Phase 2's SLOW_MOTION_FPS_THRESHOLD."""
+    if avg_luma is None:
+        return None
+    if avg_luma < UNDEREXPOSED_LUMA_THRESHOLD:
+        return "underexposed"
+    if avg_luma > OVEREXPOSED_LUMA_THRESHOLD:
+        return "overexposed"
+    return "normal"
+
+
+def classify_color_cast(avg_chroma_u: float | None, avg_chroma_v: float | None) -> str | None:
+    """'warm' / 'cool' / 'neutral' / None -- an explicitly ROUGH
+    directional signal from real YUV chroma averages (U leans blue/
+    yellow, V leans red/green around a neutral 128 midpoint for 8-bit),
+    never a color-temperature (Kelvin) claim -- that needs real color-
+    managed processing this app doesn't have. Labeled as a rough signal
+    everywhere it surfaces, matching this app's own 'never assert false
+    precision' discipline."""
+    if avg_chroma_u is None or avg_chroma_v is None:
+        return None
+    u_deviation = avg_chroma_u - NEUTRAL_CHROMA_MIDPOINT
+    v_deviation = avg_chroma_v - NEUTRAL_CHROMA_MIDPOINT
+    if abs(u_deviation) < COLOR_CAST_DEVIATION_THRESHOLD and abs(v_deviation) < COLOR_CAST_DEVIATION_THRESHOLD:
+        return "neutral"
+    return "cool" if u_deviation > v_deviation else "warm"
+
+
 async def run_media_analysis(job_id: int, postgres_conn: Any = None) -> None:
     """Probes every file belonging to this job and stores the results.
     Runs every probe concurrently (asyncio.gather) -- unlike Phase 1's
     ingestion, these are lightweight subprocess calls reading only file
-    headers, not multi-GB sequential I/O, so there's no need for the
-    chunked-yield discipline the copy phase requires."""
+    headers (plus, for probe_exposure, a handful of sampled frames), not
+    multi-GB sequential I/O, so there's no need for the chunked-yield
+    discipline the copy phase requires. Phase 5's probe_exposure runs
+    only after probe_file resolves each file's real media_type -- it's
+    a real decode pass, so it's skipped outright for non-video files."""
     files = await list_post_job_files(job_id, postgres_conn=postgres_conn)
     if not files:
         await update_post_job_media_analyzed(job_id, postgres_conn=postgres_conn)
         return
-    results = await asyncio.gather(*(probe_file(f["destination_path"]) for f in files))
-    rows = [{"file_id": f["id"], **result} for f, result in zip(files, results)]
+    probe_results = await asyncio.gather(*(probe_file(f["destination_path"]) for f in files))
+    exposure_results = await asyncio.gather(*(
+        probe_exposure(f["destination_path"], probe["media_type"])
+        for f, probe in zip(files, probe_results)
+    ))
+    rows = [
+        {"file_id": f["id"], **probe, **exposure}
+        for f, probe, exposure in zip(files, probe_results, exposure_results)
+    ]
     await create_post_job_file_metadata_batch(rows, postgres_conn=postgres_conn)
     await update_post_job_media_analyzed(job_id, postgres_conn=postgres_conn)
 
@@ -233,6 +395,9 @@ async def compute_media_report(job_id: int, postgres_conn: Any = None) -> dict:
     slow_motion_files: list[dict] = []
     corrupt_files: list[dict] = []
     checksum_groups: dict[str, list[str]] = defaultdict(list)
+    color_profile_counts: dict[str, int] = defaultdict(int)
+    flagged_exposure_files: list[dict] = []
+    flagged_color_cast_files: list[dict] = []
 
     for f in files:
         if f["source_checksum"]:
@@ -264,8 +429,22 @@ async def compute_media_report(job_id: int, postgres_conn: Any = None) -> dict:
             frame_rates[meta["frame_rate"]] += 1
             if meta["frame_rate"] > SLOW_MOTION_FPS_THRESHOLD:
                 slow_motion_files.append({"path": f["relative_path"], "frame_rate": meta["frame_rate"]})
+        # Phase 5 -- color profile only means anything for real video;
+        # exposure/color-cast flags only exist when probe_exposure
+        # actually ran (also video-only, see run_media_analysis).
+        if meta["media_type"] == "video":
+            color_profile_counts[meta.get("color_profile_guess") or "unknown"] += 1
+            if meta.get("exposure_flag") in ("underexposed", "overexposed"):
+                flagged_exposure_files.append({"path": f["relative_path"], "flag": meta.get("exposure_flag")})
+            if meta.get("color_cast_flag") in ("warm", "cool"):
+                flagged_color_cast_files.append({"path": f["relative_path"], "flag": meta.get("color_cast_flag")})
 
     duplicate_groups = [paths for paths in checksum_groups.values() if len(paths) > 1]
+    # A real, useful signal: a shoot combining Log/HDR footage with
+    # standard SDR footage won't grade the same way straight out of the
+    # box -- worth flagging even though nothing here decides what to do
+    # about it.
+    mixed_color_spaces = len([k for k in color_profile_counts if k in ("log", "hdr_hlg", "hdr_pq", "sdr")]) > 1
 
     return {
         "total_files": len(files),
@@ -279,6 +458,10 @@ async def compute_media_report(job_id: int, postgres_conn: Any = None) -> dict:
         "slow_motion_files": slow_motion_files,
         "corrupt_files": corrupt_files,
         "duplicate_groups": duplicate_groups,
+        "color_profile_counts": dict(color_profile_counts),
+        "mixed_color_spaces": mixed_color_spaces,
+        "flagged_exposure_files": flagged_exposure_files,
+        "flagged_color_cast_files": flagged_color_cast_files,
     }
 
 

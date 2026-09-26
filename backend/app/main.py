@@ -2767,6 +2767,10 @@ async def post_job_premiere_prep(job_id: int, request: Request, _: None = Depend
                 "width": (metadata_by_file_id.get(f["id"]) or {}).get("width"),
                 "height": (metadata_by_file_id.get(f["id"]) or {}).get("height"),
                 "proxy_path": proxy_path_by_file_id.get(f["id"]),
+                "probe_error": (metadata_by_file_id.get(f["id"]) or {}).get("probe_error"),
+                "color_profile_guess": (metadata_by_file_id.get(f["id"]) or {}).get("color_profile_guess"),
+                "exposure_flag": (metadata_by_file_id.get(f["id"]) or {}).get("exposure_flag"),
+                "color_cast_flag": (metadata_by_file_id.get(f["id"]) or {}).get("color_cast_flag"),
             }
             for f in files
             if f["status"] == "verified"

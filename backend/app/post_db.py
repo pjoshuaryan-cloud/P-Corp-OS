@@ -77,6 +77,8 @@ _POST_JOB_FILE_METADATA_COLUMNS = (
     "id", "file_id", "media_type", "duration_seconds", "width", "height", "video_codec", "audio_codec",
     "frame_rate", "bit_depth", "pixel_format", "color_space", "audio_channels", "camera_make", "camera_model",
     "creation_time", "probe_error", "created_at", "bit_rate",
+    "color_transfer", "color_primaries", "color_range", "color_profile_guess",
+    "avg_luma", "avg_chroma_u", "avg_chroma_v", "exposure_flag", "color_cast_flag",
 )
 _POST_JOB_FILE_PROXY_COLUMNS = (
     "id", "file_id", "status", "proxy_path", "error_message", "created_at", "completed_at",
@@ -171,7 +173,16 @@ async def init_post_db(postgres_conn: Any = None) -> None:
                 creation_time TEXT,
                 probe_error TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                bit_rate INTEGER
+                bit_rate INTEGER,
+                color_transfer TEXT,
+                color_primaries TEXT,
+                color_range TEXT,
+                color_profile_guess TEXT,
+                avg_luma REAL,
+                avg_chroma_u REAL,
+                avg_chroma_v REAL,
+                exposure_flag TEXT,
+                color_cast_flag TEXT
             )
             """
         )
@@ -179,6 +190,13 @@ async def init_post_db(postgres_conn: Any = None) -> None:
         metadata_columns = {row[1] async for row in cursor}
         if "bit_rate" not in metadata_columns:
             await db.execute("ALTER TABLE post_job_file_metadata ADD COLUMN bit_rate INTEGER")
+        for column, sqltype in (
+            ("color_transfer", "TEXT"), ("color_primaries", "TEXT"), ("color_range", "TEXT"),
+            ("color_profile_guess", "TEXT"), ("avg_luma", "REAL"), ("avg_chroma_u", "REAL"),
+            ("avg_chroma_v", "REAL"), ("exposure_flag", "TEXT"), ("color_cast_flag", "TEXT"),
+        ):
+            if column not in metadata_columns:
+                await db.execute(f"ALTER TABLE post_job_file_metadata ADD COLUMN {column} {sqltype}")
         await db.execute(
             f"""
             CREATE TABLE IF NOT EXISTS post_job_file_proxies (
@@ -279,11 +297,29 @@ async def _init_postgres(conn: Any) -> None:
                 creation_time TEXT,
                 probe_error TEXT,
                 created_at TEXT NOT NULL,
-                bit_rate BIGINT
+                bit_rate BIGINT,
+                color_transfer TEXT,
+                color_primaries TEXT,
+                color_range TEXT,
+                color_profile_guess TEXT,
+                avg_luma DOUBLE PRECISION,
+                avg_chroma_u DOUBLE PRECISION,
+                avg_chroma_v DOUBLE PRECISION,
+                exposure_flag TEXT,
+                color_cast_flag TEXT
             )
             """
         )
         await cur.execute("ALTER TABLE post.job_file_metadata ADD COLUMN IF NOT EXISTS bit_rate BIGINT")
+        await cur.execute("ALTER TABLE post.job_file_metadata ADD COLUMN IF NOT EXISTS color_transfer TEXT")
+        await cur.execute("ALTER TABLE post.job_file_metadata ADD COLUMN IF NOT EXISTS color_primaries TEXT")
+        await cur.execute("ALTER TABLE post.job_file_metadata ADD COLUMN IF NOT EXISTS color_range TEXT")
+        await cur.execute("ALTER TABLE post.job_file_metadata ADD COLUMN IF NOT EXISTS color_profile_guess TEXT")
+        await cur.execute("ALTER TABLE post.job_file_metadata ADD COLUMN IF NOT EXISTS avg_luma DOUBLE PRECISION")
+        await cur.execute("ALTER TABLE post.job_file_metadata ADD COLUMN IF NOT EXISTS avg_chroma_u DOUBLE PRECISION")
+        await cur.execute("ALTER TABLE post.job_file_metadata ADD COLUMN IF NOT EXISTS avg_chroma_v DOUBLE PRECISION")
+        await cur.execute("ALTER TABLE post.job_file_metadata ADD COLUMN IF NOT EXISTS exposure_flag TEXT")
+        await cur.execute("ALTER TABLE post.job_file_metadata ADD COLUMN IF NOT EXISTS color_cast_flag TEXT")
         await cur.execute(
             f"""
             CREATE TABLE IF NOT EXISTS post.job_file_proxies (
@@ -749,6 +785,8 @@ async def create_post_job_file_metadata_batch(rows: list[dict], postgres_conn: A
         "file_id", "media_type", "duration_seconds", "width", "height", "video_codec", "audio_codec",
         "frame_rate", "bit_depth", "pixel_format", "color_space", "audio_channels", "camera_make",
         "camera_model", "creation_time", "probe_error", "bit_rate",
+        "color_transfer", "color_primaries", "color_range", "color_profile_guess",
+        "avg_luma", "avg_chroma_u", "avg_chroma_v", "exposure_flag", "color_cast_flag",
     )
     if postgres_conn is not None:
         async with postgres_conn.cursor() as cur:

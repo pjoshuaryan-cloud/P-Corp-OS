@@ -471,10 +471,57 @@ private struct MediaReportView: View {
                         }
                     }
                 }
+
+                if !report.colorProfileCounts.isEmpty {
+                    Divider().overlay(theme.divider)
+                    sectionLabel("COLOR PROFILE")
+                    Text("Log detection is a best-effort guess from camera metadata, not a read of the actual gamma curve -- most cameras don't reliably tag this.")
+                        .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                    if report.mixedColorSpaces {
+                        Text("This shoot mixes Log/HDR and standard footage -- these won't grade the same way straight out of the box.")
+                            .font(PCorpFont.body(11)).foregroundStyle(theme.statusHot)
+                    }
+                    ForEach(report.colorProfileCounts.sorted(by: { $0.key < $1.key }), id: \.key) { profile, count in
+                        Text("\(colorProfileLabel(profile)) — \(count) file(s)")
+                            .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                    }
+                }
+
+                if !report.flaggedExposureFiles.isEmpty {
+                    Divider().overlay(theme.divider)
+                    sectionLabel("EXPOSURE FLAGS")
+                    Text("A rough signal from sampled frames, not every frame -- worth a quick look, not a verdict.")
+                        .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                    ForEach(report.flaggedExposureFiles) { f in
+                        Text("\(f.path) — \(f.flag)")
+                            .font(PCorpFont.body(11.5)).foregroundStyle(theme.statusRisk)
+                    }
+                }
+
+                if !report.flaggedColorCastFiles.isEmpty {
+                    Divider().overlay(theme.divider)
+                    sectionLabel("COLOR CAST FLAGS")
+                    Text("A rough directional read from average color balance, never a measured color temperature.")
+                        .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                    ForEach(report.flaggedColorCastFiles) { f in
+                        Text("\(f.path) — \(f.flag)")
+                            .font(PCorpFont.body(11.5)).foregroundStyle(theme.statusHot)
+                    }
+                }
             }
             .padding(16)
         }
         .frame(width: 460, height: 560)
+    }
+
+    private func colorProfileLabel(_ profile: String) -> String {
+        switch profile {
+        case "hdr_hlg": return "HDR (HLG)"
+        case "hdr_pq": return "HDR (PQ/HDR10)"
+        case "log": return "Log (best-effort guess)"
+        case "sdr": return "Standard (SDR)"
+        default: return "Unknown"
+        }
     }
 
     private func sectionLabel(_ text: String) -> some View {
