@@ -209,13 +209,23 @@ async function run() {
         }
 
         // Re-fetch root's children to find the bins we just created.
+        // Real bug found live (2026-09-26): rootItem.getItems() returns
+        // its children typed as generic ProjectItem, not FolderItem --
+        // even though a bin IS semantically a folder, calling a
+        // FolderItem-only method (like .getItems() later on, when using
+        // this bin as the target for looking up its own imported clips)
+        // throws "not a function". ppro.FolderItem.cast() is the real,
+        // documented fix -- confirmed necessary the same way
+        // project.lockedAccess() was in the original spike: a call
+        // failed, so the live object's own real API surface was checked
+        // rather than guessed at twice.
         const bins = {};
         try {
             const children = await rootItem.getItems();
             for (const child of children) {
                 const childName = typeof child.name === "function" ? await child.name() : child.name;
                 for (const key of binsNeeded) {
-                    if (childName === BIN_LABELS[key]) bins[key] = child;
+                    if (childName === BIN_LABELS[key]) bins[key] = ppro.FolderItem.cast(child);
                 }
             }
         } catch (e) {
@@ -236,13 +246,17 @@ async function run() {
             // Look up each newly-imported ClipProjectItem by basename
             // once per bin -- importFiles() doesn't hand these back
             // directly, and both proxy attachment (Phase 4) and color
-            // labeling (Phase 5) need the same lookup.
+            // labeling (Phase 5) need the same lookup. Same real bug as
+            // the bin lookup above: getItems() returns generic
+            // ProjectItem, not ClipProjectItem -- cast is required
+            // before calling a ClipProjectItem-only method (attachProxy,
+            // createSetColorLabelAction) on one of these.
             let itemByName = {};
             try {
                 const items = await targetBin.getItems();
                 for (const item of items) {
                     const itemName = typeof item.name === "function" ? await item.name() : item.name;
-                    itemByName[itemName] = item;
+                    itemByName[itemName] = ppro.ClipProjectItem.cast(item);
                 }
             } catch (e) {
                 log(`Warning: couldn't look up imported items in "${BIN_LABELS[category] || "root"}" (${e}).`);
