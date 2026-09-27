@@ -45,6 +45,7 @@ from app.post_db import (
     mark_post_job_file_proxy_processing,
     update_post_job_media_analyzed,
     update_post_job_proxies_generated,
+    update_post_job_status,
 )
 from app.post_profiles import POST_PROFILES
 
@@ -531,6 +532,48 @@ async def compute_proxy_recommendations(job_id: int, postgres_conn: Any = None) 
                 "video_codec": meta.get("video_codec"),
             })
     return recommendations
+
+
+# ------------------------------------------------------------ shared triggers (Phase 7)
+# One source of truth for the guarded status-flip logic behind both the
+# REST routes (/analyze-media, /generate-proxies) and Frank's own new
+# analyze_post_job_media/generate_post_job_proxies chat tools -- the two
+# entry points must never be allowed to drift on their own guards.
+
+async def trigger_media_analysis(job_id: int, postgres_conn: Any = None) -> tuple[bool, str]:
+    """Guarded 'ingested' -> 'analyzing_media' status flip. The actual
+    ffprobe work happens in the background loop's own phase, never here
+    -- this only starts it. Returns (started, message)."""
+    job = await get_post_job(job_id, postgres_conn=postgres_conn)
+    if job is None:
+        return False, f"No POST job with id {job_id}."
+    started = await update_post_job_status(
+        job_id, "analyzing_media", from_statuses=("ingested",), postgres_conn=postgres_conn,
+    )
+    if not started:
+        return False, f"Job #{job_id} must be 'ingested' to analyze media (currently {job['status']!r})."
+    return True, f"Started media analysis for job #{job_id} \"{job['shoot_name']}\"."
+
+
+async def trigger_proxy_generation(job_id: int, postgres_conn: Any = None) -> tuple[bool, str, int]:
+    """Guarded 'ingested' -> 'generating_proxies' status flip + creates
+    the real 'queued' proxy rows for every currently-recommended file.
+    Returns (started, message, file_count)."""
+    job = await get_post_job(job_id, postgres_conn=postgres_conn)
+    if job is None:
+        return False, f"No POST job with id {job_id}.", 0
+    if not job.get("media_analyzed_at"):
+        return False, f"Job #{job_id} needs Analyze Media run first.", 0
+    recommendations = await compute_proxy_recommendations(job_id, postgres_conn=postgres_conn)
+    if not recommendations:
+        return False, f"No files in job #{job_id} currently need a proxy.", 0
+    started = await update_post_job_status(
+        job_id, "generating_proxies", from_statuses=("ingested",), postgres_conn=postgres_conn,
+    )
+    if not started:
+        return False, f"Job #{job_id} must be 'ingested' to generate proxies (currently {job['status']!r}).", 0
+    await create_post_job_file_proxies_batch([r["file_id"] for r in recommendations], postgres_conn=postgres_conn)
+    return True, f"Started proxy generation for {len(recommendations)} file(s) in job #{job_id} \"{job['shoot_name']}\".", len(recommendations)
 
 
 def _proxies_subfolder(profile: str) -> str:

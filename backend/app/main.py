@@ -184,8 +184,8 @@ from app.trade_proposals_db import (
     record_execution_result,
     resolve_proposal,
 )
-from app.post_db import init_post_db, list_post_jobs, get_post_job, get_post_job_progress, create_post_job, update_post_job_status, delete_post_job, list_post_job_files, list_post_job_file_metadata, update_post_job_premiere_project, create_post_job_file_proxies_batch, list_post_job_file_proxies, create_or_replace_post_job_file_transcript, get_post_job_file_transcript, list_post_job_file_transcripts, DELIVERABLE_FORMATS, RESOLUTIONS, FRAME_RATES
-from app.post_media import compute_media_report, compute_proxy_recommendations
+from app.post_db import init_post_db, list_post_jobs, get_post_job, get_post_job_progress, create_post_job, update_post_job_status, delete_post_job, list_post_job_files, list_post_job_file_metadata, update_post_job_premiere_project, list_post_job_file_proxies, create_or_replace_post_job_file_transcript, get_post_job_file_transcript, list_post_job_file_transcripts, DELIVERABLE_FORMATS, RESOLUTIONS, FRAME_RATES
+from app.post_media import compute_media_report, compute_proxy_recommendations, trigger_media_analysis, trigger_proxy_generation
 from app.post_transcripts import summarize_transcript, generate_srt, format_readable_transcript
 from app.post_sources import list_source_volumes
 from app.post_profiles import POST_PROFILES, compute_destination_root
@@ -2655,16 +2655,10 @@ async def post_job_analyze_media(job_id: int, request: Request, _: None = Depend
     here, same 'route never blocks on the real work' discipline as
     every other Phase 1 route. Also doubles as the re-analyze action."""
     postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
-    job = await get_post_job(job_id, postgres_conn)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
-    started = await update_post_job_status(
-        job_id, "analyzing_media", from_statuses=("ingested",), postgres_conn=postgres_conn,
-    )
+    started, message = await trigger_media_analysis(job_id, postgres_conn)
     if not started:
-        raise HTTPException(
-            status_code=400, detail=f"Job must be 'ingested' to analyze media (currently {job['status']!r})",
-        )
+        status_code = 404 if message.startswith("No POST job") else 400
+        raise HTTPException(status_code=status_code, detail=message)
     await record_tool_call("post_job_analyze_media_ui", {"job_id": job_id}, "ok", postgres_conn)
     return {"started": True}
 
@@ -2700,24 +2694,12 @@ async def post_job_generate_proxies(job_id: int, request: Request, _: None = Dep
     the background loop's own 'generating_proxies' phase, never inline
     here."""
     postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
-    job = await get_post_job(job_id, postgres_conn)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
-    if not job.get("media_analyzed_at"):
-        raise HTTPException(status_code=400, detail="Media analysis hasn't run for this job yet -- run Analyze Media first.")
-    recommendations = await compute_proxy_recommendations(job_id, postgres_conn)
-    if not recommendations:
-        raise HTTPException(status_code=400, detail="No files currently need a proxy.")
-    started = await update_post_job_status(
-        job_id, "generating_proxies", from_statuses=("ingested",), postgres_conn=postgres_conn,
-    )
+    started, message, file_count = await trigger_proxy_generation(job_id, postgres_conn)
     if not started:
-        raise HTTPException(
-            status_code=400, detail=f"Job must be 'ingested' to generate proxies (currently {job['status']!r})",
-        )
-    await create_post_job_file_proxies_batch([r["file_id"] for r in recommendations], postgres_conn=postgres_conn)
-    await record_tool_call("post_job_generate_proxies_ui", {"job_id": job_id, "file_count": len(recommendations)}, "ok", postgres_conn)
-    return {"started": True, "file_count": len(recommendations)}
+        status_code = 404 if message.startswith("No POST job") else 400
+        raise HTTPException(status_code=status_code, detail=message)
+    await record_tool_call("post_job_generate_proxies_ui", {"job_id": job_id, "file_count": file_count}, "ok", postgres_conn)
+    return {"started": True, "file_count": file_count}
 
 
 @app.get("/post/jobs/{job_id}/proxies")
