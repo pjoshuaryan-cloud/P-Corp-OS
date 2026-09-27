@@ -184,8 +184,9 @@ from app.trade_proposals_db import (
     record_execution_result,
     resolve_proposal,
 )
-from app.post_db import init_post_db, list_post_jobs, get_post_job, get_post_job_progress, create_post_job, update_post_job_status, delete_post_job, list_post_job_files, list_post_job_file_metadata, update_post_job_premiere_project, create_post_job_file_proxies_batch, list_post_job_file_proxies, DELIVERABLE_FORMATS, RESOLUTIONS, FRAME_RATES
+from app.post_db import init_post_db, list_post_jobs, get_post_job, get_post_job_progress, create_post_job, update_post_job_status, delete_post_job, list_post_job_files, list_post_job_file_metadata, update_post_job_premiere_project, create_post_job_file_proxies_batch, list_post_job_file_proxies, create_or_replace_post_job_file_transcript, get_post_job_file_transcript, list_post_job_file_transcripts, DELIVERABLE_FORMATS, RESOLUTIONS, FRAME_RATES
 from app.post_media import compute_media_report, compute_proxy_recommendations
+from app.post_transcripts import summarize_transcript, generate_srt, format_readable_transcript
 from app.post_sources import list_source_volumes
 from app.post_profiles import POST_PROFILES, compute_destination_root
 from app.post_ingest import _post_ingest_loop
@@ -2736,8 +2737,13 @@ async def post_job_premiere_prep(job_id: int, request: Request, _: None = Depend
     job = await get_post_job(job_id, postgres_conn)
     if job is None:
         raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
-    if job["status"] != "ingested":
-        raise HTTPException(status_code=400, detail=f"Job must be 'ingested' to prep for Premiere (currently {job['status']!r})")
+    # Phase 6 -- also allowed once a project already exists, since
+    # Transcribe Dialogue is a separate, later action against a project
+    # "Prepare POST Project" already created (job status has already
+    # moved on from 'ingested' by then) -- same per-file data (file_id,
+    # audio_codec) is still needed at that point.
+    if job["status"] not in ("ingested", "premiere_project_created"):
+        raise HTTPException(status_code=400, detail=f"Job must be 'ingested' or have an existing Premiere project to prep for Premiere (currently {job['status']!r})")
     if not job.get("media_analyzed_at"):
         raise HTTPException(status_code=400, detail="Media analysis hasn't run for this job yet -- run Analyze Media first.")
     files = await list_post_job_files(job_id, postgres_conn)
@@ -2759,6 +2765,7 @@ async def post_job_premiere_prep(job_id: int, request: Request, _: None = Depend
         "frame_rate": job["frame_rate"],
         "files": [
             {
+                "file_id": f["id"],
                 "relative_path": f["relative_path"],
                 "destination_path": f["destination_path"],
                 "media_type": (metadata_by_file_id.get(f["id"]) or {}).get("media_type"),
@@ -2766,6 +2773,7 @@ async def post_job_premiere_prep(job_id: int, request: Request, _: None = Depend
                 "camera_model": (metadata_by_file_id.get(f["id"]) or {}).get("camera_model"),
                 "width": (metadata_by_file_id.get(f["id"]) or {}).get("width"),
                 "height": (metadata_by_file_id.get(f["id"]) or {}).get("height"),
+                "audio_codec": (metadata_by_file_id.get(f["id"]) or {}).get("audio_codec"),
                 "proxy_path": proxy_path_by_file_id.get(f["id"]),
                 "probe_error": (metadata_by_file_id.get(f["id"]) or {}).get("probe_error"),
                 "color_profile_guess": (metadata_by_file_id.get(f["id"]) or {}).get("color_profile_guess"),
@@ -2795,6 +2803,57 @@ async def post_job_premiere_project_created(
         raise HTTPException(status_code=400, detail=f"Job must be 'ingested' to report Premiere completion (currently {job['status']!r})")
     await record_tool_call("post_job_premiere_project_created_ui", {"job_id": job_id, "project_path": body.project_path}, "ok", postgres_conn)
     return {"updated": True}
+
+
+class TranscriptSubmitRequest(BaseModel):
+    transcript_json: dict
+    language: str | None = None
+
+
+@app.post("/post/jobs/{job_id}/files/{file_id}/transcript")
+async def post_job_file_transcript_create(
+    job_id: int, file_id: int, body: TranscriptSubmitRequest, request: Request, _: None = Depends(verify_token)
+) -> dict:
+    """Phase 6 -- the plugin's own real transcription result (Premiere's
+    native, on-device Transcript API -- see post_transcripts.py's own
+    docstring), reported back after a successful
+    transcribeClipProjectItem() + exportToJSON() call. Never re-
+    transcribes or second-guesses Premiere's real output -- only
+    summarizes and reformats it (SRT)."""
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    files = await list_post_job_files(job_id, postgres_conn)
+    file_row = next((f for f in files if f["id"] == file_id), None)
+    if file_row is None:
+        raise HTTPException(status_code=404, detail=f"No file with id {file_id} on job {job_id}")
+
+    summary = summarize_transcript(body.transcript_json)
+    srt_content = generate_srt(body.transcript_json)
+    # Placed next to the source clip in _INGESTED/, matching filename --
+    # the simplest, most conventional caption-file placement, no new
+    # profile-folder-template change needed.
+    srt_path = str(Path(file_row["destination_path"]).with_suffix(".srt"))
+    try:
+        Path(srt_path).write_text(srt_content)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Couldn't write .srt file: {exc}")
+
+    transcript_id = await create_or_replace_post_job_file_transcript(
+        file_id, summary["language"] or body.language, json.dumps(body.transcript_json),
+        summary["word_count"], summary["speaker_count"], summary["has_profanity"], summary["has_filler_words"],
+        srt_path, postgres_conn,
+    )
+    await record_tool_call("post_job_transcript_create_ui", {"job_id": job_id, "file_id": file_id}, "ok", postgres_conn)
+    return {"id": transcript_id, "summary": summary, "srt_path": srt_path}
+
+
+@app.get("/post/jobs/{job_id}/files/{file_id}/transcript")
+async def post_job_file_transcript_get(job_id: int, file_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    row = await get_post_job_file_transcript(file_id, postgres_conn)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No transcript stored for this file yet.")
+    transcript_json = json.loads(row["transcript_json"])
+    return {**row, "transcript_json": transcript_json, "readable_text": format_readable_transcript(transcript_json)}
 
 
 @app.get("/personal/dashboard")

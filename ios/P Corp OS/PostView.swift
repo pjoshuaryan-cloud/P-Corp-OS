@@ -14,7 +14,9 @@ struct PostView: View {
 
     @State private var pollTask: Task<Void, Never>?
     @State private var mediaReport: MediaReport?
+    @State private var mediaReportJobId = 0
     @State private var mediaReportJobName = ""
+    @State private var mediaReportFiles: [PostJobFile] = []
     @State private var proxyStatuses: [ProxyStatus]?
     @State private var proxyStatusJobName = ""
 
@@ -39,7 +41,9 @@ struct PostView: View {
                                 PostJobStatusRow(job: job, onViewReport: {
                                     Task {
                                         mediaReport = await client.fetchMediaReport(jobId: job.id)
+                                        mediaReportJobId = job.id
                                         mediaReportJobName = job.shootName
+                                        mediaReportFiles = await client.fetchJobFiles(id: job.id)
                                     }
                                 }, onViewProxyStatus: {
                                     Task {
@@ -67,7 +71,7 @@ struct PostView: View {
             set: { if !$0 { mediaReport = nil } }
         )) {
             if let report = mediaReport {
-                MediaReportView(report: report, shootName: mediaReportJobName)
+                MediaReportView(report: report, shootName: mediaReportJobName, jobId: mediaReportJobId, files: mediaReportFiles, client: client)
             }
         }
         .sheet(isPresented: Binding(
@@ -200,8 +204,13 @@ private struct PostJobStatusRow: View {
 private struct MediaReportView: View {
     let report: MediaReport
     let shootName: String
+    let jobId: Int
+    let files: [PostJobFile]
+    let client: PostClient
     @Environment(\.appTheme) private var theme
     @Environment(\.dismiss) private var dismiss
+
+    @State private var transcriptSheetFile: PostJobFile?
 
     var body: some View {
         NavigationStack {
@@ -311,6 +320,21 @@ private struct MediaReportView: View {
                                 .font(PCorpFont.body(11.5)).foregroundStyle(theme.statusHot)
                         }
                     }
+
+                    Divider().overlay(theme.divider)
+                    sectionLabel("DIALOGUE")
+                    Text("Transcribed by Premiere's own native transcription -- never generated or verified for accuracy by P Corp OS.")
+                        .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                    let dialogue = report.dialogueSummary
+                    Text("\(dialogue.filesWithTranscripts) transcribed, \(dialogue.filesPendingTranscription) pending"
+                         + (dialogue.filesFlaggedProfanity > 0 ? ", \(dialogue.filesFlaggedProfanity) flagged for profanity" : "")
+                         + (dialogue.filesFlaggedFillerWords > 0 ? ", \(dialogue.filesFlaggedFillerWords) flagged for filler words" : ""))
+                        .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                    ForEach(files.filter { $0.status == "verified" }) { file in
+                        Button(file.relativePath) { transcriptSheetFile = file }
+                            .font(PCorpFont.body(11.5))
+                            .foregroundStyle(theme.statusHot)
+                    }
                 }
                 .padding(16)
             }
@@ -321,6 +345,9 @@ private struct MediaReportView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .sheet(item: $transcriptSheetFile) { file in
+                TranscriptView(jobId: jobId, file: file, client: client)
             }
         }
     }
@@ -397,6 +424,56 @@ private struct ProxyStatusView: View {
         case "complete": return theme.statusGood
         case "failed": return theme.statusRisk
         default: return theme.statusHot
+        }
+    }
+}
+
+/// Phase 6 (2026-09-27) -- iOS port of desktop's own TranscriptView, same
+/// NavigationStack-with-Done sheet precedent as MediaReportView/
+/// ProxyStatusView. Plain, speaker-grouped text only, fetched on demand.
+private struct TranscriptView: View {
+    let jobId: Int
+    let file: PostJobFile
+    let client: PostClient
+    @Environment(\.appTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var transcript: Transcript?
+    @State private var isLoading = true
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if isLoading {
+                        ProgressView().controlSize(.small)
+                    } else if let transcript {
+                        Text("\(transcript.wordCount ?? 0) word(s), \(transcript.speakerCount ?? 0) speaker(s)"
+                             + (transcript.hasProfanity ? " -- contains profanity" : "")
+                             + (transcript.hasFillerWords ? " -- contains filler words" : ""))
+                            .font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
+                        Divider().overlay(theme.divider)
+                        Text(transcript.readableText)
+                            .font(PCorpFont.body(12.5)).foregroundStyle(theme.textSecondary)
+                    } else {
+                        Text("No transcript for this file yet -- use \"Transcribe Dialogue\" in the Premiere plugin once this file is imported into a project.")
+                            .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                    }
+                }
+                .padding(16)
+            }
+            .background(theme.background)
+            .navigationTitle(file.relativePath)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task {
+                transcript = await client.fetchTranscript(jobId: jobId, fileId: file.id)
+                isLoading = false
+            }
         }
     }
 }

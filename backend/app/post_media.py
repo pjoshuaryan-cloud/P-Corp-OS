@@ -37,6 +37,7 @@ from app.post_db import (
     create_post_job_file_proxies_batch,
     get_post_job,
     list_post_job_file_metadata,
+    list_post_job_file_transcripts,
     list_post_job_files,
     list_queued_post_job_file_proxies,
     mark_post_job_file_proxy_complete,
@@ -446,6 +447,21 @@ async def compute_media_report(job_id: int, postgres_conn: Any = None) -> dict:
     # about it.
     mixed_color_spaces = len([k for k in color_profile_counts if k in ("log", "hdr_hlg", "hdr_pq", "sdr")]) > 1
 
+    # Phase 6 -- dialogue transcription is done entirely by Premiere's
+    # own native engine (see post_transcripts.py); this only counts what
+    # was already stored. "Pending" means a video file with a real audio
+    # track that hasn't been transcribed yet -- files with no audio at
+    # all (audio_codec is None) are never counted as pending anything.
+    transcripts = await list_post_job_file_transcripts(job_id, postgres_conn=postgres_conn)
+    transcribed_file_ids = {t["file_id"] for t in transcripts}
+    files_with_audio = sum(1 for f in files if (metadata_by_file_id.get(f["id"]) or {}).get("audio_codec"))
+    dialogue_summary = {
+        "files_with_transcripts": len(transcripts),
+        "files_flagged_profanity": sum(1 for t in transcripts if t["has_profanity"]),
+        "files_flagged_filler_words": sum(1 for t in transcripts if t["has_filler_words"]),
+        "files_pending_transcription": max(files_with_audio - len(transcripts), 0),
+    }
+
     return {
         "total_files": len(files),
         "media_type_counts": dict(media_type_counts),
@@ -462,6 +478,7 @@ async def compute_media_report(job_id: int, postgres_conn: Any = None) -> dict:
         "mixed_color_spaces": mixed_color_spaces,
         "flagged_exposure_files": flagged_exposure_files,
         "flagged_color_cast_files": flagged_color_cast_files,
+        "dialogue_summary": dialogue_summary,
     }
 
 

@@ -249,6 +249,24 @@ public struct MediaReport: Decodable {
     public let mixedColorSpaces: Bool
     public let flaggedExposureFiles: [ColorFlagFile]
     public let flaggedColorCastFiles: [ColorFlagFile]
+    /// Phase 6 (2026-09-27) -- dialogue transcription, done entirely by
+    /// Premiere's own native on-device engine (never this app's own STT
+    /// integration). This just counts what's already been stored.
+    public let dialogueSummary: DialogueSummary
+
+    public struct DialogueSummary: Decodable {
+        public let filesWithTranscripts: Int
+        public let filesFlaggedProfanity: Int
+        public let filesFlaggedFillerWords: Int
+        public let filesPendingTranscription: Int
+
+        enum CodingKeys: String, CodingKey {
+            case filesWithTranscripts = "files_with_transcripts"
+            case filesFlaggedProfanity = "files_flagged_profanity"
+            case filesFlaggedFillerWords = "files_flagged_filler_words"
+            case filesPendingTranscription = "files_pending_transcription"
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
         case cameras, resolutions
@@ -265,6 +283,37 @@ public struct MediaReport: Decodable {
         case flaggedExposureFiles = "flagged_exposure_files"
         case flaggedColorCastFiles = "flagged_color_cast_files"
         case duplicateGroups = "duplicate_groups"
+        case dialogueSummary = "dialogue_summary"
+    }
+}
+
+/// Phase 6 -- a stored transcript's own metadata + real content, fetched
+/// on demand (GET /post/jobs/{id}/files/{file_id}/transcript), never
+/// preloaded into the whole MediaReport. `readableText` is a plain,
+/// speaker-grouped rendering of Premiere's own real transcript, never a
+/// word-by-word timeline UI.
+public struct Transcript: Decodable {
+    public let id: Int
+    public let fileId: Int
+    public let language: String?
+    public let wordCount: Int?
+    public let speakerCount: Int?
+    public let hasProfanity: Bool
+    public let hasFillerWords: Bool
+    public let srtPath: String?
+    public let createdAt: String
+    public let readableText: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, language
+        case fileId = "file_id"
+        case wordCount = "word_count"
+        case speakerCount = "speaker_count"
+        case hasProfanity = "has_profanity"
+        case hasFillerWords = "has_filler_words"
+        case srtPath = "srt_path"
+        case createdAt = "created_at"
+        case readableText = "readable_text"
     }
 }
 

@@ -198,4 +198,20 @@ public final class PostClient: ObservableObject {
             return []
         }
     }
+
+    // MARK: - Phase 6: dialogue transcription
+
+    /// Fetched on demand only -- transcription itself is done entirely
+    /// by the Premiere plugin (Premiere's own native, on-device engine),
+    /// never triggered from this client. Returns nil both when nothing
+    /// has been transcribed yet and on any fetch error -- the caller
+    /// shows the same "no transcript yet" empty state either way.
+    public func fetchTranscript(jobId: Int, fileId: Int) async -> Transcript? {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url("/post/jobs/\(jobId)/files/\(fileId)/transcript"))
+            return try JSONDecoder().decode(Transcript.self, from: data)
+        } catch {
+            return nil
+        }
+    }
 }

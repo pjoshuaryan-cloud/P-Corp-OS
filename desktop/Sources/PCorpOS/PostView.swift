@@ -21,7 +21,9 @@ struct PostView: View {
     @State private var isAddingShoot = false
     @State private var pollTask: Task<Void, Never>?
     @State private var mediaReport: MediaReport?
+    @State private var mediaReportJobId: Int = 0
     @State private var mediaReportJobName: String = ""
+    @State private var mediaReportFiles: [PostJobFile] = []
     @State private var proxyStatuses: [ProxyStatus]?
     @State private var proxyStatusJobName: String = ""
 
@@ -66,7 +68,9 @@ struct PostView: View {
                                     onViewReport: {
                                         Task {
                                             mediaReport = await client.fetchMediaReport(jobId: job.id)
+                                            mediaReportJobId = job.id
                                             mediaReportJobName = job.shootName
+                                            mediaReportFiles = await client.fetchJobFiles(id: job.id)
                                         }
                                     },
                                     onFetchProxyRecommendations: { await client.fetchProxyRecommendations(jobId: job.id) },
@@ -96,7 +100,7 @@ struct PostView: View {
             set: { if !$0 { mediaReport = nil } }
         )) {
             if let report = mediaReport {
-                MediaReportView(report: report, shootName: mediaReportJobName)
+                MediaReportView(report: report, shootName: mediaReportJobName, jobId: mediaReportJobId, files: mediaReportFiles, client: client)
             }
         }
         .popover(isPresented: Binding(
@@ -395,7 +399,12 @@ private struct PostJobRow: View {
 private struct MediaReportView: View {
     let report: MediaReport
     let shootName: String
+    let jobId: Int
+    let files: [PostJobFile]
+    let client: PostClient
     @Environment(\.appTheme) private var theme
+
+    @State private var transcriptSheetFile: PostJobFile?
 
     var body: some View {
         ScrollView {
@@ -508,10 +517,29 @@ private struct MediaReportView: View {
                             .font(PCorpFont.body(11.5)).foregroundStyle(theme.statusHot)
                     }
                 }
+
+                Divider().overlay(theme.divider)
+                sectionLabel("DIALOGUE")
+                Text("Transcribed by Premiere's own native transcription -- never generated or verified for accuracy by P Corp OS.")
+                    .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                let dialogue = report.dialogueSummary
+                Text("\(dialogue.filesWithTranscripts) transcribed, \(dialogue.filesPendingTranscription) pending"
+                     + (dialogue.filesFlaggedProfanity > 0 ? ", \(dialogue.filesFlaggedProfanity) flagged for profanity" : "")
+                     + (dialogue.filesFlaggedFillerWords > 0 ? ", \(dialogue.filesFlaggedFillerWords) flagged for filler words" : ""))
+                    .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                ForEach(files.filter { $0.status == "verified" }) { file in
+                    Button(file.relativePath) { transcriptSheetFile = file }
+                        .buttonStyle(.plain)
+                        .font(PCorpFont.body(11.5))
+                        .foregroundStyle(theme.statusHot)
+                }
             }
             .padding(16)
         }
         .frame(width: 460, height: 560)
+        .popover(item: $transcriptSheetFile) { file in
+            TranscriptView(jobId: jobId, file: file, client: client)
+        }
     }
 
     private func colorProfileLabel(_ profile: String) -> String {
@@ -578,6 +606,52 @@ private struct ProxyStatusView: View {
         case "complete": return theme.statusGood
         case "failed": return theme.statusRisk
         default: return theme.statusHot
+        }
+    }
+}
+
+/// Phase 6 (2026-09-27) -- a real, speaker-grouped transcript, fetched
+/// on demand (never preloaded into the whole Media Report). Plain text
+/// only, never a word-by-word timeline/caption-editing UI -- that's out
+/// of this app's own scope. Transcribed entirely by Premiere's own
+/// native, on-device engine; this view only displays what's already
+/// stored, never generates or verifies it.
+private struct TranscriptView: View {
+    let jobId: Int
+    let file: PostJobFile
+    let client: PostClient
+    @Environment(\.appTheme) private var theme
+
+    @State private var transcript: Transcript?
+    @State private var isLoading = true
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Transcript").font(PCorpFont.display(18)).foregroundStyle(theme.textPrimary)
+                Text(file.relativePath).font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+
+                if isLoading {
+                    ProgressView().controlSize(.small)
+                } else if let transcript {
+                    Text("\(transcript.wordCount ?? 0) word(s), \(transcript.speakerCount ?? 0) speaker(s)"
+                         + (transcript.hasProfanity ? " -- contains profanity" : "")
+                         + (transcript.hasFillerWords ? " -- contains filler words" : ""))
+                        .font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
+                    Divider().overlay(theme.divider)
+                    Text(transcript.readableText)
+                        .font(PCorpFont.body(12.5)).foregroundStyle(theme.textSecondary)
+                } else {
+                    Text("No transcript for this file yet -- use \"Transcribe Dialogue\" in the Premiere plugin once this file is imported into a project.")
+                        .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 460, height: 480)
+        .task {
+            transcript = await client.fetchTranscript(jobId: jobId, fileId: file.id)
+            isLoading = false
         }
     }
 }

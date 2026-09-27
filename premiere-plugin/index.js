@@ -22,14 +22,34 @@
  * flag -- never a Lumetri/grading change) for files P Corp OS's own
  * media analysis flagged as corrupt, exposure-outlier, Log/HDR, or
  * color-cast.
+ *
+ * Phase 6 (2026-09-27) adds "Transcribe Dialogue" -- a second, separate
+ * manual action (never bundled into "Prepare POST Project", since
+ * transcription can take real minutes for a long clip) that runs
+ * Premiere's own real, on-device, native transcription
+ * (ppro.Transcript.transcribeClipProjectItem/exportToJSON, confirmed
+ * genuinely working via a real hands-on spike against Josh's installed
+ * Premiere Beta build, real word-level timing, real speaker diarization
+ * -- Premiere's own default unlabeled-speaker name is literally
+ * "Unknown") and reports the real result back to P Corp OS. Operates on
+ * whatever project is CURRENTLY OPEN (ppro.Project.getActiveProject()),
+ * matched back to its own P Corp OS job via the real project.path
+ * property against that job's stored premiere_project_path -- this is a
+ * separate, later action that may run in a different Premiere session
+ * entirely from when the project was first created, so it never assumes
+ * the `project` variable from a "Prepare POST Project" run is still
+ * around.
  */
 
 const output = document.getElementById("output");
 const runButton = document.getElementById("runButton");
+const transcribeButton = document.getElementById("transcribeButton");
 const settingsButton = document.getElementById("settingsButton");
 const tokenRow = document.getElementById("tokenRow");
 const tokenInput = document.getElementById("tokenInput");
 const saveTokenButton = document.getElementById("saveTokenButton");
+
+const ppro = require("premierepro");
 
 const BACKEND_BASE = "http://127.0.0.1:8731";
 const TOKEN_STORAGE_KEY = "pcorp_post_auth_token";
@@ -174,8 +194,6 @@ async function run() {
 
         const projectSubfolder = prep.profile === "alpha_mode" ? "10_PREMIERE" : "09_PROJECT FILES";
         const projectPath = `${prep.destination_root}/${projectSubfolder}/${prep.shoot_name}.prproj`;
-
-        const ppro = require("premierepro");
 
         log(`Creating project at ${projectPath} …`);
         const project = await ppro.Project.createProject(projectPath);
@@ -341,8 +359,127 @@ async function run() {
     }
 }
 
+/** Collects every non-sequence ClipProjectItem reachable from the
+ * project root: root-level clips directly, plus one level into any real
+ * bin (this app's own projects never nest bins deeper than that). Same
+ * FolderItem/ClipProjectItem .cast() discipline already proven
+ * necessary for bin lookup, proxy attachment, and color labeling. */
+async function collectAllClips(project) {
+    const rootItem = await project.getRootItem();
+    const topLevelItems = await rootItem.getItems();
+    const clips = [];
+    for (const rawItem of topLevelItems) {
+        const clip = ppro.ClipProjectItem.cast(rawItem);
+        if (clip) clips.push(clip);
+        const bin = ppro.FolderItem.cast(rawItem);
+        if (bin) {
+            try {
+                const rawClips = await bin.getItems();
+                for (const rawClip of rawClips) {
+                    const nestedClip = ppro.ClipProjectItem.cast(rawClip);
+                    if (nestedClip) clips.push(nestedClip);
+                }
+            } catch (e) {
+                // Not actually a folder with real items -- skip.
+            }
+        }
+    }
+    return clips;
+}
+
+async function transcribeDialogue() {
+    const token = ensureToken();
+    if (!token) {
+        reset();
+        log("Paste your P Corp OS auth token above and click Save first.");
+        return;
+    }
+
+    transcribeButton.disabled = true;
+    reset();
+
+    try {
+        log("Getting the active project…");
+        const project = await ppro.Project.getActiveProject();
+        if (!project) {
+            log("No project is currently open in Premiere.");
+            return;
+        }
+
+        log("Looking up the matching P Corp OS job…");
+        const { jobs } = await apiGet("/post/jobs?status=premiere_project_created", token);
+        const job = jobs.find((j) => j.premiere_project_path === project.path);
+        if (!job) {
+            log('Couldn\'t find a P Corp OS job matching this open project. Run "Prepare POST Project" for this shoot first.');
+            return;
+        }
+        log(`Found #${job.id} "${job.shoot_name}".`);
+
+        log("Fetching file info (which clips have audio)…");
+        const prep = await apiGet(`/post/jobs/${job.id}/premiere-prep`, token);
+        const fileByName = {};
+        for (const file of prep.files) {
+            fileByName[file.relative_path] = file;
+        }
+
+        const clips = await collectAllClips(project);
+        let transcribedCount = 0;
+        let skippedCount = 0;
+
+        for (const clip of clips) {
+            if (await clip.isSequence()) continue;
+            const name = typeof clip.name === "function" ? await clip.name() : clip.name;
+            const file = fileByName[name];
+            if (!file || !file.audio_codec) {
+                skippedCount += 1;
+                continue;
+            }
+
+            if (ppro.Transcript.hasTranscript(clip)) {
+                log(`"${name}" already has a transcript -- exporting it as-is.`);
+            } else {
+                log(`Transcribing "${name}"… (this may take a while for a longer clip)`);
+                let success;
+                try {
+                    success = await ppro.Transcript.transcribeClipProjectItem(clip);
+                } catch (e) {
+                    log(`Warning: transcription failed for "${name}": ${e}`);
+                    continue;
+                }
+                if (!success) {
+                    log(`Warning: transcription reported failure for "${name}".`);
+                    continue;
+                }
+            }
+
+            try {
+                const transcriptJsonString = await ppro.Transcript.exportToJSON(clip);
+                const transcriptJson = JSON.parse(transcriptJsonString);
+                await apiPost(`/post/jobs/${job.id}/files/${file.file_id}/transcript`, token, {
+                    transcript_json: transcriptJson,
+                    language: null,
+                });
+                log(`Saved transcript for "${name}".`);
+                transcribedCount += 1;
+            } catch (e) {
+                log(`Warning: couldn't save transcript for "${name}": ${e}`);
+            }
+        }
+
+        log(`Done. ${transcribedCount} file(s) transcribed and saved, ${skippedCount} skipped (no matching audio track).`);
+    } catch (e) {
+        log(`Failed: ${e.message || e}`);
+    } finally {
+        transcribeButton.disabled = false;
+    }
+}
+
 runButton.addEventListener("click", () => {
     run().catch((e) => log(`Unhandled error: ${e}`));
+});
+
+transcribeButton.addEventListener("click", () => {
+    transcribeDialogue().catch((e) => log(`Unhandled error: ${e}`));
 });
 
 saveTokenButton.addEventListener("click", () => {
