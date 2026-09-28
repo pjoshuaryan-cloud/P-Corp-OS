@@ -44,6 +44,22 @@ public final class PostClient: ObservableObject {
     public func fetch() async {
         isLoading = true
         errorMessage = nil
+        await refreshJobsList()
+        isLoading = false
+    }
+
+    /// Same real fetch as fetch(), but never touches isLoading -- for the
+    /// polling loop's own idle-cycle refresh (no job currently active, just
+    /// checking whether the desktop app created/restarted one). Using
+    /// fetch() there was flipping isLoading true on every poll tick even
+    /// though nothing was actually loading from the user's perspective,
+    /// which drove PostView's SkeletonList to flash back in every cycle --
+    /// a real, reported UI bug, not a stylistic preference.
+    public func refreshJobsQuietly() async {
+        await refreshJobsList()
+    }
+
+    private func refreshJobsList() async {
         do {
             let (data, _) = try await URLSession.shared.data(from: url("/post/jobs"))
             struct JobsResponse: Decodable { let jobs: [PostJob] }
@@ -51,7 +67,6 @@ public final class PostClient: ObservableObject {
         } catch {
             errorMessage = "Couldn't reach the backend — is it running?"
         }
-        isLoading = false
     }
 
     /// Single-job poll target, used while any job isActive -- returns

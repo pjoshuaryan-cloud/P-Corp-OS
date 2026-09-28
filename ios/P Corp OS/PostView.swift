@@ -110,7 +110,7 @@ struct PostView: View {
                         _ = await client.pollJob(id: job.id)
                     }
                 } else {
-                    await client.fetch()
+                    await client.refreshJobsQuietly()
                 }
             }
         }
