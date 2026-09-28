@@ -15,13 +15,19 @@
  * every other POST phase (/start, /analyze-media). Nothing here runs
  * automatically.
  *
- * Never touches creative color grading, other effects, music, or
- * transitions -- the created sequence is an empty, correctly-named
- * starting point only. Phase 5 (2026-09-26) adds Project-panel color
- * LABELING only (a real, documented, non-destructive organizational
- * flag -- never a Lumetri/grading change) for files P Corp OS's own
- * media analysis flagged as corrupt, exposure-outlier, Log/HDR, or
- * color-cast.
+ * Never touches other effects, music, or transitions -- the created
+ * sequence is an empty, correctly-named starting point only. Phase 5
+ * (2026-09-26) adds Project-panel color LABELING (a real, documented,
+ * non-destructive organizational flag, never a grading change) for
+ * files P Corp OS's own media analysis flagged as corrupt, exposure-
+ * outlier, Log/HDR, or color-cast. Phase 5 (2026-09-28) separately adds
+ * "Apply Starting Exposure" -- its own explicit action, confirmed via a
+ * real hands-on spike that AE.ADBE Lumetri genuinely inserts onto a bin
+ * clip's video component chain -- setting a real, capped (+/-1 stop),
+ * disclosed-as-rough Exposure nudge on clips flagged over/underexposed.
+ * This is the one real grading value this plugin ever sets; the exact
+ * stops value is computed once, server-side (post_media.py's
+ * compute_exposure_nudge_stops), never re-derived here.
  *
  * Phase 6 (2026-09-27) adds "Transcribe Dialogue" -- a second, separate
  * manual action (never bundled into "Prepare POST Project", since
@@ -45,6 +51,7 @@ const output = document.getElementById("output");
 const runButton = document.getElementById("runButton");
 const transcribeButton = document.getElementById("transcribeButton");
 const smartSelectsButton = document.getElementById("smartSelectsButton");
+const exposureButton = document.getElementById("exposureButton");
 const settingsButton = document.getElementById("settingsButton");
 const tokenRow = document.getElementById("tokenRow");
 const tokenInput = document.getElementById("tokenInput");
@@ -592,6 +599,156 @@ async function suggestSmartSelects() {
 
 smartSelectsButton.addEventListener("click", () => {
     suggestSmartSelects().catch((e) => log(`Unhandled error: ${e}`));
+});
+
+/**
+ * Phase 5 (2026-09-28) -- "Apply Starting Exposure", built directly from
+ * the confirmed Lumetri spike below: AE.ADBE Lumetri genuinely inserts
+ * onto a bin clip's video component chain, and a real "Exposure" param
+ * exists on it. The real per-clip nudge value (a rough, capped +/-1
+ * stop heuristic -- see post_media.py's compute_exposure_nudge_stops)
+ * is computed once, server-side, from Phase 5's own real avg_luma --
+ * this function only executes it, it never re-derives the value.
+ *
+ * The one real "Exposure" param index confirmed during the spike
+ * (index 19 on this install) is deliberately NOT hardcoded here --
+ * looked up live by displayName every run instead, same "ask Premiere
+ * itself, don't guess twice" discipline the spike itself was built on,
+ * since a param layout could in principle differ by Premiere version.
+ *
+ * Deliberately its OWN separate, explicit action -- never bundled into
+ * "Prepare POST Project" or run automatically -- this is the first
+ * time this app sets a real grading value rather than only organizing/
+ * flagging clips, so it gets its own deliberate button and its own
+ * disclosed UI copy, matching every other capability's own "explicit
+ * gate" discipline in this plugin. Skips any clip that already has a
+ * Lumetri instance rather than stacking a second one on a re-run.
+ */
+async function applyStartingExposure() {
+    const token = ensureToken();
+    if (!token) {
+        reset();
+        log("Paste your P Corp OS auth token above and click Save first.");
+        return;
+    }
+
+    exposureButton.disabled = true;
+    reset();
+
+    try {
+        log("Getting the active project…");
+        const project = await ppro.Project.getActiveProject();
+        if (!project) {
+            log("No project is currently open in Premiere.");
+            return;
+        }
+
+        log("Looking up the matching P Corp OS job…");
+        const { jobs } = await apiGet("/post/jobs?status=premiere_project_created", token);
+        const job = jobs.find((j) => j.premiere_project_path === project.path);
+        if (!job) {
+            log('Couldn\'t find a P Corp OS job matching this open project. Run "Prepare POST Project" for this shoot first.');
+            return;
+        }
+        log(`Found #${job.id} "${job.shoot_name}".`);
+
+        log("Fetching file info (exposure analysis)…");
+        const prep = await apiGet(`/post/jobs/${job.id}/premiere-prep`, token);
+        const fileByName = {};
+        for (const file of prep.files) {
+            fileByName[file.relative_path] = file;
+        }
+
+        const clips = await collectAllClips(project);
+        let adjustedCount = 0;
+        let alreadyHadLumetriCount = 0;
+        let skippedCount = 0;
+
+        for (const clip of clips) {
+            if (await clip.isSequence()) continue;
+            const name = typeof clip.name === "function" ? await clip.name() : clip.name;
+            const file = fileByName[name];
+            if (!file || !file.exposure_nudge_stops) {
+                skippedCount += 1;
+                continue;
+            }
+
+            const chain = await clip.getComponentChain(ppro.Constants.MediaType.VIDEO);
+            if (!chain) {
+                log(`"${name}": no video component chain -- skipping.`);
+                skippedCount += 1;
+                continue;
+            }
+
+            try {
+                const existingCount = await chain.getComponentCount();
+                let lumetriIndex = -1;
+                for (let i = 0; i < existingCount; i++) {
+                    const existing = await chain.getComponentAtIndex(i);
+                    if ((await existing.getMatchName()) === "AE.ADBE Lumetri") {
+                        lumetriIndex = i;
+                        break;
+                    }
+                }
+
+                if (lumetriIndex === -1) {
+                    const newComponent = await ppro.VideoFilterFactory.createComponent("AE.ADBE Lumetri");
+                    await project.lockedAccess(async () => {
+                        await project.executeTransaction((compoundAction) => {
+                            compoundAction.addAction(chain.createInsertComponentAction(newComponent, existingCount));
+                        }, "P Corp POST -- Add Lumetri Color");
+                    });
+                    lumetriIndex = existingCount;
+                } else {
+                    alreadyHadLumetriCount += 1;
+                }
+
+                // Re-fetch the chain after any insert -- the freshly-
+                // created component reference isn't guaranteed to be the
+                // live, inserted instance's own param-bearing object.
+                const chainNow = await clip.getComponentChain(ppro.Constants.MediaType.VIDEO);
+                const lumetriComponent = await chainNow.getComponentAtIndex(lumetriIndex);
+
+                const paramCount = await lumetriComponent.getParamCount();
+                let exposureParam = null;
+                for (let p = 0; p < paramCount; p++) {
+                    const param = await lumetriComponent.getParam(p);
+                    if (param.displayName === "Exposure") {
+                        exposureParam = param;
+                        break;
+                    }
+                }
+                if (!exposureParam) {
+                    log(`"${name}": couldn't find a real "Exposure" param on the Lumetri instance -- skipping.`);
+                    skippedCount += 1;
+                    continue;
+                }
+
+                const keyframe = exposureParam.createKeyframe(file.exposure_nudge_stops);
+                await project.lockedAccess(async () => {
+                    await project.executeTransaction((compoundAction) => {
+                        compoundAction.addAction(exposureParam.createSetValueAction(keyframe, true));
+                    }, "P Corp POST -- Set starting Exposure");
+                });
+
+                log(`"${name}": set Exposure to ${file.exposure_nudge_stops} stop(s) `
+                    + `(${file.exposure_flag}, real avg luma ${file.avg_luma}).`);
+                adjustedCount += 1;
+            } catch (e) {
+                log(`Warning: exposure adjustment failed for "${name}": ${e}`);
+            }
+        }
+
+        log(`Done. ${adjustedCount} clip(s) adjusted (${alreadyHadLumetriCount} already had Lumetri and were reused), ${skippedCount} skipped (no flag or no video).`);
+    } catch (e) {
+        log(`Failed: ${e.message || e}`);
+    } finally {
+        exposureButton.disabled = false;
+    }
+}
+
+exposureButton.addEventListener("click", () => {
+    applyStartingExposure().catch((e) => log(`Unhandled error: ${e}`));
 });
 
 saveTokenButton.addEventListener("click", () => {

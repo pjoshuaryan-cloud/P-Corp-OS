@@ -185,7 +185,7 @@ from app.trade_proposals_db import (
     resolve_proposal,
 )
 from app.post_db import init_post_db, list_post_jobs, get_post_job, get_post_job_progress, create_post_job, update_post_job_status, delete_post_job, list_post_job_files, list_post_job_file_metadata, update_post_job_premiere_project, list_post_job_file_proxies, create_or_replace_post_job_file_transcript, get_post_job_file_transcript, list_post_job_file_transcripts, create_or_replace_post_job_file_visual_analysis, get_post_job_file_visual_analysis, DELIVERABLE_FORMATS, RESOLUTIONS, FRAME_RATES
-from app.post_media import compute_media_report, compute_proxy_recommendations, trigger_media_analysis, trigger_proxy_generation, extract_representative_frames
+from app.post_media import compute_media_report, compute_proxy_recommendations, trigger_media_analysis, trigger_proxy_generation, extract_representative_frames, compute_exposure_nudge_stops
 from app.post_vision_agent import analyze_frames
 from app.post_transcripts import summarize_transcript, generate_srt, format_readable_transcript, find_smart_select_candidates
 from app.post_sources import list_source_volumes
@@ -2770,6 +2770,8 @@ async def post_job_premiere_prep(job_id: int, request: Request, _: None = Depend
                 "color_profile_guess": (metadata_by_file_id.get(f["id"]) or {}).get("color_profile_guess"),
                 "exposure_flag": (metadata_by_file_id.get(f["id"]) or {}).get("exposure_flag"),
                 "color_cast_flag": (metadata_by_file_id.get(f["id"]) or {}).get("color_cast_flag"),
+                "avg_luma": (metadata_by_file_id.get(f["id"]) or {}).get("avg_luma"),
+                "exposure_nudge_stops": compute_exposure_nudge_stops((metadata_by_file_id.get(f["id"]) or {}).get("avg_luma")),
             }
             for f in files
             if f["status"] == "verified"

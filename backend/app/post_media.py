@@ -336,6 +336,38 @@ def classify_exposure(avg_luma: float | None) -> str | None:
     return "normal"
 
 
+# A rough, disclosed heuristic for a Premiere Lumetri "Exposure" starting
+# nudge (real stops parameter, confirmed via a live spike against Josh's
+# installed Premiere -- see project_pcorp_post_division.md). NOT a
+# calibrated gamma-to-linear-light conversion -- this app has no real
+# color-managed pixel processing to do that correctly, so the scaling
+# below is deliberately simple and stated as an adjustable assumption,
+# same posture as UNDEREXPOSED_LUMA_THRESHOLD/SLOW_MOTION_FPS_THRESHOLD.
+# Scales from 0 stops right at the classification threshold up to
+# EXPOSURE_NUDGE_MAX_STOPS at the extreme (pure black / pure white) --
+# always a mild starting point for Josh's own eye, never a claimed fix.
+EXPOSURE_NUDGE_MAX_STOPS = 1.0
+
+
+def compute_exposure_nudge_stops(avg_luma: float | None) -> float | None:
+    """None when there's no real luma data at all (audio/stills/corrupt
+    files). 0.0 when the clip already classifies 'normal' -- no
+    correction needed. A signed stops value, scaled by how far PAST the
+    underexposed/overexposed threshold the real avg_luma sits, clamped
+    to +/-EXPOSURE_NUDGE_MAX_STOPS -- positive brightens, negative
+    darkens, matching Lumetri's own real Exposure parameter sign."""
+    if avg_luma is None:
+        return None
+    if avg_luma < UNDEREXPOSED_LUMA_THRESHOLD:
+        overshoot = UNDEREXPOSED_LUMA_THRESHOLD - avg_luma
+        return round(min(1.0, overshoot / UNDEREXPOSED_LUMA_THRESHOLD) * EXPOSURE_NUDGE_MAX_STOPS, 2)
+    if avg_luma > OVEREXPOSED_LUMA_THRESHOLD:
+        max_overshoot = 255.0 - OVEREXPOSED_LUMA_THRESHOLD
+        overshoot = avg_luma - OVEREXPOSED_LUMA_THRESHOLD
+        return round(-min(1.0, overshoot / max_overshoot) * EXPOSURE_NUDGE_MAX_STOPS, 2)
+    return 0.0
+
+
 def classify_color_cast(avg_chroma_u: float | None, avg_chroma_v: float | None) -> str | None:
     """'warm' / 'cool' / 'neutral' / None -- an explicitly ROUGH
     directional signal from real YUV chroma averages (U leans blue/
