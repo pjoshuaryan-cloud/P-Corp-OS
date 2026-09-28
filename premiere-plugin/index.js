@@ -44,6 +44,7 @@
 const output = document.getElementById("output");
 const runButton = document.getElementById("runButton");
 const transcribeButton = document.getElementById("transcribeButton");
+const smartSelectsButton = document.getElementById("smartSelectsButton");
 const settingsButton = document.getElementById("settingsButton");
 const tokenRow = document.getElementById("tokenRow");
 const tokenInput = document.getElementById("tokenInput");
@@ -480,6 +481,117 @@ runButton.addEventListener("click", () => {
 
 transcribeButton.addEventListener("click", () => {
     transcribeDialogue().catch((e) => log(`Unhandled error: ${e}`));
+});
+
+/**
+ * Phase 8a (2026-09-27) -- "Suggest Smart Selects". Real marker
+ * creation confirmed working via a hands-on spike against Josh's real
+ * Premiere (ppro.Markers/ppro.TickTime, independently read back after
+ * writing to confirm it actually landed). For each clip in the active
+ * project that already has a real stored transcript, fetches the real
+ * candidate soundbites (post_transcripts.py's own deterministic
+ * sentence-quality derivation) and adds one real marker per candidate,
+ * batched into ONE executeTransaction() per clip -- the exact same
+ * "never call executeTransaction once per item in a loop" fix Phase
+ * 3's own bin-creation bug already taught this codebase. Suggestions
+ * only: never places anything on a timeline, never removes/changes
+ * existing markers, never decides which take is "the" take.
+ */
+async function suggestSmartSelects() {
+    const token = ensureToken();
+    if (!token) {
+        reset();
+        log("Paste your P Corp OS auth token above and click Save first.");
+        return;
+    }
+
+    smartSelectsButton.disabled = true;
+    reset();
+
+    try {
+        log("Getting the active project…");
+        const project = await ppro.Project.getActiveProject();
+        if (!project) {
+            log("No project is currently open in Premiere.");
+            return;
+        }
+
+        log("Looking up the matching P Corp OS job…");
+        const { jobs } = await apiGet("/post/jobs?status=premiere_project_created", token);
+        const job = jobs.find((j) => j.premiere_project_path === project.path);
+        if (!job) {
+            log('Couldn\'t find a P Corp OS job matching this open project. Run "Prepare POST Project" for this shoot first.');
+            return;
+        }
+        log(`Found #${job.id} "${job.shoot_name}".`);
+
+        log("Fetching file info…");
+        const prep = await apiGet(`/post/jobs/${job.id}/premiere-prep`, token);
+        const fileByName = {};
+        for (const file of prep.files) {
+            fileByName[file.relative_path] = file;
+        }
+
+        const clips = await collectAllClips(project);
+        let clipsMarked = 0;
+        let totalMarkers = 0;
+        let skippedCount = 0;
+
+        for (const clip of clips) {
+            if (await clip.isSequence()) continue;
+            const name = typeof clip.name === "function" ? await clip.name() : clip.name;
+            const file = fileByName[name];
+            if (!file) {
+                skippedCount += 1;
+                continue;
+            }
+
+            let candidates;
+            try {
+                const result = await apiGet(`/post/jobs/${job.id}/files/${file.file_id}/smart-selects`, token);
+                candidates = result.candidates;
+            } catch (e) {
+                log(`"${name}" has no transcript yet -- run Transcribe Dialogue first. Skipping.`);
+                skippedCount += 1;
+                continue;
+            }
+            if (!candidates || candidates.length === 0) {
+                log(`"${name}" has a transcript but no clean-sentence candidates found.`);
+                continue;
+            }
+
+            try {
+                const markersContainer = await ppro.Markers.getMarkers(clip);
+                await project.lockedAccess(async () => {
+                    await project.executeTransaction((compoundAction) => {
+                        for (const candidate of candidates) {
+                            const startTime = ppro.TickTime.createWithSeconds(candidate.start);
+                            const duration = ppro.TickTime.createWithSeconds(candidate.duration);
+                            const action = markersContainer.createAddMarkerAction(
+                                "Smart Select", "Comment", startTime, duration, candidate.text
+                            );
+                            compoundAction.addAction(action);
+                        }
+                    });
+                });
+                log(`Added ${candidates.length} marker(s) to "${name}".`);
+                clipsMarked += 1;
+                totalMarkers += candidates.length;
+            } catch (e) {
+                log(`Warning: couldn't add markers to "${name}": ${e}`);
+            }
+        }
+
+        log(`Done. ${totalMarkers} marker(s) added across ${clipsMarked} clip(s), ${skippedCount} clip(s) skipped.`);
+    } catch (e) {
+        log(`Failed: ${e.message || e}`);
+    } finally {
+        smartSelectsButton.disabled = false;
+    }
+}
+
+smartSelectsButton.addEventListener("click", () => {
+    suggestSmartSelects().catch((e) => log(`Unhandled error: ${e}`));
 });
 
 saveTokenButton.addEventListener("click", () => {

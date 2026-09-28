@@ -95,6 +95,54 @@ def _format_srt_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{ms:03d}"
 
 
+def find_smart_select_candidates(transcript_json: dict, min_words: int = 5) -> list[dict]:
+    """Real, complete sentences (bounded by real `eos` flags from
+    Premiere's own transcription) with no profanity/filler tags and at
+    least `min_words` real words -- a stated, adjustable quality bar,
+    never a claim about which moment is creatively "the best" (that
+    stays Josh's own judgment, matching this app's own "generate
+    suggestions, never decide the final edit" discipline). Confidence
+    is the real mean of each word's own confidence score, not
+    estimated. Returns [{start, duration, text, confidence, word_count}, ...]."""
+    candidates: list[dict] = []
+    sentence_words: list[dict] = []
+
+    def flush() -> None:
+        if not sentence_words:
+            return
+        real_words = [w for w in sentence_words if w.get("type") == "word"]
+        has_disqualifying_tag = any(
+            tag in (w.get("tags") or []) for w in sentence_words for tag in ("profanity", "filler")
+        )
+        if len(real_words) >= min_words and not has_disqualifying_tag:
+            first, last = sentence_words[0], sentence_words[-1]
+            text_parts: list[str] = []
+            for w in sentence_words:
+                if w.get("type") == "punctuation" or not text_parts:
+                    text_parts.append(w.get("text", ""))
+                else:
+                    text_parts.append(f" {w.get('text', '')}")
+            confidences = [w.get("confidence") for w in sentence_words if w.get("confidence") is not None]
+            candidates.append({
+                "start": first["start"],
+                "duration": round((last["start"] + last["duration"]) - first["start"], 3),
+                "text": "".join(text_parts),
+                "confidence": round(sum(confidences) / len(confidences), 3) if confidences else None,
+                "word_count": len(real_words),
+            })
+
+    for segment in transcript_json.get("segments", []):
+        for word in segment.get("words", []):
+            sentence_words.append(word)
+            if word.get("eos"):
+                flush()
+                sentence_words = []
+        flush()  # a segment can end mid-sentence (no eos word) -- don't drop it
+        sentence_words = []
+
+    return candidates
+
+
 def generate_srt(transcript_json: dict, max_words_per_caption: int = 8, max_caption_seconds: float = 4.0) -> str:
     """Re-chunks the real word-level timing into readable caption
     blocks -- a whole Segment can span many seconds/a full sentence,

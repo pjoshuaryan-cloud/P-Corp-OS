@@ -55,7 +55,7 @@
 </head>
 <body>
     <h3>P Corp POST</h3>
-    <p class="hint">Prepares the next ingested-and-analyzed POST job as a real Premiere project: bins, imported media, and an empty starting sequence. "Transcribe Dialogue" runs Premiere's own native transcription on clips with audio in the currently open project and saves the result back to P Corp OS. Never touches color grading, effects, music, or transitions.</p>
+    <p class="hint">Prepares the next ingested-and-analyzed POST job as a real Premiere project: bins, imported media, and an empty starting sequence. "Transcribe Dialogue" runs Premiere's own native transcription on clips with audio. "Suggest Smart Selects" adds real markers at clean, complete-sentence soundbites found in an already-transcribed clip -- suggestions only, never an automated cut. Never touches color grading, effects, music, or transitions.</p>
 
     <div id="tokenRow">
         <input id="tokenInput" type="text" placeholder="Paste your P Corp OS auth token here" />
@@ -64,6 +64,7 @@
 
     <button id="runButton">Prepare POST Project</button>
     <button id="transcribeButton" class="secondary">Transcribe Dialogue</button>
+    <button id="smartSelectsButton" class="secondary">Suggest Smart Selects</button>
     <button id="settingsButton" class="secondary">Change Token</button>
     <pre id="output">Ready.</pre>
     <script src="./index.js"></script>

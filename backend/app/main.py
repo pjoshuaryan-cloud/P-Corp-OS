@@ -184,9 +184,10 @@ from app.trade_proposals_db import (
     record_execution_result,
     resolve_proposal,
 )
-from app.post_db import init_post_db, list_post_jobs, get_post_job, get_post_job_progress, create_post_job, update_post_job_status, delete_post_job, list_post_job_files, list_post_job_file_metadata, update_post_job_premiere_project, list_post_job_file_proxies, create_or_replace_post_job_file_transcript, get_post_job_file_transcript, list_post_job_file_transcripts, DELIVERABLE_FORMATS, RESOLUTIONS, FRAME_RATES
-from app.post_media import compute_media_report, compute_proxy_recommendations, trigger_media_analysis, trigger_proxy_generation
-from app.post_transcripts import summarize_transcript, generate_srt, format_readable_transcript
+from app.post_db import init_post_db, list_post_jobs, get_post_job, get_post_job_progress, create_post_job, update_post_job_status, delete_post_job, list_post_job_files, list_post_job_file_metadata, update_post_job_premiere_project, list_post_job_file_proxies, create_or_replace_post_job_file_transcript, get_post_job_file_transcript, list_post_job_file_transcripts, create_or_replace_post_job_file_visual_analysis, get_post_job_file_visual_analysis, DELIVERABLE_FORMATS, RESOLUTIONS, FRAME_RATES
+from app.post_media import compute_media_report, compute_proxy_recommendations, trigger_media_analysis, trigger_proxy_generation, extract_representative_frames
+from app.post_vision_agent import analyze_frames
+from app.post_transcripts import summarize_transcript, generate_srt, format_readable_transcript, find_smart_select_candidates
 from app.post_sources import list_source_volumes
 from app.post_profiles import POST_PROFILES, compute_destination_root
 from app.post_ingest import _post_ingest_loop
@@ -1063,6 +1064,10 @@ _SLOW_ROUTE_PATHS = frozenset({
 _SLOW_VENTURE_ROUTE_RE = re.compile(
     r"^/ventures/\d+/(validate|build|financial-analysis|marketing-content|operations-sop|automation-scan)$"
 )
+# POST Phase 8b's own visual-analysis route -- a real Claude vision call,
+# same reasoning as the venture routes above, with two dynamic path
+# segments (job_id, file_id) instead of one.
+_SLOW_POST_VISION_ROUTE_RE = re.compile(r"^/post/jobs/\d+/files/\d+/visual-analysis$")
 
 
 def _is_slow_route(method: str, path: str) -> bool:
@@ -1077,7 +1082,11 @@ def _is_slow_route(method: str, path: str) -> bool:
     # safe, not just a narrow fix for this one collision.
     if method != "POST":
         return False
-    return path in _SLOW_ROUTE_PATHS or bool(_SLOW_VENTURE_ROUTE_RE.match(path))
+    return (
+        path in _SLOW_ROUTE_PATHS
+        or bool(_SLOW_VENTURE_ROUTE_RE.match(path))
+        or bool(_SLOW_POST_VISION_ROUTE_RE.match(path))
+    )
 
 
 @app.middleware("http")
@@ -2836,6 +2845,73 @@ async def post_job_file_transcript_get(job_id: int, file_id: int, request: Reque
         raise HTTPException(status_code=404, detail="No transcript stored for this file yet.")
     transcript_json = json.loads(row["transcript_json"])
     return {**row, "transcript_json": transcript_json, "readable_text": format_readable_transcript(transcript_json)}
+
+
+@app.get("/post/jobs/{job_id}/files/{file_id}/smart-selects")
+async def post_job_file_smart_selects_get(job_id: int, file_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Phase 8a -- real, deterministic candidate soundbites derived
+    from the file's already-stored real transcript (clean, complete
+    sentences with no profanity/filler tags). Never generates anything
+    new -- 404s with the same message the transcript route already uses
+    if nothing's been transcribed yet."""
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    row = await get_post_job_file_transcript(file_id, postgres_conn)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No transcript stored for this file yet.")
+    transcript_json = json.loads(row["transcript_json"])
+    return {"candidates": find_smart_select_candidates(transcript_json)}
+
+
+@app.post("/post/jobs/{job_id}/files/{file_id}/visual-analysis")
+async def post_job_file_visual_analysis_create(job_id: int, file_id: int, _: None = Depends(verify_token)) -> dict:
+    """Phase 8b -- a real Claude vision call, so this manages its own
+    short-lived pooled connection checkouts rather than holding one
+    through the slow API call, same discipline as every other real
+    Claude-calling route in this app (e.g. ventures_validate). Desktop-
+    only trigger by convention (real API cost per run), never Frank-
+    reachable -- no tool exists for this anywhere in post_tools.py."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
+    async with _pooled_postgres_conn() as postgres_conn:
+        files = await list_post_job_files(job_id, postgres_conn)
+        file_row = next((f for f in files if f["id"] == file_id), None)
+        if file_row is None:
+            raise HTTPException(status_code=404, detail=f"No file with id {file_id} on job {job_id}")
+        metadata_by_file_id = {m["file_id"]: m for m in await list_post_job_file_metadata(job_id, postgres_conn)}
+    meta = metadata_by_file_id.get(file_id) or {}
+
+    frame_paths = await extract_representative_frames(file_row["destination_path"], meta.get("duration_seconds"))
+    if not frame_paths:
+        raise HTTPException(status_code=500, detail="Couldn't extract any real frames from this file.")
+    try:
+        image_blocks = [
+            build_content_block("image/jpeg", Path(p).name, Path(p).read_bytes()) for p in frame_paths
+        ]
+        client = AsyncAnthropic(api_key=api_key)
+        analysis_text = await analyze_frames(client, image_blocks, file_row["relative_path"])
+    finally:
+        for p in frame_paths:
+            try:
+                Path(p).unlink()
+            except OSError:
+                pass
+
+    async with _pooled_postgres_conn() as postgres_conn:
+        analysis_id = await create_or_replace_post_job_file_visual_analysis(
+            file_id, analysis_text, len(frame_paths), postgres_conn,
+        )
+        await record_tool_call("post_job_visual_analysis_create_ui", {"job_id": job_id, "file_id": file_id}, "ok", postgres_conn)
+    return {"id": analysis_id, "analysis_text": analysis_text, "frame_count": len(frame_paths)}
+
+
+@app.get("/post/jobs/{job_id}/files/{file_id}/visual-analysis")
+async def post_job_file_visual_analysis_get(job_id: int, file_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    row = await get_post_job_file_visual_analysis(file_id, postgres_conn)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No visual analysis stored for this file yet.")
+    return row
 
 
 @app.get("/personal/dashboard")

@@ -214,4 +214,51 @@ public final class PostClient: ObservableObject {
             return nil
         }
     }
+
+    // MARK: - Phase 8a: dialogue-driven smart selects
+
+    /// Real, deterministic candidate soundbites derived from an already-
+    /// stored transcript -- fetched on demand for display only. Real
+    /// marker creation in Premiere happens entirely in the plugin
+    /// ("Suggest Smart Selects"), never from this client.
+    public func fetchSmartSelects(jobId: Int, fileId: Int) async -> [SmartSelectCandidate] {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url("/post/jobs/\(jobId)/files/\(fileId)/smart-selects"))
+            struct CandidatesResponse: Decodable { let candidates: [SmartSelectCandidate] }
+            return try JSONDecoder().decode(CandidatesResponse.self, from: data).candidates
+        } catch {
+            return []
+        }
+    }
+
+    // MARK: - Phase 8b: visual analysis
+
+    public func fetchVisualAnalysis(jobId: Int, fileId: Int) async -> VisualAnalysis? {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url("/post/jobs/\(jobId)/files/\(fileId)/visual-analysis"))
+            return try JSONDecoder().decode(VisualAnalysis.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    /// A real Claude API call per run -- unlike every other POST
+    /// capability, this costs real money and is desktop-triggered only
+    /// by convention (never automatic, never Frank-reachable).
+    public func analyzeFrames(jobId: Int, fileId: Int) async -> VisualAnalysis? {
+        var request = URLRequest(url: url("/post/jobs/\(jobId)/files/\(fileId)/visual-analysis"))
+        request.httpMethod = "POST"
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                errorMessage = (try? JSONDecoder().decode(ErrorDetail.self, from: data))?.detail
+                    ?? "Request failed (\(http.statusCode))."
+                return nil
+            }
+            return try JSONDecoder().decode(VisualAnalysis.self, from: data)
+        } catch {
+            errorMessage = "Couldn't reach the backend — is it running?"
+            return nil
+        }
+    }
 }

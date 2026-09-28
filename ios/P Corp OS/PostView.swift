@@ -211,6 +211,8 @@ private struct MediaReportView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var transcriptSheetFile: PostJobFile?
+    @State private var smartSelectsSheetFile: PostJobFile?
+    @State private var visualAnalysisSheetFile: PostJobFile?
 
     var body: some View {
         NavigationStack {
@@ -323,7 +325,7 @@ private struct MediaReportView: View {
 
                     Divider().overlay(theme.divider)
                     sectionLabel("DIALOGUE")
-                    Text("Transcribed by Premiere's own native transcription -- never generated or verified for accuracy by P Corp OS.")
+                    Text("Transcribed by Premiere's own native transcription -- never generated or verified for accuracy by P Corp OS. \"Smart Selects\" are real, deterministic clean-sentence candidates, never a claim about which take is creatively best.")
                         .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
                     let dialogue = report.dialogueSummary
                     Text("\(dialogue.filesWithTranscripts) transcribed, \(dialogue.filesPendingTranscription) pending"
@@ -331,7 +333,23 @@ private struct MediaReportView: View {
                          + (dialogue.filesFlaggedFillerWords > 0 ? ", \(dialogue.filesFlaggedFillerWords) flagged for filler words" : ""))
                         .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
                     ForEach(files.filter { $0.status == "verified" }) { file in
-                        Button(file.relativePath) { transcriptSheetFile = file }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(file.relativePath).font(PCorpFont.body(11.5)).foregroundStyle(theme.textSecondary)
+                            HStack(spacing: 14) {
+                                Button("Transcript") { transcriptSheetFile = file }
+                                    .font(PCorpFont.body(10.5)).foregroundStyle(theme.statusHot)
+                                Button("Smart Selects") { smartSelectsSheetFile = file }
+                                    .font(PCorpFont.body(10.5)).foregroundStyle(theme.statusHot)
+                            }
+                        }
+                    }
+
+                    Divider().overlay(theme.divider)
+                    sectionLabel("VISUAL ANALYSIS")
+                    Text("Claude's real, honest read of a handful of sampled frames per file -- never a full-motion or frame-by-frame analysis, and never a claim about which take is best. Costs a real API call per run, unlike every other report on this page.")
+                        .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                    ForEach(files.filter { $0.status == "verified" }) { file in
+                        Button(file.relativePath) { visualAnalysisSheetFile = file }
                             .font(PCorpFont.body(11.5))
                             .foregroundStyle(theme.statusHot)
                     }
@@ -348,6 +366,12 @@ private struct MediaReportView: View {
             }
             .sheet(item: $transcriptSheetFile) { file in
                 TranscriptView(jobId: jobId, file: file, client: client)
+            }
+            .sheet(item: $smartSelectsSheetFile) { file in
+                SmartSelectsView(jobId: jobId, file: file, client: client)
+            }
+            .sheet(item: $visualAnalysisSheetFile) { file in
+                VisualAnalysisView(jobId: jobId, file: file, client: client)
             }
         }
     }
@@ -475,5 +499,132 @@ private struct TranscriptView: View {
                 isLoading = false
             }
         }
+    }
+}
+
+/// Phase 8a (2026-09-27) -- iOS port of desktop's own SmartSelectsView.
+/// Real, deterministic candidate soundbites derived from an already-
+/// stored transcript. Display only -- real marker creation in Premiere
+/// happens entirely in the plugin's own "Suggest Smart Selects" button.
+private struct SmartSelectsView: View {
+    let jobId: Int
+    let file: PostJobFile
+    let client: PostClient
+    @Environment(\.appTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var candidates: [SmartSelectCandidate] = []
+    @State private var isLoading = true
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Real, deterministic clean-sentence candidates -- never a claim about which moment is creatively best. Use \"Suggest Smart Selects\" in the Premiere plugin to add these as real markers.")
+                        .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+
+                    if isLoading {
+                        ProgressView().controlSize(.small)
+                    } else if candidates.isEmpty {
+                        Text("No candidates yet -- this file may not have a transcript, or has no clean, complete sentences long enough to qualify.")
+                            .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                    } else {
+                        ForEach(candidates) { candidate in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(String(format: "%.1fs (%.1fs long)", candidate.start, candidate.duration))
+                                    .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                                Text("\u{201C}\(candidate.text)\u{201D}")
+                                    .font(PCorpFont.body(12.5)).foregroundStyle(theme.textSecondary)
+                            }
+                            .padding(8)
+                            .cardSurface(radius: 6)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .background(theme.background)
+            .navigationTitle(file.relativePath)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task {
+                candidates = await client.fetchSmartSelects(jobId: jobId, fileId: file.id)
+                isLoading = false
+            }
+        }
+    }
+}
+
+/// Phase 8b (2026-09-27) -- iOS port of desktop's own VisualAnalysisView.
+/// Real Claude vision judgment on sampled frames -- a genuine
+/// architectural shift from every other POST report (all deterministic/
+/// local). "Analyze Frames" costs a real API call per run.
+private struct VisualAnalysisView: View {
+    let jobId: Int
+    let file: PostJobFile
+    let client: PostClient
+    @Environment(\.appTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var analysis: VisualAnalysis?
+    @State private var isLoading = true
+    @State private var isAnalyzing = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Claude's real, honest read of a handful of sampled frames -- not full-motion, not a claim about which take is best. Costs a real API call each time you run it.")
+                        .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                    if let error = client.errorMessage {
+                        Text(error).font(PCorpFont.body(11)).foregroundStyle(theme.statusRisk)
+                    }
+
+                    if isLoading {
+                        ProgressView().controlSize(.small)
+                    } else if let analysis {
+                        Text("\(analysis.frameCount) frame(s) sampled.")
+                            .font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
+                        Divider().overlay(theme.divider)
+                        Text(analysis.analysisText)
+                            .font(PCorpFont.body(12.5)).foregroundStyle(theme.textSecondary)
+                    } else {
+                        Text("No visual analysis for this file yet.")
+                            .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                    }
+
+                    AsyncButton(action: runAnalysis) {
+                        Text(analysis == nil ? "Analyze Frames" : "Re-analyze Frames")
+                    }
+                    .buttonStyle(.actionFilled)
+                    .disabled(isAnalyzing)
+                }
+                .padding(16)
+            }
+            .background(theme.background)
+            .navigationTitle(file.relativePath)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task {
+                analysis = await client.fetchVisualAnalysis(jobId: jobId, fileId: file.id)
+                isLoading = false
+            }
+        }
+    }
+
+    private func runAnalysis() async {
+        isAnalyzing = true
+        if let result = await client.analyzeFrames(jobId: jobId, fileId: file.id) {
+            analysis = result
+        }
+        isAnalyzing = false
     }
 }

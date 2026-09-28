@@ -640,3 +640,51 @@ async def run_proxy_generation(job_id: int, postgres_conn: Any = None) -> None:
         else:
             await mark_post_job_file_proxy_complete(row["id"], str(output_path), postgres_conn=postgres_conn)
     await update_post_job_proxies_generated(job_id, postgres_conn=postgres_conn)
+
+
+# ------------------------------------------------------------ visual analysis (Phase 8b)
+
+async def extract_representative_frames(source_path: str, duration_seconds: float | None, count: int = 4) -> list[str]:
+    """Real ffmpeg `-vframes 1` calls at N evenly-spaced timestamps
+    across the clip's own real duration (inset slightly from the very
+    start/end, which are often black or incomplete frames) -- a stated,
+    adjustable sampling density, not a claim about which frames are
+    most representative. Writes real temp JPEG files and returns their
+    paths; the caller is responsible for reading and deleting them.
+    Never raises -- a failed extraction at one timestamp is skipped,
+    matching probe_file's own fail-soft discipline, so this returns
+    whatever frames DID extract successfully (possibly fewer than
+    `count`, possibly empty)."""
+    if duration_seconds and duration_seconds > 0:
+        inset = min(duration_seconds * 0.05, 1.0)
+        usable = max(duration_seconds - 2 * inset, 0.1)
+        timestamps = (
+            [inset + usable * i / (count - 1) for i in range(count)] if count > 1 else [duration_seconds / 2]
+        )
+    else:
+        timestamps = [0.0]
+
+    frame_paths: list[str] = []
+    for ts in timestamps:
+        fd, out_path = tempfile.mkstemp(prefix="post_frame_", suffix=".jpg")
+        os.close(fd)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                FFMPEG_PATH, "-y", "-ss", str(ts), "-i", source_path, "-vframes", "1", "-q:v", "3", out_path,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
+            continue
+        await proc.communicate()
+        if proc.returncode == 0 and Path(out_path).stat().st_size > 0:
+            frame_paths.append(out_path)
+        else:
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
+    return frame_paths

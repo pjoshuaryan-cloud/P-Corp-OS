@@ -363,3 +363,40 @@ public struct ProxyStatus: Decodable, Identifiable {
         case destinationPath = "destination_path"
     }
 }
+
+/// Phase 8a (2026-09-27) -- mirrors find_smart_select_candidates' exact
+/// output. A pure computed suggestion derived from an already-stored
+/// real transcript, not a stored entity of its own -- refetched fresh
+/// on every request, no `id`.
+public struct SmartSelectCandidate: Decodable, Identifiable {
+    public let start: Double
+    public let duration: Double
+    public let text: String
+    public let confidence: Double?
+    public let wordCount: Int
+
+    public var id: Double { start }
+
+    enum CodingKeys: String, CodingKey {
+        case start, duration, text, confidence
+        case wordCount = "word_count"
+    }
+}
+
+/// Phase 8b (2026-09-27) -- a real, stored Claude vision judgment on
+/// sampled frames from one file. Fetched on demand, never preloaded.
+public struct VisualAnalysis: Decodable {
+    public let id: Int
+    public let fileId: Int
+    public let analysisText: String
+    public let frameCount: Int
+    public let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case fileId = "file_id"
+        case analysisText = "analysis_text"
+        case frameCount = "frame_count"
+        case createdAt = "created_at"
+    }
+}

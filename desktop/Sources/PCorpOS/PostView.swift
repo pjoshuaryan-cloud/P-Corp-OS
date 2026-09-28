@@ -405,6 +405,8 @@ private struct MediaReportView: View {
     @Environment(\.appTheme) private var theme
 
     @State private var transcriptSheetFile: PostJobFile?
+    @State private var smartSelectsSheetFile: PostJobFile?
+    @State private var visualAnalysisSheetFile: PostJobFile?
 
     var body: some View {
         ScrollView {
@@ -520,7 +522,7 @@ private struct MediaReportView: View {
 
                 Divider().overlay(theme.divider)
                 sectionLabel("DIALOGUE")
-                Text("Transcribed by Premiere's own native transcription -- never generated or verified for accuracy by P Corp OS.")
+                Text("Transcribed by Premiere's own native transcription -- never generated or verified for accuracy by P Corp OS. \"Smart Selects\" are real, deterministic clean-sentence candidates, never a claim about which take is creatively best.")
                     .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
                 let dialogue = report.dialogueSummary
                 Text("\(dialogue.filesWithTranscripts) transcribed, \(dialogue.filesPendingTranscription) pending"
@@ -528,7 +530,23 @@ private struct MediaReportView: View {
                      + (dialogue.filesFlaggedFillerWords > 0 ? ", \(dialogue.filesFlaggedFillerWords) flagged for filler words" : ""))
                     .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
                 ForEach(files.filter { $0.status == "verified" }) { file in
-                    Button(file.relativePath) { transcriptSheetFile = file }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(file.relativePath).font(PCorpFont.body(11.5)).foregroundStyle(theme.textSecondary)
+                        HStack(spacing: 10) {
+                            Button("Transcript") { transcriptSheetFile = file }
+                                .buttonStyle(.plain).font(PCorpFont.body(10.5)).foregroundStyle(theme.statusHot)
+                            Button("Smart Selects") { smartSelectsSheetFile = file }
+                                .buttonStyle(.plain).font(PCorpFont.body(10.5)).foregroundStyle(theme.statusHot)
+                        }
+                    }
+                }
+
+                Divider().overlay(theme.divider)
+                sectionLabel("VISUAL ANALYSIS")
+                Text("Claude's real, honest read of a handful of sampled frames per file -- never a full-motion or frame-by-frame analysis, and never a claim about which take is best. Costs a real API call per run, unlike every other report on this page.")
+                    .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                ForEach(files.filter { $0.status == "verified" }) { file in
+                    Button(file.relativePath) { visualAnalysisSheetFile = file }
                         .buttonStyle(.plain)
                         .font(PCorpFont.body(11.5))
                         .foregroundStyle(theme.statusHot)
@@ -539,6 +557,12 @@ private struct MediaReportView: View {
         .frame(width: 460, height: 560)
         .popover(item: $transcriptSheetFile) { file in
             TranscriptView(jobId: jobId, file: file, client: client)
+        }
+        .popover(item: $smartSelectsSheetFile) { file in
+            SmartSelectsView(jobId: jobId, file: file, client: client)
+        }
+        .popover(item: $visualAnalysisSheetFile) { file in
+            VisualAnalysisView(jobId: jobId, file: file, client: client)
         }
     }
 
@@ -653,5 +677,118 @@ private struct TranscriptView: View {
             transcript = await client.fetchTranscript(jobId: jobId, fileId: file.id)
             isLoading = false
         }
+    }
+}
+
+/// Phase 8a (2026-09-27) -- real, deterministic candidate soundbites
+/// (clean, complete sentences with no profanity/filler tags) derived
+/// from an already-stored transcript. Display only -- real marker
+/// creation in Premiere happens entirely in the plugin's own "Suggest
+/// Smart Selects" button, never from this view.
+private struct SmartSelectsView: View {
+    let jobId: Int
+    let file: PostJobFile
+    let client: PostClient
+    @Environment(\.appTheme) private var theme
+
+    @State private var candidates: [SmartSelectCandidate] = []
+    @State private var isLoading = true
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Smart Select Candidates").font(PCorpFont.display(18)).foregroundStyle(theme.textPrimary)
+                Text(file.relativePath).font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                Text("Real, deterministic clean-sentence candidates -- never a claim about which moment is creatively best. Use \"Suggest Smart Selects\" in the Premiere plugin to add these as real markers.")
+                    .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+
+                if isLoading {
+                    ProgressView().controlSize(.small)
+                } else if candidates.isEmpty {
+                    Text("No candidates yet -- this file may not have a transcript, or has no clean, complete sentences long enough to qualify.")
+                        .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                } else {
+                    ForEach(candidates) { candidate in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(String(format: "%.1fs (%.1fs long)", candidate.start, candidate.duration))
+                                .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                            Text("\u{201C}\(candidate.text)\u{201D}")
+                                .font(PCorpFont.body(12.5)).foregroundStyle(theme.textSecondary)
+                        }
+                        .padding(8)
+                        .cardSurface(radius: 6)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 460, height: 480)
+        .task {
+            candidates = await client.fetchSmartSelects(jobId: jobId, fileId: file.id)
+            isLoading = false
+        }
+    }
+}
+
+/// Phase 8b (2026-09-27) -- real Claude vision judgment on sampled
+/// frames. A genuine architectural shift from every other POST report
+/// (which are all deterministic/local) -- this costs a real API call
+/// per run, so "Analyze Frames" is a deliberate, explicit action, never
+/// automatic and never Frank-reachable.
+private struct VisualAnalysisView: View {
+    let jobId: Int
+    let file: PostJobFile
+    let client: PostClient
+    @Environment(\.appTheme) private var theme
+
+    @State private var analysis: VisualAnalysis?
+    @State private var isLoading = true
+    @State private var isAnalyzing = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Visual Analysis").font(PCorpFont.display(18)).foregroundStyle(theme.textPrimary)
+                Text(file.relativePath).font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                Text("Claude's real, honest read of a handful of sampled frames -- not full-motion, not a claim about which take is best. Costs a real API call each time you run it.")
+                    .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                if let error = client.errorMessage {
+                    Text(error).font(PCorpFont.body(11)).foregroundStyle(theme.statusRisk)
+                }
+
+                if isLoading {
+                    ProgressView().controlSize(.small)
+                } else if let analysis {
+                    Text("\(analysis.frameCount) frame(s) sampled.")
+                        .font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
+                    Divider().overlay(theme.divider)
+                    Text(analysis.analysisText)
+                        .font(PCorpFont.body(12.5)).foregroundStyle(theme.textSecondary)
+                } else {
+                    Text("No visual analysis for this file yet.")
+                        .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                }
+
+                AsyncButton(action: runAnalysis) {
+                    Text(analysis == nil ? "Analyze Frames" : "Re-analyze Frames")
+                }
+                .buttonStyle(.actionFilled)
+                .disabled(isAnalyzing)
+            }
+            .padding(16)
+        }
+        .frame(width: 460, height: 480)
+        .task {
+            analysis = await client.fetchVisualAnalysis(jobId: jobId, fileId: file.id)
+            isLoading = false
+        }
+    }
+
+    private func runAnalysis() async {
+        isAnalyzing = true
+        if let result = await client.analyzeFrames(jobId: jobId, fileId: file.id) {
+            analysis = result
+        }
+        isAnalyzing = false
     }
 }
