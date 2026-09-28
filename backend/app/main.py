@@ -861,6 +861,26 @@ async def lifespan(app: FastAPI):
     # interleaved by the other coroutine -- setting it only after all the
     # awaits finished would reopen the exact same race, since the second
     # entry could reach this check during any one of those await points.
+    # task_5151ca8b (flagged 2026-09-25 during POST Phase 4): the plain
+    # boolean flag below only prevents the SECOND lifespan entry from
+    # re-running these migrations -- it gives no happens-before guarantee
+    # that the second entry won't reach its own copy of the loop-
+    # registration code further down (line ~965) before the first
+    # entry's migrations have actually committed. An asyncio.Event-based
+    # fix was attempted live here (2026-09-28) to close this properly,
+    # but it produced a real, reproducible deadlock instead: with
+    # TAILSCALE_IP set (this Mac's own dual-bind _run_dual path), the
+    # second uvicorn instance never reached "Uvicorn running" across
+    # three separate restarts, even waiting up to 20s -- root cause not
+    # yet understood (the event's .set() call is unconditional and did
+    # execute, based on the first instance completing normally), reverted
+    # rather than risk the hang-watchdog force-killing the process every
+    # ~90s in production. In practice every loop that touches Postgres
+    # already wraps its own access in try/except Exception, so this race
+    # self-heals on the very next tick when it does fire (confirmed
+    # directly during POST Phase 5 -- it doesn't even reproduce on every
+    # restart) -- left as a known, low-severity, still-open race rather
+    # than shipped as a broken "fix."
     if not hasattr(app.state, "db_initialized"):
         app.state.db_initialized = True
         await init_db()
