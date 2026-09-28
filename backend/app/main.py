@@ -4055,13 +4055,26 @@ async def run_claude_turn(
                 # A distinct sentinel, not folded into [notify], since this
                 # attaches to the message itself (a real file to open),
                 # not a transient banner.
-                document_filename = Path(result.removeprefix("PDF saved to ")).name
-                document_title = block.input.get("title", document_filename)
-                generated_documents.append({"filename": document_filename, "title": document_title})
-                await _safe_send(
-                    websocket,
-                    f"\n[document_generated]{json.dumps({'filename': document_filename, 'title': document_title})}",
-                )
+                #
+                # Real bug found live (2026-09-28): on a cloud-upload
+                # failure, execute_documents_tool_call appends a
+                # "(warning: cloud copy failed to upload: ...)" suffix with
+                # no further "/" in it -- Path(...).name on the whole
+                # remainder then returned the filename glued to that entire
+                # warning text, breaking the UI's document_generated
+                # attachment (a GET /documents/{filename} against that
+                # garbled name always 404s) even though the real PDF saved
+                # fine locally. Matched only up through the real ".pdf"
+                # extension instead, so a trailing warning never leaks in.
+                match = re.match(r"^(.+?\.pdf)", result.removeprefix("PDF saved to "))
+                document_filename = Path(match.group(1)).name if match else None
+                if document_filename:
+                    document_title = block.input.get("title", document_filename)
+                    generated_documents.append({"filename": document_filename, "title": document_title})
+                    await _safe_send(
+                        websocket,
+                        f"\n[document_generated]{json.dumps({'filename': document_filename, 'title': document_title})}",
+                    )
 
             automation_notification = await check_and_fire_automation(
                 block.name, block.input, client, result, postgres_conn

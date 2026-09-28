@@ -110,10 +110,23 @@ public struct MessageAttachmentsView: View {
 /// "viewable & saveable" fix) -- deliberately not folded into
 /// MessageAttachmentsView above, which documents itself as "only ever used
 /// from a user message's own rendering" and has no tap-handling shape at
-/// all. Reuses that view's own placeholderRow styling for visual
-/// consistency; `onTap` is platform-specific (desktop: NSWorkspace against
-/// the real local file; iOS: fetch over GET /documents/{filename} then
+/// all. `onTap` is platform-specific (desktop: NSWorkspace against the
+/// real local file; iOS: fetch over GET /documents/{filename} then
 /// QuickLook), so it lives in the caller, not here.
+///
+/// Real bug found live (2026-09-28): the original version was a single
+/// small inline text link (12pt, 0.8 opacity, one-line-truncated) sitting
+/// right at the bottom edge of the reply bubble -- functionally correct
+/// (it opened the real PDF when clicked) but Josh genuinely could not
+/// find it across two separate live tries, reporting "nothing... it must
+/// be readable and saveable" even with the row plainly on screen in a
+/// shared screenshot. A working feature nobody can see is not a working
+/// feature. Rebuilt as its own real card -- the same bordered-surface
+/// "card surface" language AttachmentChipStrip already uses above, not a
+/// plain text link -- with a colored icon badge, the full title (wrapped,
+/// never truncated to a confusing fragment), a visible "PDF" kind label,
+/// and an explicit "Open" affordance so it reads unambiguously as a
+/// clickable deliverable, not decoration.
 public struct GeneratedDocumentRow: View {
     let document: GeneratedDocument
     let onTap: () -> Void
@@ -126,13 +139,35 @@ public struct GeneratedDocumentRow: View {
 
     public var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 6) {
-                Image(systemName: "doc.richtext.fill")
-                Text(document.title)
-                    .lineLimit(1)
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8).fill(theme.accentFill.opacity(0.18))
+                    Image(systemName: "doc.richtext.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(theme.accentText)
+                }
+                .frame(width: 34, height: 34)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(document.title)
+                        .font(PCorpFont.body(13, weight: .semibold))
+                        .foregroundStyle(theme.textPrimary)
+                        .lineLimit(2)
+                    Text("PDF — tap to open")
+                        .font(PCorpFont.body(10.5))
+                        .foregroundStyle(theme.textTertiary)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "arrow.up.forward.square")
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.accentText)
             }
-            .font(PCorpFont.body(12))
-            .foregroundStyle(theme.accentText.opacity(0.8))
+            .padding(10)
+            .frame(maxWidth: 280)
+            .background(RoundedRectangle(cornerRadius: 12).fill(theme.surface.opacity(0.6)))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.surfaceBorder))
         }
         .buttonStyle(.plain)
     }
