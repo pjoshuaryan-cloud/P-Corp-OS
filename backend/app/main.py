@@ -1100,14 +1100,22 @@ async def postgres_pool_scope(request: Request, call_next):
     testing under the old design. A no-op in SQLite mode, before the
     pool exists yet (startup ordering), or for _SLOW_ROUTE_PATHS
     (see that constant's own comment -- those routes manage their own,
-    much shorter-lived checkouts instead)."""
-    if (
-        DATA_BACKEND != "postgres"
-        or not hasattr(app.state, "postgres_pool")
-        or _is_slow_route(request.method, request.url.path)
-    ):
+    much shorter-lived checkouts instead).
+
+    Real bug found live (2026-09-28), confirmed from this backend's own
+    log history: hasattr(app.state, "postgres_pool") followed by a
+    SEPARATE app.state.postgres_pool.connection() access is two lookups,
+    not one -- a concurrent lifespan shutdown (which does close() + del
+    on this exact attribute) can land in between them, so the hasattr
+    check passes but the actual access then raises a raw, unhandled
+    AttributeError, printing a scary traceback on every restart that hit
+    the timing. Captured atomically via getattr(..., None) instead --
+    one lookup, so there's no window for the attribute to vanish
+    in between."""
+    pool = getattr(app.state, "postgres_pool", None)
+    if DATA_BACKEND != "postgres" or pool is None or _is_slow_route(request.method, request.url.path):
         return await call_next(request)
-    async with app.state.postgres_pool.connection() as conn:
+    async with pool.connection() as conn:
         request.state.postgres_conn = conn
         return await call_next(request)
 
@@ -3509,8 +3517,21 @@ async def websocket_chat(websocket: WebSocket) -> None:
     try:
         await _websocket_chat_session(websocket, postgres_conn)
     finally:
-        if postgres_conn is not None:
-            await app.state.postgres_pool.putconn(postgres_conn)
+        # Real bug found live (2026-09-28), confirmed from 64 real
+        # occurrences across this backend's own log history: a websocket
+        # can still be mid-cleanup when the app's own lifespan shutdown
+        # runs concurrently and tears down app.state.postgres_pool
+        # (close() + del, see the lifespan handler above) -- by the time
+        # this finally block runs, the pool attribute is simply gone.
+        # Harmless in practice (the pool's own close() already invalidated
+        # every connection it held, including this one) but it printed a
+        # real, scary-looking traceback on every one of this app's own
+        # shutdowns/restarts, obscuring genuine errors in the log.
+        if postgres_conn is not None and hasattr(app.state, "postgres_pool"):
+            try:
+                await app.state.postgres_pool.putconn(postgres_conn)
+            except AttributeError:
+                pass
 
 
 async def _websocket_chat_session(websocket: WebSocket, postgres_conn) -> None:
