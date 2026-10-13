@@ -316,8 +316,13 @@ struct VenturesView: View {
         if client.isScanning {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Scanning the market…").font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                Text("Scanning the market…" + (client.scanRun.map { " \(ScanRun.clock($0.elapsedSeconds))" } ?? ""))
+                    .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
             }
+            Text("Claude is searching the web and reading pages, which usually takes a minute or two. It keeps going if you leave this screen.")
+                .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+        } else if let summary = client.scanRun?.summaryLine {
+            Text(summary).font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
         }
         if let error = client.errorMessage { errorText(error) }
 

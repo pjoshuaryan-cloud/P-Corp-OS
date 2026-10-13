@@ -352,3 +352,63 @@ public struct DecisionRecord: Identifiable, Decodable {
         case createdAt = "created_at"
     }
 }
+
+// MARK: - Opportunity Radar scan run (2026-10-10): the scan runs in the backend, the app polls it
+
+/// What a scan did: how long it took and how much searching/reading it used (the backend logs the same numbers).
+public struct ScanMetrics: Decodable, Equatable {
+    public let seconds: Double?
+    public let searches: Int?
+    public let pageReads: Int?
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let stopReason: String?
+    public let opportunities: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case seconds, searches, opportunities
+        case pageReads = "page_reads"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case stopReason = "stop_reason"
+    }
+}
+
+/// The current/last scan: "running", "done" or "failed".
+public struct ScanRun: Decodable, Equatable {
+    public let state: String
+    public let source: String
+    public let startedAt: String
+    public let finishedAt: String?
+    public let message: String?
+    public let reply: String?
+    public let createdIds: [Int]
+    public let metrics: ScanMetrics
+    public let elapsedSeconds: Double
+
+    public var isRunning: Bool { state == "running" }
+
+    /// "1m 12s" / "45s"
+    public static func clock(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        return total >= 60 ? "\(total / 60)m \(total % 60)s" : "\(total)s"
+    }
+
+    /// One line about a finished scan (nil while running or when it failed before doing anything).
+    public var summaryLine: String? {
+        guard !isRunning, state == "done" else { return nil }
+        var parts = ["Last scan took \(Self.clock(metrics.seconds ?? elapsedSeconds))"]
+        if let searches = metrics.searches { parts.append("\(searches) search\(searches == 1 ? "" : "es")") }
+        if let reads = metrics.pageReads { parts.append("\(reads) page\(reads == 1 ? "" : "s") read") }
+        parts.append(createdIds.isEmpty ? "nothing new" : "\(createdIds.count) new")
+        return parts.joined(separator: " · ")
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case state, source, message, reply, metrics
+        case startedAt = "started_at"
+        case finishedAt = "finished_at"
+        case createdIds = "created_ids"
+        case elapsedSeconds = "elapsed_seconds"
+    }
+}

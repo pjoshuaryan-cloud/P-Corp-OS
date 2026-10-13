@@ -14,6 +14,8 @@ public final class VenturesClient: ObservableObject {
     @Published public private(set) var isScanning = false
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var lastScanReply: String?
+    /// The current/last Opportunity Radar scan (it runs in the backend; see scanNow).
+    @Published public private(set) var scanRun: ScanRun?
 
     // Phase 2 (2026-09-24) -- venture detail state, loaded on-demand when
     // a detail view opens rather than kept for every venture at once.
@@ -83,6 +85,7 @@ public final class VenturesClient: ObservableObject {
             opportunities = []
         }
         isLoading = false
+        if !isScanning { Task { await resumeScanIfRunning() } }
     }
 
     public func createVenture(_ draft: VentureDraft) async -> Bool {
@@ -114,33 +117,105 @@ public final class VenturesClient: ObservableObject {
         if let writeError { errorMessage = writeError }
     }
 
-    /// A real Claude call with web search -- can genuinely take up to a
-    /// minute or two (confirmed live), same "advisory call, generous
-    /// timeout" reasoning as TradeIntelligenceClient's own
-    /// advisoryTimeout.
-    private static let scanTimeout: TimeInterval = 150
+    /// A current backend answers the start request at once and runs the scan in the background; the rest is polling
+    /// `/scan/run`. An OLDER backend (the cloud one, until it is redeployed) runs the whole scan inside this one request
+    /// and answers when it is finished -- a minute or two -- so the wait has to stay generous. Both work.
+    private static let scanStartTimeout: TimeInterval = 150
 
+    /// What the start request's answer means: (a scan is now running in the backend, or the reply of a scan an older
+    /// backend already finished).
+    nonisolated public static func parseScanStartResponse(_ data: Data) -> (runningInBackground: Bool, legacyReply: String?) {
+        struct Start: Decodable { let started: Bool?; let reply: String? }
+        let decoded = try? JSONDecoder().decode(Start.self, from: data)
+        if decoded?.started == true { return (true, nil) }
+        return (false, decoded?.reply)
+    }
+
+    /// Starts a scan and follows it until it ends. Safe to call again while one is running (it does nothing).
     public func scanNow() async {
+        guard !isScanning else { return }
         isScanning = true
         errorMessage = nil
         var request = URLRequest(url: url("/ventures/opportunities/scan"))
         request.httpMethod = "POST"
-        request.timeoutInterval = Self.scanTimeout
+        request.timeoutInterval = Self.scanStartTimeout
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                if http.statusCode == 409 {  // one is already running (e.g. the daily one): just follow it
+                    await followScan()
+                    return
+                }
                 errorMessage = (try? JSONDecoder().decode(ErrorDetail.self, from: data))?.detail
                     ?? "Request failed (\(http.statusCode))."
-            } else {
-                struct ScanResponse: Decodable { let reply: String; let created_ids: [Int] }
-                let decoded = try JSONDecoder().decode(ScanResponse.self, from: data)
-                lastScanReply = decoded.reply
+                isScanning = false
+                return
+            }
+            let start = Self.parseScanStartResponse(data)
+            if !start.runningInBackground {
+                // An older backend already ran the whole scan inside that request: show its result, nothing to follow.
+                lastScanReply = start.legacyReply
+                await fetch()
+                isScanning = false
+                return
             }
         } catch {
             errorMessage = "Couldn't reach the backend — is it running?"
+            isScanning = false
+            return
         }
-        await fetch()
+        await followScan()
+    }
+
+    private struct ScanRunResponse: Decodable { let run: ScanRun? }
+
+    /// (reachable, run) -- the run is nil when no scan has happened since the backend started.
+    private func fetchScanRun() async -> (reachable: Bool, run: ScanRun?) {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url("/ventures/opportunities/scan/run"))
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return (false, nil) }
+            return (true, try JSONDecoder().decode(ScanRunResponse.self, from: data).run)
+        } catch {
+            return (false, nil)
+        }
+    }
+
+    /// Polls every 2 s until the scan ends, then loads the results. A few missed polls in a row (backend restarted?)
+    /// stop the wait with a plain message instead of spinning forever.
+    private func followScan() async {
+        isScanning = true
+        var missed = 0
+        while true {
+            let (reachable, run) = await fetchScanRun()
+            if reachable {
+                missed = 0
+                if run != scanRun { scanRun = run }
+                if run?.isRunning != true { break }
+            } else {
+                missed += 1
+                if missed >= 5 {
+                    errorMessage = "Lost contact with the backend while the scan was running. It may still finish — reopen this screen in a minute."
+                    isScanning = false
+                    return
+                }
+            }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        let finished = scanRun
+        await fetch()  // loads the new opportunities (and clears errorMessage, so a failure is set after it)
+        if finished?.state == "done" { lastScanReply = finished?.reply }
+        if finished?.state == "failed" { errorMessage = finished?.message }
         isScanning = false
+    }
+
+    /// Picks up a scan the backend is already running (started on another device, by the daily job, or before this
+    /// screen was opened), and remembers the last one's numbers.
+    private func resumeScanIfRunning() async {
+        guard !isScanning else { return }
+        let (reachable, run) = await fetchScanRun()
+        guard reachable else { return }
+        if run != scanRun { scanRun = run }
+        if run?.isRunning == true { await followScan() }
     }
 
     public func promoteOpportunity(id: Int) async {
