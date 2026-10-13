@@ -62,6 +62,31 @@ private final class GlobalKeyboardDismissInstaller: NSObject, UIGestureRecognize
     ) -> Bool {
         true
     }
+
+    // Real bug found live (2026-09-29): recognizing simultaneously with
+    // EVERY gesture (above) also meant firing on a tap that landed
+    // INSIDE the currently-focused chat input itself -- tapping to
+    // reposition the cursor before pasting, or tapping a selection to
+    // bring up the Copy/Paste edit menu, is itself a qualifying tap.
+    // handleTap()'s unconditional endEditing(true) force-resigned first
+    // responder (dismissing the keyboard and any edit menu tied to it)
+    // before the paste could complete -- Josh's own reported "closes
+    // the keyboard without being able to paste." A tap inside a text
+    // input was never "somewhere else" in the "tap anywhere ELSE to
+    // dismiss" sense this feature exists for, so it's excluded at the
+    // touch level here rather than acted on and undone. UITextInput is
+    // the real, documented protocol both UITextField and UITextView
+    // (including GrowingChatInput's own UIKit-backed iOS implementation)
+    // conform to, so this covers the chat input and any future text
+    // control without needing a per-view opt-out list.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        var view: UIView? = touch.view
+        while let v = view {
+            if v is UITextInput { return false }
+            view = v.superview
+        }
+        return true
+    }
 }
 
 extension View {

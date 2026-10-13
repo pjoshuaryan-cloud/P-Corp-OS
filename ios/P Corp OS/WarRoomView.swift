@@ -245,50 +245,79 @@ struct WarRoomView: View {
                 // instant a real message exists this falls through to the
                 // unchanged `else` below -- dashboardHeader's cards are
                 // untouched.
-                Spacer(minLength: 0)
+                //
+                // Real bug found live (2026-09-30): this whole branch was
+                // a plain, non-scrolling VStack of Spacers + fixed-size
+                // content (greeting text, a 160pt orb, WarRoomCommandMap)
+                // -- never given the same fix the sibling `else` branch
+                // below already got on 2026-08-27 for the identical
+                // reason ("dashboardHeader used to sit outside [the]
+                // scroll region as a fixed-height sibling. With the
+                // keyboard up eating screen space, that fixed header
+                // didn't shrink"). With nothing here able to compress
+                // below its own natural size, typing a first message
+                // long enough to grow the input bar (while the keyboard
+                // ALSO eats real screen height) left no way for this
+                // fixed content to make room -- the growing input got
+                // pushed down until it sat behind the keyboard instead.
+                // Wrapping in a ScrollView with a GeometryReader-measured
+                // `minHeight` is the standard SwiftUI pattern for "stay
+                // vertically centered when idle, become genuinely
+                // scrollable the moment content doesn't fit" -- solves
+                // this the same way the sibling branch already solved
+                // its own version of the exact same problem.
+                GeometryReader { outerGeo in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 0)
 
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("\(greeting), Joshx.")
-                        .font(PCorpFont.display(30, weight: .bold))
-                        .foregroundStyle(theme.textPrimary)
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("\(greeting), Joshx.")
+                                    .font(PCorpFont.display(30, weight: .bold))
+                                    .foregroundStyle(theme.textPrimary)
 
-                    if attentionItems.isEmpty {
-                        Text("Nothing requires immediate attention. Your day is clear.")
-                            .font(PCorpFont.body(15))
-                            .foregroundStyle(theme.textSecondary)
-                    } else {
-                        Text("\(attentionItems.count) THING\(attentionItems.count == 1 ? "" : "S") REQUIRE\(attentionItems.count == 1 ? "S" : "") YOUR ATTENTION.")
-                            .font(PCorpFont.label(10))
-                            .tracking(1.1)
-                            .foregroundStyle(theme.textSecondary)
+                                if attentionItems.isEmpty {
+                                    Text("Nothing requires immediate attention. Your day is clear.")
+                                        .font(PCorpFont.body(15))
+                                        .foregroundStyle(theme.textSecondary)
+                                } else {
+                                    Text("\(attentionItems.count) THING\(attentionItems.count == 1 ? "" : "S") REQUIRE\(attentionItems.count == 1 ? "S" : "") YOUR ATTENTION.")
+                                        .font(PCorpFont.label(10))
+                                        .tracking(1.1)
+                                        .foregroundStyle(theme.textSecondary)
 
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(Array(attentionItems.prefix(3).enumerated()), id: \.offset) { index, item in
-                                AttentionRow(number: index + 1, item: item)
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        ForEach(Array(attentionItems.prefix(3).enumerated()), id: \.offset) { index, item in
+                                            AttentionRow(number: index + 1, item: item)
+                                        }
+                                    }
+                                    .padding(.top, 4)
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 24)
+                            .onAppear { triggerGreetingIfNeeded() }
+
+                            Spacer(minLength: 16)
+
+                            // .flagging (2026-09-17) reuses the same attentionItems
+                            // data driving the text above -- no separate signal
+                            // invented, just a matching visual state.
+                            FrankOrb(state: attentionItems.isEmpty ? .idle : .flagging)
+                                .frame(width: 160, height: 160)
+                                .frame(maxWidth: .infinity)
+
+                            Spacer(minLength: 16)
+
+                            WarRoomCommandMap(agentsClient: agentsClient, insightsClient: insightsClient)
+                                .padding(.horizontal, 24)
+
+                            Spacer(minLength: 16)
                         }
-                        .padding(.top, 4)
+                        .frame(minHeight: outerGeo.size.height)
                     }
+                    .scrollDismissesKeyboard(.interactively)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 24)
-                .onAppear { triggerGreetingIfNeeded() }
-
-                Spacer(minLength: 16)
-
-                // .flagging (2026-09-17) reuses the same attentionItems
-                // data driving the text above -- no separate signal
-                // invented, just a matching visual state.
-                FrankOrb(state: attentionItems.isEmpty ? .idle : .flagging)
-                    .frame(width: 160, height: 160)
-                    .frame(maxWidth: .infinity)
-
-                Spacer(minLength: 16)
-
-                WarRoomCommandMap(agentsClient: agentsClient, insightsClient: insightsClient)
-                    .padding(.horizontal, 24)
-
-                Spacer(minLength: 16)
             } else {
                 // Real bug found live (2026-08-27): dashboardHeader used to
                 // sit outside this scroll region as a fixed-height sibling.
@@ -300,7 +329,7 @@ struct WarRoomView: View {
                 // the messages makes the whole thing one continuous
                 // scrollable region -- the header just scrolls out of the
                 // way instead of permanently reserving space.
-                ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming, runningTool: backend.runningTool, onRefresh: {
+                ChatThreadView(messages: backend.messages, isStreaming: backend.isStreaming, runningTool: backend.runningTool, isInputFocused: isInputFocused, onRefresh: {
                     await backend.refreshHistory()
                     await focusClient.fetch()
                     await insightsClient.fetch()
@@ -895,6 +924,21 @@ private struct ChatThreadView<Header: View>: View {
     let messages: [ChatMessage]
     let isStreaming: Bool
     let runningTool: String?
+    // Real bug found live (2026-09-30): scrollToEnd only ever fired on
+    // messages.count/messages.last?.content changing -- nothing re-ran
+    // it when the keyboard itself appeared. The chat thread's own
+    // ScrollView correctly participates in keyboard-avoidance (once
+    // RootView/Sidebar's own stray .ignoresSafeArea() calls were fixed
+    // separately), but a shrinking safe area doesn't automatically
+    // re-anchor an already-scrolled ScrollView's content offset to its
+    // new, smaller bottom edge -- whatever was sitting at the old
+    // bottom edge (the last real message, or the growing input bar
+    // just below this view) stayed exactly where it was and ended up
+    // behind the keyboard instead of sliding up with everything else.
+    // Tapping into the input (isInputFocused going true, right as the
+    // keyboard starts appearing) is the one moment this actually needs
+    // to re-run.
+    let isInputFocused: Bool
     // Pull-to-refresh (2026-09-11, real request live) -- refreshes the
     // dashboard data inside `header()` (Focus/Insights/Situation Room),
     // not the chat thread itself: there's no "refresh" concept for a live
@@ -930,6 +974,21 @@ private struct ChatThreadView<Header: View>: View {
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: messages.count) { _, _ in scrollToEnd(proxy) }
             .onChange(of: messages.last?.content) { _, _ in scrollToEnd(proxy) }
+            .onChange(of: isInputFocused) { _, focused in
+                if focused {
+                    // A short delay, not scrollToEnd's own animated
+                    // 0.15s -- the keyboard's own slide-up animation
+                    // (~0.25s) hasn't finished when this fires (focus
+                    // changes the instant the field is tapped, well
+                    // before the keyboard settles), so scrolling
+                    // immediately targets a safe-area inset that's
+                    // still mid-transition and undershoots the real
+                    // final position.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        scrollToEnd(proxy)
+                    }
+                }
+            }
             .onAppear { scrollToEnd(proxy, animated: false) }
         }
     }

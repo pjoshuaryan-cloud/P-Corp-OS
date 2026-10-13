@@ -164,5 +164,17 @@ struct ConversationHistorySheet: View {
                 .foregroundStyle(theme.textSecondary)
         }
         .padding(.vertical, 2)
+        // Real bug found live (2026-09-29): missing both of these (desktop's
+        // own ConversationListPopover row has always had them) meant this
+        // row's real tappable area was constrained to the tight bounds of
+        // its two left-aligned Text views, not the row's own full width --
+        // tapping anywhere else in the row (most of it, on a real iPhone
+        // width) silently did nothing, reading as "conversations aren't
+        // clickable." frame(maxWidth: .infinity) extends the row's own
+        // layout bounds to fill the List's width; contentShape(Rectangle())
+        // is what actually makes that whole extended area hit-testable, not
+        // just visually present.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }

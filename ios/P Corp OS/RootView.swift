@@ -126,14 +126,32 @@ struct RootView: View {
             .background(theme.background)
             .allowsHitTesting(!isDrawerOpen)
 
+            // Real bug found live (2026-09-29), same root cause already
+            // documented and fixed once in ToastCenter.swift: a plain
+            // `.ignoresSafeArea()` (which ignores BOTH .container and
+            // .keyboard regions) on a view sitting as a ZStack SIBLING of
+            // the app's real content -- here, the drawer scrim and
+            // Sidebar below, both mounted at RootView's own root ZStack
+            // alongside the VStack that contains WarRoomView's chat
+            // input -- competes with UIHostingController's own automatic
+            // keyboard-avoidance inset logic for the WHOLE screen, not
+            // just these two views, even while the drawer is closed and
+            // they're hit-test-disabled/off-screen. Symptom matched
+            // ToastCenter's own documented incident exactly: the chat
+            // input stopped being pushed above the keyboard, hiding
+            // typed lines behind it. Fixed the same way -- ignoring only
+            // the .container region (so these still span the full
+            // screen edge-to-edge, notch and home indicator included)
+            // while leaving .keyboard alone, which resolves the
+            // ambiguity for the rest of the screen.
             Color.black.opacity(0.35 * dragProgress)
-                .ignoresSafeArea()
+                .ignoresSafeArea(.container)
                 .allowsHitTesting(isDrawerOpen)
                 .onTapGesture { setDrawer(open: false) }
 
             Sidebar(selectedID: $selectedID, isOpen: $isDrawerOpen)
                 .frame(width: drawerWidth)
-                .ignoresSafeArea()
+                .ignoresSafeArea(.container)
                 .offset(x: drawerOffsetX)
 
             // Edge-swipe-to-open's hot zone (2026-08-13's real fix for

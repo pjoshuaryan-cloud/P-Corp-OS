@@ -115,7 +115,22 @@ struct Sidebar: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(.ultraThinMaterial)
         .background(theme.surface.opacity(0.3))
-        .ignoresSafeArea(edges: .bottom)
+        // Real bug found live (2026-09-30): this default-region
+        // `.ignoresSafeArea(edges: .bottom)` (no first argument means
+        // SafeAreaRegions.all, i.e. BOTH .container and .keyboard) was a
+        // SECOND, independent instance of the exact same root-cause
+        // already fixed once at RootView's own call site for this same
+        // Sidebar (see RootView.swift's own comment) -- fixing the
+        // OUTER modifier there didn't help, because THIS inner one,
+        // applied to Sidebar's own body, was equally sufficient on its
+        // own to break the whole screen's automatic keyboard avoidance
+        // (Josh's own report: the growing chat input's typed text was
+        // still hiding behind the keyboard after the first fix).
+        // Scoped to .container only, same fix pattern as before -- the
+        // sidebar's own material background still extends past the
+        // home indicator, but no longer competes for the keyboard
+        // safe-area region.
+        .ignoresSafeArea(.container, edges: .bottom)
     }
 }
 
