@@ -312,7 +312,22 @@ GENERATE_PDF_DOCUMENT_TOOL = {
         "and per-holding figures for exactly this reason; report the real breakdown, not a number you added "
         "up yourself. Supported markdown: '# Heading' / '## Subheading', plain paragraphs, '- bullet' lists, "
         "**bold** / *italic*, and simple pipe tables ('| Col A | Col B |' rows; an optional '|---|---|' "
-        "separator row is fine but not required). No images, code blocks, or nested lists -- keep formatting simple."
+        "separator row is fine but not required). No images, code blocks, or nested lists -- keep formatting simple. "
+        "IMPORTANT: when Josh asks for a document, call this tool directly in the turn where you decide to build "
+        "it -- never reply with just an acknowledgment like \"I'll build this now\" or \"generating it now\" and "
+        "stop there. That kind of reply satisfies your own general instinct toward short, conversational replies, "
+        "but leaves nothing actually created -- from Josh's side it looks identical to real progress, and he has "
+        "no way to tell the difference until he checks and finds nothing. Gather whatever real data you need from "
+        "other tools first if the document needs it, then call this tool in that same turn as the last step -- "
+        "your short-reply instinct applies to what you SAY, not to whether you actually finish the action. "
+        "One real exception to \"pull real data from a tool, never invent\": a document ABOUT P Corp OS itself "
+        "-- a feature overview, a guide to what each division/tab does, how to prompt a given area effectively, "
+        "etc. -- draws on your own real, already-established understanding of this app from your system prompt "
+        "and this whole conversation, not from a business-data tool, because no such tool exists for describing "
+        "the app itself. Write that kind of document directly from what you actually know about P Corp OS -- "
+        "don't refuse it or wait for a tool that was never going to exist. The 'never invent, always pull from a "
+        "tool' rule is specifically about business/financial facts you have no way to verify (revenue, holdings, "
+        "client data) -- it was never meant to block you from describing your own real, current capabilities."
     ),
     "input_schema": {
         "type": "object",
@@ -343,6 +358,18 @@ DOCUMENTS_TOOL_NAMES = {tool["name"] for tool in DOCUMENTS_TOOLS}
 
 async def execute_documents_tool_call(name: str, tool_input: dict, postgres_conn=None) -> str:
     if name == "generate_pdf_document":
+        # Real, deliberate log line on the DISPATCH itself, not just on
+        # failure (2026-09-30) -- found live that the tool can go
+        # entirely uncalled (Frank replies "I'll build this now" and
+        # ends the turn there, with no tool_use block at all) with
+        # nothing in this file's own prior print statements able to
+        # distinguish that from a genuine success, since both looked
+        # identical from the log's perspective (nothing printed
+        # either way). This one line is what makes that distinction
+        # checkable going forward: no line here plus no new file in
+        # DOCS_DIR means the tool was never actually invoked this time,
+        # not that it silently succeeded.
+        print(f"[documents] generate_pdf_document called: title={tool_input.get('title')!r} document_type={tool_input.get('document_type')!r}")
         try:
             path = generate_pdf_document(
                 tool_input["title"],
@@ -372,5 +399,6 @@ async def execute_documents_tool_call(name: str, tool_input: dict, postgres_conn
                 # separate problem worth surfacing honestly, not hidden
                 # behind the local save that did work.
                 return f"PDF saved to {path} (warning: cloud copy failed to upload: {exc})"
+        print(f"[documents] generate_pdf_document succeeded: {path}")
         return f"PDF saved to {path}"
     return f"Unknown tool: {name}"
