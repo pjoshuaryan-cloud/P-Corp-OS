@@ -190,6 +190,12 @@ struct WarRoomView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
                     .padding(.top, 8)
+                Text("Take your time — I'll wait a few seconds. Tap the mic to send now.")
+                    .font(PCorpFont.body(11))
+                    .foregroundStyle(theme.textTertiary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+                    .padding(.top, 4)
                 Spacer(minLength: 0)
             } else if voiceOutput.isSpeaking {
                 // Mirrors the isListening case above -- the orb takes over
@@ -354,6 +360,15 @@ struct WarRoomView: View {
                 )
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
+            }
+            if let note = voiceInput.lastStopNote, !voiceInput.isListening {
+                // Why the last voice recording ended -- so a cut-off can be diagnosed instead of guessed at.
+                Text(note)
+                    .font(PCorpFont.body(11))
+                    .foregroundStyle(theme.textTertiary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 4)
             }
             inputBar
                 .disabled(backend.pendingApproval != nil)
