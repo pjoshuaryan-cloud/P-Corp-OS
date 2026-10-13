@@ -44,7 +44,29 @@ POST_JOB_STATUSES = (
     "ingested",                                            # Phase 1 terminal success
     "ingest_failed", "cancelled",                          # Phase 1 off-ramps, both resumable via /start
     "analyzing_media", "premiere_project_created",         # Phase 2/3 placeholders
-    "generating_proxies", "analyzing_color",               # Phase 4/5 placeholders
+    "generating_proxies",                                  # Phase 4 placeholder
+    "analyzing_color",                                     # Phase 9 -- REUSED as the transient
+                                                            # in-progress marker for highlight
+                                                            # detection. Originally scoped as its
+                                                            # own Phase 5 placeholder that Phase 5
+                                                            # never ended up needing (color
+                                                            # intelligence shipped as metadata/
+                                                            # exposure fields only, no status of
+                                                            # its own). A genuinely new value
+                                                            # ("detecting_highlights") was tried
+                                                            # first and IS the honestly-named
+                                                            # option, but widening the live CHECK
+                                                            # constraint on production Postgres
+                                                            # needs a real DROP/ADD CONSTRAINT
+                                                            # migration that, in practice, neither
+                                                            # an automated edit nor a manual DB
+                                                            # client was a workable path for at the
+                                                            # time -- reusing this already-allowed
+                                                            # placeholder avoids that migration
+                                                            # entirely, at the cost of a status name
+                                                            # that no longer matches what it's doing
+                                                            # (a real gap, disclosed here rather than
+                                                            # silently renamed to look intentional).
     "complete", "archived",
 )
 POST_JOB_FILE_STATUSES = ("pending", "copying", "copied", "verified", "failed")
@@ -68,6 +90,7 @@ _POST_JOB_COLUMNS = (
     "total_files", "total_bytes", "files_copied", "files_failed", "bytes_copied",
     "current_file_path", "error_message", "started_at", "completed_at", "created_at", "media_analyzed_at",
     "deliverable_format", "resolution", "frame_rate", "premiere_project_path", "proxies_generated_at",
+    "highlights_generated_at", "rough_cut_sequence_name", "rough_cut_assembled_at",
 )
 _POST_JOB_FILE_COLUMNS = (
     "id", "job_id", "relative_path", "destination_path", "size_bytes", "status", "bytes_copied",
@@ -89,6 +112,9 @@ _POST_JOB_FILE_TRANSCRIPT_COLUMNS = (
 )
 _POST_JOB_FILE_VISUAL_ANALYSIS_COLUMNS = (
     "id", "file_id", "analysis_text", "frame_count", "created_at",
+)
+_POST_JOB_FILE_HIGHLIGHT_COLUMNS = (
+    "id", "file_id", "status", "candidates_json", "candidate_count", "error_message", "created_at", "completed_at",
 )
 
 
@@ -128,7 +154,10 @@ async def init_post_db(postgres_conn: Any = None) -> None:
                 resolution TEXT,
                 frame_rate TEXT,
                 premiere_project_path TEXT,
-                proxies_generated_at TEXT
+                proxies_generated_at TEXT,
+                highlights_generated_at TEXT,
+                rough_cut_sequence_name TEXT,
+                rough_cut_assembled_at TEXT
             )
             """
         )
@@ -136,7 +165,11 @@ async def init_post_db(postgres_conn: Any = None) -> None:
         job_columns = {row[1] async for row in cursor}
         if "media_analyzed_at" not in job_columns:
             await db.execute("ALTER TABLE post_jobs ADD COLUMN media_analyzed_at TEXT")
-        for column in ("deliverable_format", "resolution", "frame_rate", "premiere_project_path", "proxies_generated_at"):
+        for column in (
+            "deliverable_format", "resolution", "frame_rate", "premiere_project_path",
+            "proxies_generated_at", "highlights_generated_at",
+            "rough_cut_sequence_name", "rough_cut_assembled_at",
+        ):
             if column not in job_columns:
                 await db.execute(f"ALTER TABLE post_jobs ADD COLUMN {column} TEXT")
         await db.execute(
@@ -244,6 +277,20 @@ async def init_post_db(postgres_conn: Any = None) -> None:
             )
             """
         )
+        await db.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS post_job_file_highlights (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL REFERENCES post_job_files(id),
+                status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN {PROXY_STATUSES}),
+                candidates_json TEXT,
+                candidate_count INTEGER,
+                error_message TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT
+            )
+            """
+        )
         await db.commit()
 
 
@@ -280,7 +327,10 @@ async def _init_postgres(conn: Any) -> None:
                 resolution TEXT,
                 frame_rate TEXT,
                 premiere_project_path TEXT,
-                proxies_generated_at TEXT
+                proxies_generated_at TEXT,
+                highlights_generated_at TEXT,
+                rough_cut_sequence_name TEXT,
+                rough_cut_assembled_at TEXT
             )
             """
         )
@@ -290,6 +340,9 @@ async def _init_postgres(conn: Any) -> None:
         await cur.execute("ALTER TABLE post.jobs ADD COLUMN IF NOT EXISTS frame_rate TEXT")
         await cur.execute("ALTER TABLE post.jobs ADD COLUMN IF NOT EXISTS premiere_project_path TEXT")
         await cur.execute("ALTER TABLE post.jobs ADD COLUMN IF NOT EXISTS proxies_generated_at TEXT")
+        await cur.execute("ALTER TABLE post.jobs ADD COLUMN IF NOT EXISTS highlights_generated_at TEXT")
+        await cur.execute("ALTER TABLE post.jobs ADD COLUMN IF NOT EXISTS rough_cut_sequence_name TEXT")
+        await cur.execute("ALTER TABLE post.jobs ADD COLUMN IF NOT EXISTS rough_cut_assembled_at TEXT")
         await cur.execute(
             f"""
             CREATE TABLE IF NOT EXISTS post.job_files (
@@ -391,6 +444,20 @@ async def _init_postgres(conn: Any) -> None:
                 analysis_text TEXT NOT NULL,
                 frame_count BIGINT NOT NULL,
                 created_at TEXT NOT NULL
+            )
+            """
+        )
+        await cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS post.job_file_highlights (
+                id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                file_id BIGINT NOT NULL REFERENCES post.job_files(id),
+                status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN {PROXY_STATUSES}),
+                candidates_json TEXT,
+                candidate_count BIGINT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT
             )
             """
         )
@@ -542,6 +609,8 @@ async def update_post_job_status(
             if error_message is not None:
                 clauses.append("error_message = %s")
                 params.append(error_message)
+            elif status == "ingesting":
+                clauses.append("error_message = NULL")  # a fresh attempt shouldn't keep the last attempt's failure text
             sql = f"UPDATE post.jobs SET {', '.join(clauses)} WHERE id = %s AND deleted_at IS NULL"
             params.append(job_id)
             if from_statuses is not None:
@@ -568,6 +637,8 @@ async def update_post_job_status(
         if error_message is not None:
             clauses.append("error_message = ?")
             params.append(error_message)
+        elif status == "ingesting":
+            clauses.append("error_message = NULL")
         sql = f"UPDATE post_jobs SET {', '.join(clauses)} WHERE id = ? AND deleted_at IS NULL"
         params.append(job_id)
         if from_statuses is not None:
@@ -785,6 +856,100 @@ async def _update_post_job_file(
         return cursor.rowcount > 0
 
 
+async def apply_post_job_ingest_batch(
+    job_id: int,
+    *,
+    copying_ids: list[int] | None = None,
+    copied: list[tuple[str, int]] | None = None,
+    failed: list[tuple[str, int]] | None = None,
+    verified: list[tuple[str, int]] | None = None,
+    progress: tuple[int, int, int, str | None] | None = None,
+    postgres_conn: Any = None,
+) -> None:
+    """Applies a buffered batch of per-file status marks plus an optional
+    progress snapshot in ONE transaction. Each statement is exactly what
+    its single-row counterpart above runs (mark_post_job_file_copying/
+    copied/failed/verified, update_post_job_progress), just batched --
+    ingest used to await one of those per file and one per 32MB, and
+    against the cloud Postgres each await costs 1-2 network round trips
+    (~0.34s each from Josh's Mac), which dominated the whole copy.
+    copied/failed/verified are (value, file_id) pairs; progress is
+    (bytes_copied, files_copied, files_failed, current_file_path)."""
+    copying_ids = copying_ids or []
+    copied = copied or []
+    failed = failed or []
+    verified = verified or []
+    if not (copying_ids or copied or failed or verified or progress):
+        return
+    if postgres_conn is not None:
+        # pipeline(): all statements go out together and sync once, rather
+        # than waiting on a round trip per statement.
+        async with postgres_conn.pipeline():
+            async with postgres_conn.cursor() as cur:
+                if copying_ids:
+                    await cur.executemany(
+                        "UPDATE post.job_files SET status = 'copying', attempt_count = attempt_count + 1 "
+                        "WHERE id = %s AND deleted_at IS NULL",
+                        [(file_id,) for file_id in copying_ids],
+                    )
+                if copied:
+                    await cur.executemany(
+                        "UPDATE post.job_files SET status = 'copied', source_checksum = %s "
+                        "WHERE id = %s AND deleted_at IS NULL",
+                        copied,
+                    )
+                if failed:
+                    await cur.executemany(
+                        "UPDATE post.job_files SET status = 'failed', error_message = %s "
+                        "WHERE id = %s AND deleted_at IS NULL",
+                        failed,
+                    )
+                if verified:
+                    await cur.executemany(
+                        "UPDATE post.job_files SET status = 'verified', destination_checksum = %s, "
+                        "verified_at = (now() AT TIME ZONE 'utc') WHERE id = %s AND verified_at IS NULL",
+                        verified,
+                    )
+                if progress:
+                    await cur.execute(
+                        "UPDATE post.jobs SET bytes_copied = %s, files_copied = %s, files_failed = %s, "
+                        "current_file_path = %s WHERE id = %s AND deleted_at IS NULL",
+                        (*progress, job_id),
+                    )
+        await postgres_conn.commit()
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        if copying_ids:
+            await db.executemany(
+                "UPDATE post_job_files SET status = 'copying', attempt_count = attempt_count + 1 "
+                "WHERE id = ? AND deleted_at IS NULL",
+                [(file_id,) for file_id in copying_ids],
+            )
+        if copied:
+            await db.executemany(
+                "UPDATE post_job_files SET status = 'copied', source_checksum = ? WHERE id = ? AND deleted_at IS NULL",
+                copied,
+            )
+        if failed:
+            await db.executemany(
+                "UPDATE post_job_files SET status = 'failed', error_message = ? WHERE id = ? AND deleted_at IS NULL",
+                failed,
+            )
+        if verified:
+            await db.executemany(
+                "UPDATE post_job_files SET status = 'verified', destination_checksum = ?, "
+                "verified_at = datetime('now') WHERE id = ? AND verified_at IS NULL",
+                verified,
+            )
+        if progress:
+            await db.execute(
+                "UPDATE post_jobs SET bytes_copied = ?, files_copied = ?, files_failed = ?, "
+                "current_file_path = ? WHERE id = ? AND deleted_at IS NULL",
+                (*progress, job_id),
+            )
+        await db.commit()
+
+
 # ------------------------------------------------------------ post_job_file_metadata (Phase 2)
 
 async def update_post_job_media_analyzed(job_id: int, postgres_conn: Any = None) -> bool:
@@ -828,6 +993,35 @@ async def update_post_job_premiere_project(job_id: int, project_path: str, postg
             "UPDATE post_jobs SET status = 'premiere_project_created', premiere_project_path = ? "
             "WHERE id = ? AND status = 'ingested' AND deleted_at IS NULL",
             (project_path, job_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def update_post_job_rough_cut_assembled(job_id: int, sequence_name: str, postgres_conn: Any = None) -> bool:
+    """Phase 9 -- the UXP plugin's own success callback for "Assemble
+    Rough Cut". No status-transition guard (unlike
+    update_post_job_premiere_project) -- the job stays at
+    'premiere_project_created' throughout, since a rough cut is a
+    re-runnable action on an already-created project, not a pipeline
+    stage of its own. Purely a completion marker + the real sequence
+    name, same shape as update_post_job_highlights_generated."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE post.jobs SET rough_cut_sequence_name = %s, "
+                "rough_cut_assembled_at = (now() AT TIME ZONE 'utc')::text "
+                "WHERE id = %s AND deleted_at IS NULL",
+                (sequence_name, job_id),
+            )
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE post_jobs SET rough_cut_sequence_name = ?, rough_cut_assembled_at = datetime('now') "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (sequence_name, job_id),
         )
         await db.commit()
         return cursor.rowcount > 0
@@ -1051,6 +1245,190 @@ async def mark_post_job_file_proxy_failed(proxy_id: int, error_message: str, pos
         )
         await db.commit()
         return cursor.rowcount > 0
+
+
+# ------------------------------------------------------------ post_job_file_highlights (Phase 9)
+
+async def update_post_job_highlights_generated(job_id: int, postgres_conn: Any = None) -> bool:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE post.jobs SET highlights_generated_at = (now() AT TIME ZONE 'utc')::text "
+                "WHERE id = %s AND deleted_at IS NULL",
+                (job_id,),
+            )
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE post_jobs SET highlights_generated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+            (job_id,),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def create_post_job_file_highlights_batch(file_ids: list[int], postgres_conn: Any = None) -> None:
+    """One 'queued' row per video file in the job. Deletes any prior
+    highlight rows for the same file_ids first -- re-running Detect
+    Highlights replaces stale attempts rather than accumulating
+    duplicate rows, same 'never blindly append on retry' discipline as
+    create_post_job_file_proxies_batch."""
+    if not file_ids:
+        return
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("DELETE FROM post.job_file_highlights WHERE file_id = ANY(%s)", (file_ids,))
+            await cur.executemany(
+                "INSERT INTO post.job_file_highlights (file_id, created_at) VALUES (%s, (now() AT TIME ZONE 'utc'))",
+                [(fid,) for fid in file_ids],
+            )
+        await postgres_conn.commit()
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        placeholders_del = ", ".join("?" for _ in file_ids)
+        await db.execute(f"DELETE FROM post_job_file_highlights WHERE file_id IN ({placeholders_del})", file_ids)
+        await db.executemany(
+            "INSERT INTO post_job_file_highlights (file_id) VALUES (?)", [(fid,) for fid in file_ids]
+        )
+        await db.commit()
+
+
+async def list_post_job_file_highlights(job_id: int, postgres_conn: Any = None) -> list[dict]:
+    """Joined against post_job_files for this job, same shape as
+    list_post_job_file_proxies."""
+    columns = _POST_JOB_FILE_HIGHLIGHT_COLUMNS
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT h.{', h.'.join(columns)}, f.relative_path, f.destination_path "
+                "FROM post.job_file_highlights h JOIN post.job_files f ON h.file_id = f.id "
+                "WHERE f.job_id = %s ORDER BY h.id",
+                (job_id,),
+            )
+            rows = await cur.fetchall()
+            return [dict(zip((*columns, "relative_path", "destination_path"), row)) for row in rows]
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"SELECT h.{', h.'.join(columns)}, f.relative_path, f.destination_path "
+            "FROM post_job_file_highlights h JOIN post_job_files f ON h.file_id = f.id "
+            "WHERE f.job_id = ? ORDER BY h.id",
+            (job_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def list_queued_post_job_file_highlights(job_id: int, postgres_conn: Any = None) -> list[dict]:
+    """The resume/work query -- rows still needing real ffmpeg analysis
+    (queued, or left 'processing' by a killed/restarted loop -- picked
+    back up from scratch, matching Phase 1's own file-level resume
+    decision). Joined against post_job_files for the real
+    destination_path to feed ffmpeg, and media_type via the join isn't
+    needed here since create_post_job_file_highlights_batch's own caller
+    already filters to video files before creating these rows."""
+    columns = _POST_JOB_FILE_HIGHLIGHT_COLUMNS
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT h.{', h.'.join(columns)}, f.relative_path, f.destination_path "
+                "FROM post.job_file_highlights h JOIN post.job_files f ON h.file_id = f.id "
+                "WHERE f.job_id = %s AND h.status IN ('queued', 'processing') ORDER BY h.id",
+                (job_id,),
+            )
+            rows = await cur.fetchall()
+            return [dict(zip((*columns, "relative_path", "destination_path"), row)) for row in rows]
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"SELECT h.{', h.'.join(columns)}, f.relative_path, f.destination_path "
+            "FROM post_job_file_highlights h JOIN post_job_files f ON h.file_id = f.id "
+            "WHERE f.job_id = ? AND h.status IN ('queued', 'processing') ORDER BY h.id",
+            (job_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def mark_post_job_file_highlights_processing(highlight_id: int, postgres_conn: Any = None) -> bool:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute("UPDATE post.job_file_highlights SET status = 'processing' WHERE id = %s", (highlight_id,))
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("UPDATE post_job_file_highlights SET status = 'processing' WHERE id = ?", (highlight_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def mark_post_job_file_highlights_complete(
+    highlight_id: int, candidates_json: str, candidate_count: int, postgres_conn: Any = None,
+) -> bool:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE post.job_file_highlights SET status = 'complete', candidates_json = %s, "
+                "candidate_count = %s, completed_at = (now() AT TIME ZONE 'utc') WHERE id = %s",
+                (candidates_json, candidate_count, highlight_id),
+            )
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE post_job_file_highlights SET status = 'complete', candidates_json = ?, "
+            "candidate_count = ?, completed_at = datetime('now') WHERE id = ?",
+            (candidates_json, candidate_count, highlight_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def mark_post_job_file_highlights_failed(highlight_id: int, error_message: str, postgres_conn: Any = None) -> bool:
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE post.job_file_highlights SET status = 'failed', error_message = %s, "
+                "completed_at = (now() AT TIME ZONE 'utc') WHERE id = %s",
+                (error_message, highlight_id),
+            )
+            updated = cur.rowcount > 0
+        await postgres_conn.commit()
+        return updated
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE post_job_file_highlights SET status = 'failed', error_message = ?, "
+            "completed_at = datetime('now') WHERE id = ?",
+            (error_message, highlight_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_post_job_file_highlights(file_id: int, postgres_conn: Any = None) -> dict | None:
+    """Single-file read for the GET .../highlights route -- only a
+    'complete' row counts as real, usable candidates (a 'failed' or
+    still-'queued' row has no real candidates_json to return)."""
+    columns = _POST_JOB_FILE_HIGHLIGHT_COLUMNS
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT {', '.join(columns)} FROM post.job_file_highlights "
+                "WHERE file_id = %s AND status = 'complete'",
+                (file_id,),
+            )
+            row = await cur.fetchone()
+            return dict(zip(columns, row)) if row else None
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"SELECT {', '.join(columns)} FROM post_job_file_highlights WHERE file_id = ? AND status = 'complete'",
+            (file_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
 
 # ------------------------------------------------------------ post_job_file_transcripts (Phase 6)

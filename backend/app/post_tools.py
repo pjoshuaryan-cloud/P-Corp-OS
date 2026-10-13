@@ -25,7 +25,7 @@ permissions" boundary.
 from typing import Any
 
 from app.post_db import get_post_job_progress, list_post_jobs
-from app.post_media import compute_media_report, compute_proxy_recommendations, trigger_media_analysis, trigger_proxy_generation
+from app.post_media import compute_media_report, compute_proxy_recommendations, trigger_media_analysis, trigger_proxy_generation, trigger_highlight_detection
 
 LIST_POST_JOBS_TOOL = {
     "name": "list_post_jobs",
@@ -104,9 +104,26 @@ GENERATE_POST_JOB_PROXIES_TOOL = {
     },
 }
 
+DETECT_POST_JOB_HIGHLIGHTS_TOOL = {
+    "name": "detect_post_job_highlights",
+    "description": (
+        "Detects real, deterministic candidate highlight moments (real motion + audio-energy signals -- no "
+        "LLM judgment) in a POST job's video files that have no dialogue to anchor Smart Selects on. Media "
+        "analysis must have already run (use analyze_post_job_media first if not). Safe to re-run. The actual "
+        "ffmpeg analysis runs in the background; check back with get_post_job_status."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "integer", "description": "The POST job's id."},
+        },
+        "required": ["job_id"],
+    },
+}
+
 POST_TOOLS = [
     LIST_POST_JOBS_TOOL, GET_POST_JOB_STATUS_TOOL, GET_POST_MEDIA_REPORT_TOOL,
-    ANALYZE_POST_JOB_MEDIA_TOOL, GENERATE_POST_JOB_PROXIES_TOOL,
+    ANALYZE_POST_JOB_MEDIA_TOOL, GENERATE_POST_JOB_PROXIES_TOOL, DETECT_POST_JOB_HIGHLIGHTS_TOOL,
 ]
 POST_TOOL_NAMES = {tool["name"] for tool in POST_TOOLS}
 
@@ -177,6 +194,9 @@ async def execute_post_tool_call(name: str, tool_input: dict, postgres_conn: Any
         return message
     if name == "generate_post_job_proxies":
         _, message, _ = await trigger_proxy_generation(tool_input["job_id"], postgres_conn)
+        return message
+    if name == "detect_post_job_highlights":
+        _, message, _ = await trigger_highlight_detection(tool_input["job_id"], postgres_conn)
         return message
     if name == "get_post_media_report":
         job = await get_post_job_progress(tool_input["job_id"], postgres_conn)

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edit Review</title>
+<style>
+  :root {
+    --bg: #131519; --panel: #1b1e24; --panel-2: #22262e; --line: #2d323c; --text: #e8eaed; --muted: #8b93a1;
+    --accent: #3fc1b0; --accent-ink: #06201c; --warn: #e5a443; --bad: #e0675b;
+    --action: #e5a443; --reaction: #e07aa5; --reveal: #6fa8ee; --camera_move: #a58bf0; --hero: #62c98a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif; }
+  header.bar { position: sticky; top: 0; z-index: 5; background: rgba(19,21,25,.96); backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 14px 24px; align-items: center; }
+  header .title { font-size: 15px; font-weight: 650; letter-spacing: .01em; }
+  header .sub { color: var(--muted); font-size: 12.5px; }
+  .progress { flex: 1 1 220px; min-width: 200px; max-width: 380px; }
+  .progress .track { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin-top: 5px; }
+  .progress .fill { height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+  .spacer { flex: 1; }
+  button { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); padding: 7px 12px; border-radius: 6px; cursor: pointer; }
+  button:hover { border-color: #46505f; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 650; }
+  button:disabled { opacity: .55; cursor: default; }
+  label.toggle { display: flex; align-items: center; gap: 7px; color: var(--muted); cursor: pointer; user-select: none; }
+  main { padding: 18px 20px 80px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .card.approved { border-color: #2f6b5f; }
+  .card .head { display: flex; align-items: baseline; gap: 8px; }
+  .card .head .n { font-weight: 700; font-size: 15px; }
+  .card .head .meta { color: var(--muted); font-size: 12.5px; flex: 1; }
+  .pill { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .pill.role { color: var(--muted); }
+  .pill.ok { color: var(--accent); }
+  .main { display: flex; gap: 12px; }
+  .main video, .main .ph { width: 132px; height: 234px; flex: none; border-radius: 6px; background: #000; object-fit: cover; }
+  .info { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+  .kind { align-self: flex-start; }
+  .what { font-size: 14px; }
+  .small { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .alts-title { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; }
+  .alts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .alt { width: 74px; display: flex; flex-direction: column; gap: 4px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); overflow: hidden; text-align: left; }
+  .alt video, .alt .ph { width: 100%; height: 118px; object-fit: cover; background: #000; display: block; }
+  .alt .lab { font-size: 10.5px; padding: 0 5px 5px; color: var(--muted); line-height: 1.25; }
+  .alt:hover { border-color: var(--accent); }
+  .alt.busy { opacity: .5; pointer-events: none; }
+  .actions { display: flex; gap: 8px; align-items: center; }
+  .empty { color: var(--muted); font-size: 12.5px; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 20px; max-width: 460px; }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog h2 { margin: 0 0 8px; font-size: 16px; }
+  dialog input { width: 100%; padding: 9px 10px; margin: 10px 0 14px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  #player video { width: min(92vw, 420px); max-height: 80vh; border-radius: 8px; background: #000; display: block; }
+  #banner { position: sticky; top: 56px; z-index: 4; padding: 10px 20px; font-size: 13.5px; border-bottom: 1px solid var(--line); }
+  #banner.bad { background: #4a1f1b; color: #ffd7d2; border-color: var(--bad); font-weight: 600; }
+  #banner.ok { background: #16342f; color: #bff0e6; }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); padding: 10px 16px; border-radius: 8px; z-index: 20; max-width: 90vw; }
+  .toast.bad { border-color: var(--bad); color: #ffd7d2; }
+  @media (prefers-reduced-motion: reduce) { .progress .fill { transition: none; } }
+</style>
+</head>
+<body>
+<header class="bar">
+  <div><div class="title" id="title">Edit review</div><div class="sub" id="sub">Loading…</div></div>
+  <div class="progress"><div class="sub" id="progressText">&nbsp;</div><div class="track"><div class="fill" id="fill"></div></div></div>
+  <label class="toggle"><input type="checkbox" id="onlyOpen"> Show only shots I haven't reviewed</label>
+  <div class="spacer"></div>
+  <button id="previewBtn">Rebuild preview video</button>
+  <button id="tokenBtn" title="Change the saved token">Token</button>
+</header>
+<div id="banner" hidden></div>
+<main>
+  <p class="sub" style="max-width:760px;margin:0 0 16px">Each card is one shot of the plan, at a fixed point on the music. Click a smaller clip to use that moment instead, or <b>Keep this</b> if the current one is right. Hover a small clip to play it. Every choice is saved immediately, and what you pass over is recorded too, so future edits learn your taste.</p>
+  <div class="grid" id="grid"></div>
+</main>
+
+<dialog id="tokenDialog">
+  <h2>P Corp OS token</h2>
+  <div class="sub">Paste the same token you gave the Premiere plugin. It stays in this browser only.</div>
+  <input id="tokenInput" type="password" autocomplete="off" placeholder="Paste token">
+  <div style="display:flex;gap:8px;justify-content:flex-end"><button id="tokenSave" class="primary">Save</button></div>
+</dialog>
+<dialog id="player"><video id="playerVideo" controls playsinline></video><div style="margin-top:12px;text-align:right"><button id="playerClose">Close</button></div></dialog>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+const jobId = new URLSearchParams(location.search).get("job");
+const TOKEN_KEY = "pcorp_review_token";
+let token = null; try { token = localStorage.getItem(TOKEN_KEY); } catch (e) {}
+// P Corp OS opens this page with the token after a "#" (a fragment is never sent to any server). Keep it, then
+// take it out of the address bar so it doesn't linger in the URL.
+{ const m = location.hash.match(/(?:^#|&)token=([^&]+)/);
+  if (m) { token = decodeURIComponent(m[1]); try { localStorage.setItem(TOKEN_KEY, token); } catch (e) {} history.replaceState(null, "", location.pathname + location.search); } }
+const $ = (id) => document.getElementById(id);
+const blobCache = new Map();           // "file_start_seconds" -> object URL
+let review = null;
+
+function banner(kind, text) { const b = $("banner"); if (!kind) { b.hidden = true; return; } b.className = kind; b.textContent = text; b.hidden = false; }
+const LIVE_URL = "http://127.0.0.1:8731/static/edit_review.html?job=" + (jobId || "34");
+function toast(message, bad) { const t = $("toast"); t.textContent = message; t.className = "toast" + (bad ? " bad" : ""); t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => { t.hidden = true; }, bad ? 6000 : 2200); }
+function askToken() { return new Promise((resolve) => { const d = $("tokenDialog"); $("tokenInput").value = ""; d.showModal(); $("tokenSave").onclick = () => { const v = $("tokenInput").value.trim(); if (!v) return; token = v; try { localStorage.setItem(TOKEN_KEY, v); } catch (e) {} d.close(); resolve(); }; }); }
+async function api(path, options) {
+  const url = path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
+  let res;
+  try { res = await fetch(url, options); }
+  catch (e) {
+    banner("bad", `NOT SAVED -- this page can't reach the P Corp OS backend (${location.origin}). Nothing you click here is being recorded. Open ${LIVE_URL} in your normal browser and review there.`);
+    throw new Error("Can't reach the backend");
+  }
+  if (res.status === 403) { token = null; try { localStorage.removeItem(TOKEN_KEY); } catch (e) {} await askToken(); return api(path, options); }
+  if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch (e) {} throw new Error(d); }
+  return res;
+}
+const clipKey = (c) => `${c.file_id}_${c.source_in}_${c.seconds}`;
+async function clipUrl(c) {
+  const k = clipKey(c); if (blobCache.has(k)) return blobCache.get(k);
+  const res = await api(`/post/jobs/${jobId}/edit-review/clip?file_id=${c.file_id}&start=${c.source_in}&seconds=${c.seconds}`);
+  const url = URL.createObjectURL(await res.blob()); blobCache.set(k, url); return url;
+}
+const seen = new IntersectionObserver((entries) => { for (const e of entries) if (e.isIntersecting) { seen.unobserve(e.target); e.target._load && e.target._load(); } }, { rootMargin: "300px" });
+function video(c, autoplay) {
+  const holder = document.createElement("div"); holder.className = "ph"; holder.style.minHeight = "10px";
+  holder._load = async () => {
+    try {
+      const v = document.createElement("video"); v.muted = true; v.loop = true; v.playsInline = true; v.preload = "auto"; v.src = await clipUrl(c);
+      v.style.cssText = "object-fit:cover;display:block"; holder.replaceWith(v);  // size comes from the stylesheet (.main video / .alt video)
+      if (autoplay) v.play().catch(() => {}); else { v.addEventListener("mouseenter", () => v.play().catch(() => {})); v.addEventListener("mouseleave", () => { v.pause(); v.currentTime = 0; }); }
+      v.dataset.loaded = "1";
+    } catch (e) { holder.textContent = "clip unavailable"; holder.style.cssText += ";color:#8b93a1;font-size:11px;padding:6px"; }
+  };
+  seen.observe(holder); return holder;
+}
+function kindPill(c) { const k = c.kind; const s = document.createElement("span"); s.className = "pill kind"; s.textContent = k ? k.replace("_", " ") : "no event known"; s.style.color = k ? `var(--${k})` : "var(--muted)"; return s; }
+const originLabel = { same_clip: "same clip", other_clip: "other clip", original: "original" };
+function cardFor(slot) {
+  const card = document.createElement("section"); card.className = "card" + (slot.approved ? " approved" : ""); card.dataset.index = slot.index;
+  const head = document.createElement("div"); head.className = "head";
+  head.innerHTML = `<span class="n">Shot ${slot.index}</span><span class="meta">${slot.seconds.toFixed(2)} s · cut at ${slot.cut_at_seconds.toFixed(2)} s</span>`;
+  if (slot.role !== "body") { const p = document.createElement("span"); p.className = "pill role"; p.textContent = slot.role === "opener" ? "opener" : "closing card"; head.appendChild(p); }
+  if (slot.approved) { const p = document.createElement("span"); p.className = "pill ok"; p.textContent = "reviewed"; head.appendChild(p); }
+  card.appendChild(head);
+  const main = document.createElement("div"); main.className = "main"; main.appendChild(video(slot.current, true));
+  const info = document.createElement("div"); info.className = "info"; info.appendChild(kindPill(slot.current));
+  const what = document.createElement("div"); what.className = "what"; what.textContent = slot.current.what || "Placeholder moment (nothing detected here)"; info.appendChild(what);
+  const small = document.createElement("div"); small.className = "small";
+  small.textContent = [slot.current.scene, slot.current.name.replace(".MP4", ""), slot.current.clip_position != null ? `${Math.round(slot.current.clip_position * 100)}% into the clip` : null, slot.current.punch != null ? `punch ${slot.current.punch}` : null].filter(Boolean).join(" · ");
+  info.appendChild(small);
+  const actions = document.createElement("div"); actions.className = "actions";
+  const keep = document.createElement("button"); keep.className = slot.approved ? "" : "primary"; keep.textContent = slot.approved ? "Keep this (again)" : "Keep this";
+  keep.onclick = () => choose(slot, slot.current, "approve", card); actions.appendChild(keep); info.appendChild(actions);
+  main.appendChild(info); card.appendChild(main);
+  const t = document.createElement("div"); t.className = "alts-title"; t.textContent = slot.alternatives.length ? "Or use one of these" : ""; card.appendChild(t);
+  const alts = document.createElement("div"); alts.className = "alts";
+  if (!slot.alternatives.length) { const e = document.createElement("div"); e.className = "empty"; e.textContent = "No alternatives for this shot."; alts.appendChild(e); }
+  for (const a of slot.alternatives) {
+    const b = document.createElement("button"); b.className = "alt"; b.title = [a.what, a.scene].filter(Boolean).join(" — ");
+    b.appendChild(video(a, false));
+    const lab = document.createElement("div"); lab.className = "lab"; lab.innerHTML = `<span style="color:${a.kind ? `var(--${a.kind})` : "var(--muted)"}">${a.kind ? a.kind.replace("_", " ") : "?"}</span><br>${originLabel[a.origin] || a.origin}${a.origin === "other_clip" ? "<br>" + a.name.replace("MNSTR", "").replace(".MP4", "") : ""}`;
+    b.appendChild(lab); b.onclick = () => choose(slot, a, "swap", card, b); alts.appendChild(b);
+  }
+  card.appendChild(alts); return card;
+}
+function render() {
+  const grid = $("grid"); const only = $("onlyOpen").checked; grid.textContent = "";
+  for (const slot of review.slots) if (!only || !slot.approved) grid.appendChild(cardFor(slot));
+  $("title").textContent = `Edit review — ${review.job.shoot_name}`;
+  $("sub").textContent = `${review.slots.length} shots · ${review.duration_seconds} s · style: ${review.style} · ${review.swapped} swapped`;
+  $("progressText").textContent = `${review.approved} of ${review.total} shots reviewed`;
+  $("fill").style.width = `${Math.round((review.approved / review.total) * 100)}%`;
+}
+async function choose(slot, cand, action, card, btn) {
+  if (btn) btn.classList.add("busy");
+  try {
+    const res = await (await api(`/post/jobs/${jobId}/edit-review/choice`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slot_index: slot.index, file_id: cand.file_id, source_in: cand.source_in, action }) })).json();
+    const i = review.slots.findIndex((s) => s.index === slot.index); review.slots[i] = res.slot; review.approved = res.approved; review.swapped = res.swapped;
+    const fresh = cardFor(res.slot); card.replaceWith(fresh); $("progressText").textContent = `${review.approved} of ${review.total} shots reviewed`; $("fill").style.width = `${Math.round((review.approved / review.total) * 100)}%`;
+    $("sub").textContent = `${review.slots.length} shots · ${review.duration_seconds} s · style: ${review.style} · ${review.swapped} swapped`;
+    if ($("onlyOpen").checked) fresh.remove();
+    banner("ok", `Saved -- shot ${slot.index} ${action === "swap" ? "swapped" : "kept"}. ${review.approved} of ${review.total} reviewed, ${review.swapped} swapped. (Connected to ${location.host})`);
+    toast(action === "swap" ? `Shot ${slot.index}: moment swapped` : `Shot ${slot.index}: kept`);
+  } catch (e) { toast(e.message, true); if (btn) btn.classList.remove("busy"); }
+}
+$("onlyOpen").onchange = () => review && render();
+$("tokenBtn").onclick = () => askToken().then(load);
+$("previewBtn").onclick = async () => {
+  const b = $("previewBtn"); b.disabled = true; const old = b.textContent; b.textContent = "Rendering… about a minute";
+  try {
+    await api(`/post/jobs/${jobId}/edit-preview`, { method: "POST" });
+    const url = URL.createObjectURL(await (await api(`/post/jobs/${jobId}/edit-preview/file`)).blob());
+    $("playerVideo").src = url; $("player").showModal(); $("playerVideo").play().catch(() => {});
+  } catch (e) { toast(e.message, true); } finally { b.disabled = false; b.textContent = old; }
+};
+$("playerClose").onclick = () => { $("playerVideo").pause(); $("player").close(); };
+async function load() {
+  if (location.protocol === "file:") { banner("bad", `NOT SAVED -- this page was opened as a file, so it can't reach your backend. Open ${LIVE_URL} in your browser instead.`); $("sub").textContent = "Opened as a file -- no connection"; return; }
+  if (!jobId) { $("sub").textContent = "Add ?job=<id> to the address, e.g. ?job=34"; return; }
+  if (!token) await askToken();
+  try { review = await (await api(`/post/jobs/${jobId}/edit-review`)).json(); render(); banner("ok", `Connected to ${location.host}. Your choices are saved as you click.`); }
+  catch (e) { $("sub").textContent = e.message; toast(e.message, true); }
+}
+load();
+</script>
+</body>
+</html>

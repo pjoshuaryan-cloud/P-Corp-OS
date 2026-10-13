@@ -25,8 +25,11 @@ precision" instruction: a real constraint on the model's behavior, not
 a guarantee enforced elsewhere.
 """
 
+import asyncio
 import json
 import re
+import time
+from typing import Any, Awaitable, Callable
 
 from anthropic import AsyncAnthropic
 
@@ -51,6 +54,11 @@ automation_potential/owner_time_required are "low", "medium", or "high". confide
 _OPPORTUNITY_BLOCK_RE = re.compile(r"```opportunity\s*\n(.*?)\n```", re.DOTALL)
 
 
+def count_opportunity_blocks(reply_text: str) -> int:
+    """How many idea blocks the reply contains, readable or not (to notice ideas that were written but couldn't be used)."""
+    return len(_OPPORTUNITY_BLOCK_RE.findall(reply_text))
+
+
 def extract_opportunities(reply_text: str) -> list[dict]:
     """Looks for the fenced blocks VENTURES_AGENT_SYSTEM_PROMPT asks
     for -- a well-defined, deterministic marker, not prose-parsing.
@@ -68,9 +76,14 @@ def extract_opportunities(reply_text: str) -> list[dict]:
                 continue
             if owner_time_required not in ("low", "medium", "high"):
                 continue
-            if confidence not in ("high", "medium", "low"):
-                continue
+            # On 2026-10-11 a scan returned two real ideas without this field and both were silently thrown away. The
+            # model's own confidence is the one rating that can safely default: an unrated idea is treated as LOW
+            # (never claim certainty that wasn't given) and flagged, instead of losing the idea.
+            confidence_defaulted = confidence not in ("high", "medium", "low")
+            if confidence_defaulted:
+                confidence = "low"
             opportunities.append({
+                "confidence_defaulted": confidence_defaulted,
                 "name": str(data["name"]),
                 "description": str(data["description"]),
                 "revenue_model": str(data.get("revenue_model", "")) or None,
@@ -86,27 +99,267 @@ def extract_opportunities(reply_text: str) -> list[dict]:
     return opportunities
 
 
-async def scan_for_opportunities(client: AsyncAnthropic, josh_context: str) -> tuple[str, list[dict]]:
+# How hard the model thinks before answering. The first real scan (2026-10-10) spent 6,251 output tokens, only ~1,600 of
+# them visible, in 76.7 s with the default (high) effort and just 2 searches, so the time was mostly reasoning. "medium"
+# keeps the searching and trims that. Compare the [venture_scan] log lines before/after; raise it if ideas get thinner.
+SCAN_EFFORT = "medium"
+
+# Once told what's already on his list the scan searched twice as much (2 -> 4 searches), and every search adds a lot of
+# text to read: input went 29k -> 104k tokens, 56 s -> 71 s, ~10 -> ~26 cents (2026-10-11 log). So the scan gets its OWN
+# copy of the search tool with a lower limit; the shared WEB_SEARCH_TOOL (5) that the other agents use is left alone.
+# When the limit is reached the API refuses further searches with a "max_uses_exceeded" result and the model answers with
+# what it has -- nothing raises.
+SCAN_MAX_SEARCHES = 3
+SCAN_WEB_SEARCH_TOOL = {**WEB_SEARCH_TOOL, "max_uses": SCAN_MAX_SEARCHES}
+
+
+# ------------------------------------------------------- not proposing what Josh already has
+# The scan used to be given only Josh's business data, never his list of ideas, so it kept re-proposing the same ones:
+# by 2026-10-10 it had suggested "retainers" three times (one of them already DISMISSED by Josh) and the "activation
+# package" twice. Text similarity can't catch that (a reworded repeat scores no higher than a different idea), so: (1) the
+# scan is shown everything already on his list, with what he decided, and (2) a cheap second model reads each new idea
+# against that list and drops the ones that are the same idea. If that check fails, nothing is dropped.
+DEDUPE_MODEL = "claude-haiku-5-5"
+MAX_EXISTING_IDEAS = 40
+_STATUS_LABEL = {"new": "pending review", "dismissed": "DISMISSED by Josh (he said no)", "promoted": "already became a venture"}
+
+
+def describe_existing(opportunities: list[dict], ventures: list[dict]) -> list[dict]:
+    """The ideas already on Josh's list, newest first within each group, capped. Decided ones (dismissed, promoted, running
+    ventures) come first because repeating those is the worst mistake; then the pending ones."""
+    items = [{"kind": "venture", "status": "running venture", "name": v.get("name") or "", "description": v.get("description") or ""} for v in ventures]
+    decided = [o for o in opportunities if o.get("status") in ("dismissed", "promoted")]
+    pending = [o for o in opportunities if o.get("status") not in ("dismissed", "promoted")]
+    for o in decided + pending:
+        items.append({"kind": "opportunity", "status": _STATUS_LABEL.get(o.get("status"), o.get("status") or "pending review"),
+                      "name": o.get("name") or "", "description": o.get("description") or ""})
+    return [i for i in items if i["name"]][:MAX_EXISTING_IDEAS]
+
+
+def _short(text: str, n: int) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+def existing_ideas_block(existing: list[dict]) -> str:
+    lines = [f"- [{e['status']}] {e['name']}: {_short(e['description'], 220)}" for e in existing]
+    return ("Ideas already on Josh's list (every status counts):\n" + "\n".join(lines) + "\n\n"
+            "Rules for this scan:\n"
+            "1. Do NOT propose any idea above, or a close variant of one (same kind of customer and same core offer, even if reworded, "
+            "renamed, or narrowed to named clients). A DISMISSED idea stays dismissed.\n"
+            "2. Look somewhere else: a different part of his situation or a different kind of business model than the ones above.\n"
+            "3. It is completely fine to surface nothing. If you cannot find something genuinely new and concrete, say so briefly "
+            "instead of padding the answer with repeats.\n\n")
+
+
+JUDGE_SYSTEM_PROMPT = """You compare business ideas. For each NEW idea decide whether it is essentially the same idea as one of the EXISTING ideas.
+Same idea = same kind of customer AND same core offer or mechanism, even if it is reworded, renamed, priced differently, or narrowed to specific named clients. A narrower or broader version of an existing idea with the same core mechanism IS a repeat. A genuinely different customer, offer or mechanism is NOT a repeat, even in the same industry.
+Reply with ONLY JSON: {"verdicts":[{"new":1,"repeat_of":3,"why":"max 15 words"}, ...]} -- one entry per NEW idea, "repeat_of" the EXISTING idea's number or null if it is not a repeat."""
+
+
+def parse_judge_reply(text: str, n_new: int, n_existing: int) -> dict[int, tuple[int, str]] | None:
+    """{new idea number: (existing idea number, why)} for the ones judged repeats, or None if the reply is unusable.
+    Verdicts naming a number that doesn't exist are ignored (never drop an idea on a bad reference)."""
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    verdicts = data.get("verdicts") if isinstance(data, dict) else None
+    if not isinstance(verdicts, list):
+        return None
+    out: dict[int, tuple[int, str]] = {}
+    for v in verdicts:
+        if not isinstance(v, dict):
+            continue
+        try:
+            new_i, old_i = int(v.get("new")), v.get("repeat_of")
+        except (TypeError, ValueError):
+            continue
+        if old_i is None or isinstance(old_i, bool):
+            continue
+        try:
+            old_i = int(old_i)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= new_i <= n_new and 1 <= old_i <= n_existing:
+            out[new_i] = (old_i, str(v.get("why") or "")[:120])
+    return out
+
+
+async def judge_repeats(client: AsyncAnthropic, new_opps: list[dict], existing: list[dict]) -> tuple[list[dict], list[dict], bool]:
+    """(kept, skipped, check_failed). Fails open: if the check can't run or its answer can't be read, every idea is kept."""
+    if not new_opps or not existing:
+        return new_opps, [], False
+    old_lines = "\n".join(f"{i}. [{e['status']}] {e['name']} -- {_short(e['description'], 260)}" for i, e in enumerate(existing, 1))
+    new_lines = "\n".join(f"{i}. {o['name']} -- {_short(o['description'], 300)} (revenue: {_short(o['revenue_model'], 120)})" for i, o in enumerate(new_opps, 1))
+    try:
+        response = await client.messages.create(
+            model=DEDUPE_MODEL, max_tokens=800, system=JUDGE_SYSTEM_PROMPT, output_config={"effort": "low"},
+            messages=[{"role": "user", "content": f"EXISTING ideas:\n{old_lines}\n\nNEW ideas:\n{new_lines}"}],
+        )
+        verdicts = parse_judge_reply("".join(b.text for b in response.content if getattr(b, "type", "") == "text"), len(new_opps), len(existing))
+    except Exception as exc:
+        print(f"[venture_scan] repeat check failed ({type(exc).__name__}: {str(exc)[:120]}); keeping every idea")
+        return new_opps, [], True
+    if verdicts is None:
+        print("[venture_scan] repeat check gave an unreadable answer; keeping every idea")
+        return new_opps, [], True
+    kept, skipped = [], []
+    for i, opp in enumerate(new_opps, 1):
+        if i in verdicts:
+            old_i, why = verdicts[i]
+            skipped.append({"name": opp["name"], "repeat_of": existing[old_i - 1]["name"], "repeat_of_status": existing[old_i - 1]["status"], "why": why})
+        else:
+            kept.append(opp)
+    return kept, skipped, False
+
+
+def _count_refused_searches(content: list) -> int:
+    """How many searches the API refused because the limit was already used up (a web_search_tool_result whose content is
+    an error object with error_code max_uses_exceeded; a normal result's content is a list)."""
+    refused = 0
+    for b in content:
+        if getattr(b, "type", "") != "web_search_tool_result":
+            continue
+        inner = getattr(b, "content", None)
+        code = inner.get("error_code") if isinstance(inner, dict) else getattr(inner, "error_code", None)
+        if code == "max_uses_exceeded":
+            refused += 1
+    return refused
+
+
+def _count_server_tools(content: list) -> tuple[int, int]:
+    """(web searches, page reads) Claude made inside one request, counted from the response's own tool-use blocks."""
+    searches = sum(1 for b in content if getattr(b, "type", "") == "server_tool_use" and getattr(b, "name", "") == "web_search")
+    fetches = sum(1 for b in content if getattr(b, "type", "") == "server_tool_use" and getattr(b, "name", "") == "web_fetch")
+    return searches, fetches
+
+
+async def scan_for_opportunities(
+    client: AsyncAnthropic, josh_context: str, *, metrics: dict[str, Any] | None = None, source: str = "manual",
+    existing: list[dict] | None = None,
+) -> tuple[str, list[dict]]:
     """One-shot, non-streaming -- same shape as trade_intelligence_
     agent.py's own advisory functions, never a Frank chat tool. Returns
     (raw reply text, extracted+validated opportunities) so the caller
     can log/inspect the reasoning even when zero opportunities were
-    concrete enough to extract."""
+    concrete enough to extract.
+
+    How long the scan took and what it spent are logged on one line and, if `metrics` is given, filled in there
+    (seconds, searches, page_reads, input/output tokens, stop_reason, opportunities) -- a scan is slow because it
+    searches and reads pages one after another, and these numbers say how much of each it actually did."""
     prompt = (
         f"Here's Josh's own context (skills, existing assets, current systems): {josh_context}\n\n"
-        f"Look for 1-3 real, concrete business opportunities he could realistically start, grounded in what "
+        + (existing_ideas_block(existing) if existing else "")
+        + f"Look for 1-3 real, concrete business opportunities he could realistically start, grounded in what "
         f"he already has -- not generic ideas. Search for real current market signal on anything you're not "
-        f"already confident about rather than relying on general knowledge alone."
+        f"already confident about rather than relying on general knowledge alone.\n\n"
+        f"Every ```opportunity block must contain ALL nine fields: name, description, revenue_model, setup_cost, "
+        f"automation_potential, owner_time_required, confidence, risks, recommended_next_step -- including confidence "
+        f"(\"high\", \"medium\" or \"low\"). A block missing any of them can't be used."
     )
+    started = time.monotonic()
     response = await client.messages.create(
         model="claude-sonnet-5",
         max_tokens=8192,
         system=VENTURES_AGENT_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
-        tools=[WEB_SEARCH_TOOL, WEB_FETCH_TOOL],
+        tools=[SCAN_WEB_SEARCH_TOOL, WEB_FETCH_TOOL],
+        output_config={"effort": SCAN_EFFORT},
     )
+    seconds = time.monotonic() - started
     reply_text = "".join(block.text for block in response.content if block.type == "text")
-    return reply_text, extract_opportunities(reply_text)
+    opportunities = extract_opportunities(reply_text)
+    unreadable = count_opportunity_blocks(reply_text) - len(opportunities)  # written by the model but not usable
+    defaulted = sum(1 for o in opportunities if o.get("confidence_defaulted"))
+    opportunities, skipped, check_failed = await judge_repeats(client, opportunities, existing or [])
+    attempts, fetches = _count_server_tools(response.content)
+    refused = _count_refused_searches(response.content)
+    searches = attempts - refused  # searches that actually ran
+    usage = getattr(response, "usage", None)
+    tokens_in, tokens_out = getattr(usage, "input_tokens", 0) or 0, getattr(usage, "output_tokens", 0) or 0
+    stop = getattr(response, "stop_reason", None)
+    # Where the output tokens went. The reply text is what we can see (~4 characters per token); whatever is left of the
+    # output total is reasoning (hidden by default) plus the search queries, which are tiny.
+    thinking_blocks = sum(1 for b in response.content if getattr(b, "type", "") in ("thinking", "redacted_thinking"))
+    visible_tokens = len(reply_text) // 4
+    hidden_tokens = max(0, tokens_out - visible_tokens)
+    if metrics is not None:
+        metrics.update({"seconds": round(seconds, 1), "searches": searches, "page_reads": fetches, "input_tokens": tokens_in,
+                        "output_tokens": tokens_out, "stop_reason": stop, "opportunities": len(opportunities), "effort": SCAN_EFFORT,
+                        "thinking_blocks": thinking_blocks, "visible_tokens_est": visible_tokens, "hidden_tokens_est": hidden_tokens,
+                        "unreadable_blocks": unreadable, "confidence_defaulted": defaulted, "search_limit": SCAN_MAX_SEARCHES, "searches_refused": refused, "existing_ideas": len(existing or []), "repeats_skipped": len(skipped), "repeat_details": skipped, "repeat_check_failed": check_failed})
+    print(f"[venture_scan] {source}: {seconds:.1f} s | {searches} searches{f' (limit of {SCAN_MAX_SEARCHES} reached, {refused} more refused)' if refused else ''}, {fetches} page reads | in {tokens_in:,} / out {tokens_out:,} tokens "
+          f"(~{visible_tokens:,} visible, ~{hidden_tokens:,} hidden; {thinking_blocks} thinking block{'' if thinking_blocks == 1 else 's'}) | effort {SCAN_EFFORT} "
+          f"| {len(opportunities)} opportunit{'y' if len(opportunities) == 1 else 'ies'}"
+          + (f" | {unreadable} idea block{'' if unreadable == 1 else 's'} UNREADABLE and skipped" if unreadable else "")
+          + (f" | {defaulted} without a confidence rating (saved as low)" if defaulted else "")
+          + f" | stop: {stop}"
+          + (f" | vs {len(existing)} existing ideas: {len(skipped)} repeat{'' if len(skipped) == 1 else 's'} skipped" + (" (repeat check FAILED, kept all)" if check_failed else "") if existing else ""))
+    return reply_text, opportunities
+
+
+# ------------------------------------------------------- running a scan in the background
+# A scan is one long request (searches and page reads happen one after another), so it runs as a background task
+# and the app polls its state instead of holding a request open -- no timeout cliff, and leaving the screen doesn't
+# lose it. One scan at a time, held in this process: a backend restart forgets a running scan (nothing was saved yet)
+# but never a finished one (those are saved as opportunities).
+
+class ScanBusyError(RuntimeError):
+    pass
+
+
+_SCAN_RUN: dict[str, Any] | None = None
+
+
+def _friendly_scan_error(exc: Exception) -> str:
+    if getattr(exc, "status_code", None) in (401, 403) or "credit balance" in str(exc).lower():
+        return ("Claude can't be used right now (the API credit balance is too low, or the API key was rejected). "
+                "Add credits at console.anthropic.com/settings/billing, then scan again.")
+    return f"The scan failed: {type(exc).__name__}: {str(exc)[:200]}"
+
+
+def scan_run_state() -> dict[str, Any] | None:
+    """The current/last scan run without its internals; `elapsed_seconds` counts up while it is running."""
+    run = _SCAN_RUN
+    if run is None:
+        return None
+    out = {k: v for k, v in run.items() if k not in ("task", "_t0")}
+    out["metrics"] = dict(run["metrics"])
+    out["created_ids"] = list(run["created_ids"])
+    out["elapsed_seconds"] = round((run["_end"] if run.get("_end") is not None else time.monotonic()) - run["_t0"], 1)
+    return out
+
+
+def start_scan_run(work: Callable[[dict[str, Any]], Awaitable[None]], *, source: str = "manual") -> dict[str, Any]:
+    """Runs `work(run)` in the background and returns the run state at once. `work` fills in run["reply"],
+    run["created_ids"], run["metrics"] and optionally run["message"]. Raises ScanBusyError if one is already running."""
+    global _SCAN_RUN
+    if _SCAN_RUN is not None and _SCAN_RUN["state"] == "running":
+        raise ScanBusyError("A scan is already running.")
+    run: dict[str, Any] = {"state": "running", "source": source, "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "finished_at": None,
+                           "message": None, "reply": None, "created_ids": [], "metrics": {}, "_t0": time.monotonic(), "_end": None}
+
+    async def go() -> None:
+        try:
+            await work(run)
+            run["state"] = "done"
+            if not run["message"]:
+                n = len(run["created_ids"])
+                run["message"] = f"Found {n} new opportunit{'y' if n == 1 else 'ies'}." if n else "Nothing concrete enough to surface this time."
+        except Exception as exc:  # a background task must never die silently
+            run["state"], run["message"] = "failed", _friendly_scan_error(exc)
+            print(f"[venture_scan] {source} scan failed: {type(exc).__name__}: {str(exc)[:200]}")
+        finally:
+            run["_end"] = time.monotonic()
+            run["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    run["task"] = asyncio.get_running_loop().create_task(go())  # kept in the dict so it isn't garbage-collected mid-run
+    _SCAN_RUN = run
+    return scan_run_state()
 
 
 # ------------------------------------------------------- Validation Engine

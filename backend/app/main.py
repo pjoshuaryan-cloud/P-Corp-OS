@@ -60,7 +60,7 @@ from psycopg_pool import AsyncConnectionPool
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -184,8 +184,9 @@ from app.trade_proposals_db import (
     record_execution_result,
     resolve_proposal,
 )
-from app.post_db import init_post_db, list_post_jobs, get_post_job, get_post_job_progress, create_post_job, update_post_job_status, delete_post_job, list_post_job_files, list_post_job_file_metadata, update_post_job_premiere_project, list_post_job_file_proxies, create_or_replace_post_job_file_transcript, get_post_job_file_transcript, list_post_job_file_transcripts, create_or_replace_post_job_file_visual_analysis, get_post_job_file_visual_analysis, DELIVERABLE_FORMATS, RESOLUTIONS, FRAME_RATES
-from app.post_media import compute_media_report, compute_proxy_recommendations, trigger_media_analysis, trigger_proxy_generation, extract_representative_frames, compute_exposure_nudge_stops
+from app.ssd_guard import DriveNotResponding, drive_status, on_drive
+from app.post_db import init_post_db, list_post_jobs, get_post_job, get_post_job_progress, create_post_job, update_post_job_status, delete_post_job, list_post_job_files, list_post_job_file_metadata, update_post_job_premiere_project, update_post_job_rough_cut_assembled, list_post_job_file_proxies, create_or_replace_post_job_file_transcript, get_post_job_file_transcript, list_post_job_file_transcripts, create_or_replace_post_job_file_visual_analysis, get_post_job_file_visual_analysis, get_post_job_file_highlights, DELIVERABLE_FORMATS, RESOLUTIONS, FRAME_RATES
+from app.post_media import compute_media_report, compute_proxy_recommendations, trigger_media_analysis, trigger_proxy_generation, extract_representative_frames, compute_exposure_nudge_stops, trigger_highlight_detection
 from app.post_vision_agent import analyze_frames
 from app.post_transcripts import summarize_transcript, generate_srt, format_readable_transcript, find_smart_select_candidates
 from app.post_sources import list_source_volumes
@@ -246,9 +247,13 @@ from app.ventures_agent import (
     generate_marketing_content,
     generate_operations_sop,
     narrate_financial_health,
+    ScanBusyError,
+    describe_existing,
     run_validation,
     scan_for_opportunities,
+    scan_run_state,
     scout_automation_opportunities,
+    start_scan_run,
 )
 from app.hf_markets_client import (
     PENDING_ORDER_FILE_PATH,
@@ -384,7 +389,26 @@ MODEL = "claude-sonnet-5"
 # replies -- that's a soft prompt-level default, not a hard token cap --
 # it just stops hard-truncating the genuinely longer replies (relaying a
 # drafted document, etc.) that need more room.
-MAX_TOKENS = 4096
+#
+# Real bug found live (2026-09-29): 4096 was STILL not enough --
+# generate_pdf_document's own contract (documents.py) requires the
+# entire document body as one markdown string in a single tool call,
+# with no continuation mechanism. A substantial document (e.g. a
+# founder brief pulling from several other tools first) plus any
+# preceding narration text can exceed 4096 tokens combined, hitting
+# stop_reason="max_tokens" mid-tool-call -- which silently discarded
+# the whole in-flight tool call (see the stop_reason handling below),
+# so Frank kept confidently claiming "building it now" with nothing
+# ever actually generated. Same failure class already found and fixed
+# elsewhere in this codebase for exactly this reason -- ventures_agent.py's
+# own long-form generation calls (build_venture_content, generate_operations_sop,
+# generate_marketing_content, scout_automation_opportunities) all use
+# max_tokens=8192, and agent_codebase_tools.py's own consult loop uses
+# 16000 -- raised to match the higher of the two since Frank's main
+# loop is the single most tool-diverse, longest-running conversational
+# loop in this app and can't predict in advance how much room a given
+# turn's tool calls will need.
+MAX_TOKENS = 16000
 AUTH_TOKEN = get_or_create_token()
 
 # Optional — cloud text-to-speech (see .env.example). Confirmed decision
@@ -812,31 +836,63 @@ async def build_ventures_josh_context(postgres_conn=None) -> str:
 VENTURE_SCAN_MAX_PENDING = 10
 
 
+def _venture_scan_work(source: str, *, record_audit: bool):
+    """The whole scan as a job for start_scan_run: read Josh's context, ask Claude (searches and page reads, minutes), save
+    what it found. The database is only touched in two short checkouts -- never held open across the Claude call."""
+    async def work(run: dict) -> None:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set.")
+        async with _pooled_postgres_conn() as postgres_conn:
+            josh_context = await build_ventures_josh_context(postgres_conn)
+            existing = describe_existing(await list_opportunities(postgres_conn=postgres_conn), await list_ventures(postgres_conn))
+        client = AsyncAnthropic(api_key=api_key)
+        reply, opportunities = await scan_for_opportunities(client, josh_context, metrics=run["metrics"], source=source, existing=existing)
+        created_ids = []
+        async with _pooled_postgres_conn() as postgres_conn:
+            for opp in opportunities:
+                new_id = await create_opportunity(
+                    opp["name"], opp["description"], opp["revenue_model"], opp["setup_cost"],
+                    opp["automation_potential"], opp["owner_time_required"], opp["confidence"],
+                    opp["risks"], opp["recommended_next_step"], source="radar", postgres_conn=postgres_conn,
+                )
+                created_ids.append(new_id)
+            if record_audit:
+                await record_tool_call("venture_opportunity_scan_ui", {"created_ids": created_ids, **run["metrics"]}, "ok", postgres_conn)
+        run["reply"], run["created_ids"] = reply, created_ids
+        skipped = run["metrics"].get("repeat_details") or []
+        unreadable = run["metrics"].get("unreadable_blocks") or 0
+        if skipped:
+            names = "; ".join(f"\"{s['name']}\" (same as \"{s['repeat_of']}\", {s['repeat_of_status']})" for s in skipped)
+            if created_ids:
+                n = len(created_ids)
+                run["message"] = f"Found {n} new opportunit{'y' if n == 1 else 'ies'}. Skipped {len(skipped)} repeat{'' if len(skipped) == 1 else 's'}: {names}."
+            else:
+                run["message"] = f"Nothing new this time: it only came up with ideas you already have. Skipped: {names}."
+        if unreadable:  # the model wrote them but they couldn't be used: say so instead of "nothing found"
+            note = f"{unreadable} idea{'' if unreadable == 1 else 's'} came back incomplete and couldn't be saved (see the backend log)."
+            if run["message"]:
+                run["message"] += " " + note
+            else:
+                n = len(created_ids)
+                run["message"] = (f"Found {n} new opportunit{'y' if n == 1 else 'ies'}. " if created_ids else "Nothing saved. ") + note
+    return work
+
+
 async def _venture_scan_loop(app: FastAPI) -> None:
     while True:
         await asyncio.sleep(VENTURE_SCAN_INTERVAL_SECONDS)
         if not hasattr(app.state, "postgres_pool"):
             continue
         try:
+            current = scan_run_state()
+            if current is not None and current["state"] == "running":
+                continue  # Josh started one by hand
             async with app.state.postgres_pool.connection() as conn:
                 pending = await list_opportunities(status="new", postgres_conn=conn)
-                if len(pending) >= VENTURE_SCAN_MAX_PENDING:
-                    continue
-
-                api_key = os.environ.get("ANTHROPIC_API_KEY")
-                if not api_key:
-                    continue
-                client = AsyncAnthropic(api_key=api_key)
-                josh_context = await build_ventures_josh_context(conn)
-                _reply, opportunities = await scan_for_opportunities(client, josh_context)
-                for opp in opportunities:
-                    await create_opportunity(
-                        opp["name"], opp["description"], opp["revenue_model"], opp["setup_cost"],
-                        opp["automation_potential"], opp["owner_time_required"], opp["confidence"],
-                        opp["risks"], opp["recommended_next_step"], source="radar", postgres_conn=conn,
-                    )
-                if opportunities:
-                    print(f"[venture_scan] surfaced {len(opportunities)} new opportunit{'y' if len(opportunities) == 1 else 'ies'}")
+            if len(pending) >= VENTURE_SCAN_MAX_PENDING or not os.environ.get("ANTHROPIC_API_KEY"):
+                continue
+            start_scan_run(_venture_scan_work("daily", record_audit=False), source="daily")
         except Exception as exc:
             print(f"[venture_scan] tick failed: {type(exc).__name__}: {exc}")
 
@@ -931,7 +987,31 @@ async def lifespan(app: FastAPI):
     # (e.g. digest_notification.py's check=True) -- a silent fallback here
     # would mean a misconfigured cloud-read test looked like it passed
     # while actually still reading local SQLite the whole time.
-    if DATA_BACKEND == "postgres" and not hasattr(app.state, "postgres_pool"):
+    # task_5151ca8b fix (2026-09-29): the guard used to be
+    # `not hasattr(app.state, "postgres_pool")` with `app.state.postgres_pool`
+    # assigned BEFORE `.open()`/the migrations below -- so the LOSING
+    # lifespan entry's own hasattr check could pass while the pool was
+    # still mid-setup, letting it race ahead into the loop-registration
+    # block below and start a background task against a pool that
+    # wasn't actually open or migrated yet. Fixed with the same two-part
+    # pattern already proven for `db_initialized` just above (a
+    # synchronous claim before any await, real setup on a local
+    # variable, `app.state.postgres_pool` assigned only once fully
+    # ready) -- except the LOSING entry here can't just skip ahead like
+    # `db_initialized`'s does, since it genuinely needs a ready pool
+    # before it's safe to proceed, so it plain-polls
+    # (`asyncio.sleep` in a loop) until the pool appears. Deliberately
+    # NOT an asyncio.Event: an Event-based version of this exact fix was
+    # tried live on 2026-09-28 and produced a real, reproducible
+    # deadlock (the second uvicorn instance never reached "Uvicorn
+    # running" across three restarts, root cause never identified) and
+    # was reverted rather than risk it in production. This polling
+    # version was verified first in complete isolation (a standalone
+    # two-uvicorn-instance repro matching _run_dual's exact structure,
+    # 23 runs across three migration-delay profiles from 1ms to 3s, zero
+    # hangs and zero races) before being applied here.
+    if DATA_BACKEND == "postgres" and not hasattr(app.state, "postgres_setup_started"):
+        app.state.postgres_setup_started = True
         if not CLOUD_POSTGRES_DSN:
             raise RuntimeError("DATA_BACKEND=postgres requires CLOUD_POSTGRES_DSN to be set.")
         # Real connection pool (2026-09-22), replacing one long-lived
@@ -960,19 +1040,32 @@ async def lifespan(app: FastAPI):
         # is one person on at most two devices plus a handful of
         # background loops, nowhere near even the 30-way figure) without
         # over-provisioning Postgres-side connections.
-        app.state.postgres_pool = AsyncConnectionPool(
+        _postgres_pool = AsyncConnectionPool(
             conninfo=CLOUD_POSTGRES_DSN,
             min_size=1,
             max_size=10,
             kwargs={"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3},
             open=False,
         )
-        await app.state.postgres_pool.open()
-        async with app.state.postgres_pool.connection() as conn:
+        await _postgres_pool.open()
+        async with _postgres_pool.connection() as conn:
             await init_trade_intelligence_db(postgres_conn=conn)
             await init_trade_proposals_db(postgres_conn=conn)
             await init_ventures_db(postgres_conn=conn)
             await init_post_db(postgres_conn=conn)
+        # Assigned to app.state only now that the pool is genuinely open
+        # AND every migration above has committed -- this single
+        # attribute existing is what the rest of the app (including the
+        # other lifespan entry, below) treats as "safe to use."
+        app.state.postgres_pool = _postgres_pool
+    elif DATA_BACKEND == "postgres":
+        # Lost the race to set up the pool -- wait for the winning
+        # entry's own setup (above) to actually finish, not just start,
+        # before proceeding to the loop-registration block below (which
+        # could otherwise start a background task against a pool that
+        # doesn't exist yet, or isn't open/migrated yet).
+        while not hasattr(app.state, "postgres_pool"):
+            await asyncio.sleep(0.02)
     # Cloud mode never runs these loops at all (2026-09-10): there's no
     # lock of any kind (advisory or otherwise) preventing the Mac and a
     # cloud instance from both independently running the daily digest,
@@ -1051,6 +1144,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="P Corp OS Backend", lifespan=lifespan)
 
 
+@app.exception_handler(DriveNotResponding)
+async def _drive_not_responding(_request: Request, exc: DriveNotResponding) -> JSONResponse:
+    """The external drive didn't answer (see ssd_guard.py): a plain 503 the apps show as-is, never a frozen backend."""
+    return JSONResponse(status_code=503, content={"detail": exc.message})
+
+
 # Real bug found live (2026-09-22, same night as the pool migration
 # itself): these specific routes do a brief DB read, then a slow
 # external Claude API call (real search/thinking, confirmed to take
@@ -1088,6 +1187,9 @@ _SLOW_VENTURE_ROUTE_RE = re.compile(
 # same reasoning as the venture routes above, with two dynamic path
 # segments (job_id, file_id) instead of one.
 _SLOW_POST_VISION_ROUTE_RE = re.compile(r"^/post/jobs/\d+/files/\d+/visual-analysis$")
+# Edit plan + preview routes (2026-10-07): song analysis and video rendering take seconds to a minute, so
+# they manage their own short-lived connection like the other slow routes (no pooled one held across ffmpeg).
+_SLOW_POST_EDIT_ROUTE_RE = re.compile(r"^/post/jobs/\d+/(edit-plan|edit-preview|find-moments)$")
 
 
 def _is_slow_route(method: str, path: str) -> bool:
@@ -1106,6 +1208,7 @@ def _is_slow_route(method: str, path: str) -> bool:
         path in _SLOW_ROUTE_PATHS
         or bool(_SLOW_VENTURE_ROUTE_RE.match(path))
         or bool(_SLOW_POST_VISION_ROUTE_RE.match(path))
+        or bool(_SLOW_POST_EDIT_ROUTE_RE.match(path))
     )
 
 
@@ -1202,6 +1305,7 @@ async def status(request: Request, _: None = Depends(verify_token)) -> dict:
 
     return {
         "backend": "online",
+        "drive": drive_status(),
         "database_reachable": database_reachable,
         "credits_exhausted_since": await get_credits_exhausted_since(postgres_conn),
         "integrations": integrations,
@@ -2010,31 +2114,23 @@ async def ventures_opportunities_list(
 
 @app.post("/ventures/opportunities/scan")
 async def ventures_opportunities_scan(_: None = Depends(verify_token)) -> dict:
-    # This is a _SLOW_ROUTE_PATHS entry -- a real Claude call with web
-    # search, the same multi-minute-capable shape as Trade
-    # Intelligence's own routes. Manages its own short-lived DB
-    # checkout rather than the normal whole-request middleware one --
-    # see _SLOW_ROUTE_PATHS' own comment for why holding a pooled
-    # connection through a slow external call is a real, already-fixed
-    # bug class tonight, not a hypothetical one.
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
+    """Starts a scan in the BACKGROUND and returns at once -- Claude searches the web and reads pages one after another,
+    which takes a minute or two; poll GET /ventures/opportunities/scan/run. (`reply` and `created_ids` are kept in the
+    response, empty, so an app build from before this change still decodes it.)"""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
-    async with _pooled_postgres_conn() as postgres_conn:
-        josh_context = await build_ventures_josh_context(postgres_conn)
-    client = AsyncAnthropic(api_key=api_key)
-    reply, opportunities = await scan_for_opportunities(client, josh_context)
-    created_ids = []
-    async with _pooled_postgres_conn() as postgres_conn:
-        for opp in opportunities:
-            new_id = await create_opportunity(
-                opp["name"], opp["description"], opp["revenue_model"], opp["setup_cost"],
-                opp["automation_potential"], opp["owner_time_required"], opp["confidence"],
-                opp["risks"], opp["recommended_next_step"], source="radar", postgres_conn=postgres_conn,
-            )
-            created_ids.append(new_id)
-        await record_tool_call("venture_opportunity_scan_ui", {"created_ids": created_ids}, "ok", postgres_conn)
-    return {"reply": reply, "created_ids": created_ids}
+    try:
+        run = start_scan_run(_venture_scan_work("manual", record_audit=True), source="manual")
+    except ScanBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"started": True, "run": run, "reply": "", "created_ids": []}
+
+
+@app.get("/ventures/opportunities/scan/run")
+async def ventures_opportunities_scan_run(_: None = Depends(verify_token)) -> dict:
+    """State of the current/last scan (in memory: no database, cheap to poll): running / done / failed, how long it has
+    taken, what it found, and how much searching and reading it did."""
+    return {"run": scan_run_state()}
 
 
 @app.post("/ventures/opportunities/{opportunity_id}/promote")
@@ -2745,6 +2841,23 @@ async def post_job_proxies_list(job_id: int, request: Request, _: None = Depends
     return {"proxies": await list_post_job_file_proxies(job_id, postgres_conn)}
 
 
+@app.post("/post/jobs/{job_id}/detect-highlights")
+async def post_job_detect_highlights(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Phase 9's own manual gate, same discipline as /generate-proxies --
+    a fast guarded status flip plus creating the 'queued' highlight rows
+    for every real video file in the job. The actual ffmpeg motion/audio
+    analysis happens in the background loop's own 'analyzing_color'
+    phase (reused as the transient marker -- see POST_JOB_STATUSES's
+    own comment), never inline here."""
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    started, message, file_count = await trigger_highlight_detection(job_id, postgres_conn)
+    if not started:
+        status_code = 404 if message.startswith("No POST job") else 400
+        raise HTTPException(status_code=status_code, detail=message)
+    await record_tool_call("post_job_detect_highlights_ui", {"job_id": job_id, "file_count": file_count}, "ok", postgres_conn)
+    return {"started": True, "file_count": file_count}
+
+
 @app.get("/post/jobs/{job_id}/premiere-prep")
 async def post_job_premiere_prep(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
     """Phase 3 -- everything the UXP plugin needs to build a real Premiere
@@ -2793,6 +2906,8 @@ async def post_job_premiere_prep(job_id: int, request: Request, _: None = Depend
                 "width": (metadata_by_file_id.get(f["id"]) or {}).get("width"),
                 "height": (metadata_by_file_id.get(f["id"]) or {}).get("height"),
                 "audio_codec": (metadata_by_file_id.get(f["id"]) or {}).get("audio_codec"),
+                "creation_time": (metadata_by_file_id.get(f["id"]) or {}).get("creation_time"),
+                "duration_seconds": (metadata_by_file_id.get(f["id"]) or {}).get("duration_seconds"),
                 "proxy_path": proxy_path_by_file_id.get(f["id"]),
                 "probe_error": (metadata_by_file_id.get(f["id"]) or {}).get("probe_error"),
                 "color_profile_guess": (metadata_by_file_id.get(f["id"]) or {}).get("color_profile_guess"),
@@ -2802,7 +2917,14 @@ async def post_job_premiere_prep(job_id: int, request: Request, _: None = Depend
                 "exposure_nudge_stops": compute_exposure_nudge_stops((metadata_by_file_id.get(f["id"]) or {}).get("avg_luma")),
             }
             for f in files
-            if f["status"] == "verified"
+            # Only real, readable media goes to Premiere. Camera sidecars
+            # (e.g. Sony's per-clip .XML) and unreadable files have no media
+            # type from ffprobe, so they used to land in an "Other" bin and
+            # the plugin tried to import all of them into the project --
+            # 112 XML files for the JD Sports shoot, found 2026-10-06 before
+            # the first real run. They stay copied to the destination and
+            # listed in the media report; they just aren't imported.
+            if f["status"] == "verified" and (metadata_by_file_id.get(f["id"]) or {}).get("media_type")
         ],
     }
 
@@ -2824,6 +2946,375 @@ async def post_job_premiere_project_created(
         raise HTTPException(status_code=400, detail=f"Job must be 'ingested' to report Premiere completion (currently {job['status']!r})")
     await record_tool_call("post_job_premiere_project_created_ui", {"job_id": job_id, "project_path": body.project_path}, "ok", postgres_conn)
     return {"updated": True}
+
+
+class RoughCutAssembledRequest(BaseModel):
+    sequence_name: str
+    clip_count: int
+    candidate_count: int
+
+
+@app.post("/post/jobs/{job_id}/rough-cut-assembled")
+async def post_job_rough_cut_assembled(
+    job_id: int, body: RoughCutAssembledRequest, request: Request, _: None = Depends(verify_token)
+) -> dict:
+    """Phase 9 -- the plugin's own success callback for "Assemble Rough
+    Cut". No status-transition guard (see update_post_job_rough_cut_assembled's
+    own docstring) -- this is a re-runnable action on an already-created
+    Premiere project, not a pipeline stage. Never Frank-reachable -- no
+    tool exists for this, matching every other plugin-only action's own
+    zero chat-tool surface."""
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    updated = await update_post_job_rough_cut_assembled(job_id, body.sequence_name, postgres_conn)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    await record_tool_call(
+        "post_job_rough_cut_assembled_ui",
+        {"job_id": job_id, "sequence_name": body.sequence_name, "clip_count": body.clip_count, "candidate_count": body.candidate_count},
+        "ok",
+        postgres_conn,
+    )
+    return {"updated": True}
+
+
+class EditPlanRequest(BaseModel):
+    style: list[str]  # saved reference slugs the style is taken from (post_reference.py); several are pooled
+    music_path: str | None = None  # default: the newest track in the job's music folder
+    music_in_seconds: float | None = None  # default: the stretch of the song with the most strong hits
+    target_seconds: float | None = None  # default: the style's own length
+    bookend_file_id: int | None = None  # an establishing clip that opens the edit and returns as the closing card
+    order_names: list[str] | None = None  # clip order (basenames), e.g. read off the Premiere timeline
+    seed: int = 7
+    script: str | None = None  # narration script for a narrated b-roll story: one phrase per shot, plus a captions (.srt) file
+    camera_file_ids: list[int] | None = None  # talking head: the clips that filmed the same interview (two or more); the first is the reference camera
+    audio_file_id: int | None = None  # talking head: which camera's own audio is the dialogue (default: the first)
+    brand_graphics: bool = True  # corporate story: opening/closing brand cards, logo bug and caption images from the job's logo (when it has one)
+    burn_captions: bool = True  # ... and burn the narration captions in as images (off: only the .srt)
+    card_tagline: str | None = None  # the opening card's tagline
+    card_contact: list[str] | None = None  # the closing card's contact lines (up to four)
+
+
+@app.get("/post/styles")
+async def post_styles(include_reference_only: bool = False, _: None = Depends(verify_token)) -> dict:
+    """Saved reference edits a job can take its style from. By default only the ones the planner can build from (music-driven
+    edits); include_reference_only=true also lists the talking-head and narrated-b-roll references, which are saved for study."""
+    from app.post_style import available_styles
+    return {"styles": available_styles(buildable_only=not include_reference_only)}
+
+
+@app.get("/post/edit-types")
+async def post_edit_types_route(_: None = Depends(verify_token)) -> dict:
+    """The kinds of edit, what the planner can build, and a plain-English recipe for every saved reference (read from its own measurements)."""
+    from app import post_reference as pr
+    from app.post_edit_types import EDIT_TYPES, recipe_lines, type_info
+    refs = []
+    for path in sorted(pr.REFERENCE_DIR.glob("*.json")):
+        rec = pr.load_reference(path.stem)
+        kind = (rec["tags"].get("edit_type") or "music_montage")
+        refs.append({"slug": rec["slug"], "title": " -- ".join(x for x in (rec["tags"].get("client"), rec["tags"].get("event")) if x) or rec["slug"], "edit_type": kind,
+                     "buildable": type_info(kind)["buildable"], "inferred": bool(rec["tags"].get("inferred")), "recipe": [] if rec.get("composite_of") else recipe_lines(rec)})
+    return {"types": EDIT_TYPES, "references": refs}
+
+
+@app.post("/post/jobs/{job_id}/edit-plan")
+async def post_job_edit_plan(job_id: int, body: EditPlanRequest, _: None = Depends(verify_token)) -> dict:
+    """Plans an edit for a job: for a music-driven style, cuts on the music's hits in the style's rhythm; for a narrated b-roll
+    story, shoot-order b-roll at the style's pace (one shot per narration phrase when `script` is given); for a talking head, the
+    cameras in `camera_file_ids` lined up by sound and switched at quiet gaps. One clip/moment (or angle) per slot. Writes the plan (and the music cut) next to the project; the Premiere plugin builds the sequence from
+    it. A slow route (song analysis) -- manages its own short-lived connection."""
+    from app.post_edit_plan import EditPlanError, plan_for_job
+    async with _pooled_postgres_conn() as postgres_conn:
+        try:
+            plan = await plan_for_job(
+                job_id, style=body.style, music_path=body.music_path, music_in_seconds=body.music_in_seconds,
+                target_seconds=body.target_seconds, bookend_file_id=body.bookend_file_id, order_names=body.order_names,
+                seed=body.seed, script=body.script, camera_file_ids=body.camera_file_ids, audio_file_id=body.audio_file_id,
+                brand_graphics=body.brand_graphics, burn_captions=body.burn_captions, card_tagline=body.card_tagline, card_contact=body.card_contact, postgres_conn=postgres_conn,
+            )
+        except EditPlanError as exc:
+            raise HTTPException(status_code=404 if str(exc).startswith("No POST job") else 400, detail=str(exc))
+        await record_tool_call("post_job_edit_plan_ui", {"job_id": job_id, "style": body.style, "shots": plan["checks"]["shot_count"]}, "ok", postgres_conn)
+    return plan
+
+
+class EditAccentsRequest(BaseModel):
+    enabled: bool = True  # false removes the accents from the saved plan
+    style: list[str] | None = None  # default: the plan's own style
+    logo_path: str | None = None  # default: the newest image in the job's graphics folder
+    sfx: bool = False  # sound effects from the SFX library (stand-ins; swap them in Premiere)
+    seed: int = 11
+
+
+@app.post("/post/jobs/{job_id}/edit-accents")
+async def post_job_edit_accents(job_id: int, body: EditAccentsRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Adds accents (flashes, zoom hits, per-shot zoom blur, black & white closing shots, logo, optional sound
+    effects) to the job's SAVED plan from its style's measured rules -- shots and review decisions are untouched.
+    The Premiere plugin places them when it assembles the edit."""
+    from app.post_edit_plan import EditPlanError, add_accents_to_saved_plan
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    async with _EDIT_REVIEW_LOCK:
+        try:
+            result = await add_accents_to_saved_plan(job, style=body.style, logo_path=body.logo_path, sfx=body.sfx, enabled=body.enabled, seed=body.seed)
+        except EditPlanError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    await record_tool_call("post_job_edit_accents_ui", {"job_id": job_id, "enabled": body.enabled, "sfx": body.sfx}, "ok", postgres_conn)
+    return result
+
+
+@app.get("/post/jobs/{job_id}/edit-plan")
+async def post_job_edit_plan_latest(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """The most recent saved plan for this job (what the plugin builds from)."""
+    from app.post_edit_plan import load_saved_plan
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    plan = await on_drive(load_saved_plan, job)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"Job #{job_id} has no edit plan yet -- plan one first.")
+    return plan
+
+
+@app.post("/post/jobs/{job_id}/edit-preview")
+async def post_job_edit_preview(job_id: int, _: None = Depends(verify_token)) -> dict:
+    """Renders the saved plan to a small vertical MP4 with the music, so it can be watched before Premiere."""
+    from app.post_edit_plan import EditPlanError, edit_dir, load_saved_plan, render_preview
+    async with _pooled_postgres_conn() as postgres_conn:
+        job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    plan = await on_drive(load_saved_plan, job)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"Job #{job_id} has no edit plan yet -- plan one first.")
+    out = edit_dir(job) / "edit_preview.mp4"
+    try:
+        await render_preview(plan, plan["music"]["cut_path"], str(out), str(edit_dir(job) / "preview_work"))
+    except EditPlanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    from app.post_edit_plan import write_preview_fingerprint
+    await on_drive(write_preview_fingerprint, job, plan, writing=True)  # lets the planning screen tell whether this preview still matches the plan
+    return {"preview_path": str(out), "shots": len(plan["shots"]), "seconds": plan["duration_seconds"]}
+
+
+_EDIT_REVIEW_LOCK = asyncio.Lock()  # one decision at a time: each one reads, changes and rewrites the plan file
+
+
+async def _review_context(job_id: int, request: Request):
+    """(job, plan, clips-with-moments) for the review routes; HTTP errors for the usual misses."""
+    from app.post_edit_plan import attach_moments, load_job_clips, load_saved_plan
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    plan = await on_drive(load_saved_plan, job)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"Job #{job_id} has no edit plan yet -- plan one first.")
+    clips = await on_drive(attach_moments, await load_job_clips(job_id, postgres_conn), job)
+    return job, plan, clips, postgres_conn
+
+
+@app.get("/post/jobs/{job_id}/edit-review")
+async def post_job_edit_review(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Every slot of the saved plan with its current moment and a few alternatives (see post_review.py)."""
+    from app.post_review import build_review
+    job, plan, clips, _conn = await _review_context(job_id, request)
+    review = build_review(plan, clips)
+    review["job"] = {"id": job["id"], "shoot_name": job["shoot_name"]}
+    return review
+
+
+@app.get("/post/jobs/{job_id}/edit-review/clip")
+async def post_job_edit_review_clip(
+    job_id: int, file_id: int, start: float, seconds: float, request: Request, _: None = Depends(verify_token)
+) -> FileResponse:
+    """A small silent looping preview of one candidate moment (rendered once, then cached on disk). The source
+    file comes from the job's own records, never from the request."""
+    from app.post_edit_plan import edit_dir
+    from app.post_review import ReviewError, clip_cache_path, render_review_clip
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    row = next((f for f in await list_post_job_files(job_id, postgres_conn) if f["id"] == file_id), None)
+    if row is None or not await on_drive(Path(row["destination_path"]).exists):
+        raise HTTPException(status_code=404, detail=f"File {file_id} isn't available on job {job_id}")
+    start, seconds = max(0.0, min(start, 7200.0)), max(0.1, min(seconds, 5.0))
+    try:
+        out = await render_review_clip(row["destination_path"], start, seconds, clip_cache_path(edit_dir(job), file_id, start, seconds))
+    except ReviewError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return FileResponse(out, media_type="video/mp4")
+
+
+class ReviewChoiceRequest(BaseModel):
+    slot_index: int
+    file_id: int
+    source_in: float
+    action: str  # "swap" (use this moment) or "approve" (keep the current one)
+
+
+def _save_review_choice(job: dict, job_id: int, plan: dict, action: str, outcome: dict) -> None:
+    from app.post_edit_plan import edit_dir, plan_to_json
+    from app.post_review import log_record
+    (edit_dir(job) / "edit_plan_latest.json").write_text(plan_to_json(plan))
+    log_record(edit_dir(job), job_id, plan, action, outcome)
+
+
+@app.post("/post/jobs/{job_id}/edit-review/choice")
+async def post_job_edit_review_choice(job_id: int, body: ReviewChoiceRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Puts the chosen moment into the plan (or approves the current one), saves the plan, and logs the decision
+    with everything that was passed over."""
+    from app.post_edit_plan import edit_dir, plan_to_json
+    from app.post_review import ReviewError, apply_choice, build_review, log_record
+    async with _EDIT_REVIEW_LOCK:
+        job, plan, clips, postgres_conn = await _review_context(job_id, request)
+        try:
+            outcome = apply_choice(plan, clips, body.slot_index, body.file_id, body.source_in, body.action)
+        except ReviewError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await on_drive(_save_review_choice, job, job_id, plan, body.action, outcome, writing=True)
+        review = build_review(plan, clips)
+    await record_tool_call("post_job_edit_review_ui", {"job_id": job_id, "slot": body.slot_index, "action": body.action}, "ok", postgres_conn)
+    return {"slot": next(s for s in review["slots"] if s["index"] == body.slot_index), "approved": review["approved"], "total": review["total"], "swapped": review["swapped"]}
+
+
+@app.get("/post/jobs/{job_id}/edit-preview/file")
+async def post_job_edit_preview_file(job_id: int, request: Request, _: None = Depends(verify_token)) -> FileResponse:
+    """The last rendered preview video (see POST /edit-preview)."""
+    from app.post_edit_plan import edit_dir
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    path = edit_dir(job) / "edit_preview.mp4"
+    if not await on_drive(path.exists):
+        raise HTTPException(status_code=404, detail="No preview rendered yet.")
+    return FileResponse(path, media_type="video/mp4")
+
+
+@app.get("/post/jobs/{job_id}/edit-options")
+async def post_job_edit_options(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """What the planning screen offers for this job: styles, songs in its music folder, its clips (with what each
+    shows when known), the logo that would be used, and the saved plan with its review/accent/preview state."""
+    from app.post_edit_plan import edit_options
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    return await edit_options(job, postgres_conn)
+
+
+def _save_thumbnail(out: Path, jpeg: bytes) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".part")
+    tmp.write_bytes(jpeg)
+    tmp.replace(out)
+
+
+_THUMB_LIMIT = asyncio.Semaphore(3)  # a screen of thumbnails is requested at once; don't run a dozen ffmpegs together
+
+
+@app.get("/post/jobs/{job_id}/clips/{file_id}/thumb")
+async def post_job_clip_thumb(job_id: int, file_id: int, request: Request, _: None = Depends(verify_token)) -> FileResponse:
+    """A small JPEG of one of the job's clips (a frame from ~40% in), made once and cached next to the edit plans.
+    The source file comes from the job's own records, never from the request."""
+    from app.post_edit_plan import edit_dir
+    from app.post_media import _extract_still
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    out = edit_dir(job) / "thumbs" / f"{file_id}.jpg"
+    if await on_drive(out.exists):
+        return FileResponse(out, media_type="image/jpeg")
+    row = next((f for f in await list_post_job_files(job_id, postgres_conn) if f["id"] == file_id), None)
+    if row is None or not await on_drive(Path(row["destination_path"]).exists):
+        raise HTTPException(status_code=404, detail=f"File {file_id} isn't available on job {job_id}")
+    meta = next((m for m in await list_post_job_file_metadata(job_id, postgres_conn) if m["file_id"] == file_id), None)
+    duration = float((meta or {}).get("duration_seconds") or 0)
+    jpeg = None
+    for at in ([max(0.0, min(duration * 0.4, duration - 0.15))] if duration else []) + [0.5, 0.0]:
+        jpeg = await _extract_still(row["destination_path"], at, _THUMB_LIMIT)
+        if jpeg:
+            break
+    if not jpeg:
+        raise HTTPException(status_code=500, detail="Couldn't make a thumbnail for that clip.")
+    await on_drive(_save_thumbnail, out, jpeg, writing=True)
+    return FileResponse(out, media_type="image/jpeg")
+
+
+class FindMomentsRequest(BaseModel):
+    max_clips: int | None = None  # spend cap: send at most this many clips (the screen passes the number its estimate showed)
+
+
+@app.get("/post/jobs/{job_id}/moments-status")
+async def post_job_moments_status(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """How many of the job's clips have a description (what the clip shows + its best moments), what describing the rest
+    would cost at most, and the state of a run in progress. No Claude call."""
+    from app.post_edit_plan import describe_status, load_job_clips
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    return await on_drive(describe_status, job, await load_job_clips(job_id, postgres_conn))
+
+
+@app.get("/post/jobs/{job_id}/find-moments/run")
+async def post_job_find_moments_run(job_id: int, _: None = Depends(verify_token)) -> dict:
+    """Just the state of a describe run (in memory: no database, no disk), cheap enough to poll every couple of seconds."""
+    from app.post_moments import run_state
+    return {"run": run_state(job_id)}
+
+
+@app.post("/post/jobs/{job_id}/find-moments")
+async def post_job_find_moments(job_id: int, body: FindMomentsRequest, _: None = Depends(verify_token)) -> dict:
+    """Describes the job's undescribed clips with Claude (frames every 0.5-1 s, one call per clip) IN THE BACKGROUND and
+    returns at once; poll /moments-status. This spends real API credits, so: the balance is checked first with a
+    one-token call, at most `max_clips` clips are sent, finished clips are kept if it stops, and it can be cancelled.
+    Desktop-triggered only, never Frank-reachable."""
+    from anthropic import AsyncAnthropic
+    from app.post_edit_plan import edit_dir, load_job_clips
+    from app.post_moments import MomentsError, check_credit, estimate_cost, load_moments, missing_clips, start_run
+    from app.post_shot_composition import VisionUnavailableError
+    api_key = _require_api_key()
+    async with _pooled_postgres_conn() as postgres_conn:
+        job = await get_post_job(job_id, postgres_conn)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+        if not job.get("media_analyzed_at"):
+            raise HTTPException(status_code=400, detail=f"Job #{job_id} needs Analyze Media run first.")
+        clips = await load_job_clips(job_id, postgres_conn)
+    folder = edit_dir(job)
+    missing = missing_clips(clips, await on_drive(load_moments, folder))
+    if not missing:
+        return {"started": False, "message": "Every clip already has a description.", "estimate": estimate_cost(0), "run": None}
+    count = len(missing) if body.max_clips is None else min(len(missing), body.max_clips)
+    if count <= 0:
+        raise HTTPException(status_code=400, detail="max_clips must be at least 1.")
+    client = AsyncAnthropic(api_key=api_key)
+    try:
+        await check_credit(client, MODEL)
+    except VisionUnavailableError as exc:
+        raise HTTPException(status_code=402, detail=str(exc))
+    except MomentsError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    try:
+        run = start_run(job_id, client, MODEL, clips, folder, max_calls=count, planned_total=count)
+    except MomentsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    async with _pooled_postgres_conn() as postgres_conn:
+        await record_tool_call("post_job_find_moments_ui", {"job_id": job_id, "clips": count}, "started", postgres_conn)
+    return {"started": True, "run": run, "estimate": estimate_cost(count)}
+
+
+@app.post("/post/jobs/{job_id}/find-moments/cancel")
+async def post_job_find_moments_cancel(job_id: int, _: None = Depends(verify_token)) -> dict:
+    """Stops sending new clips (calls already in flight finish). Clips already described are kept."""
+    from app.post_moments import request_cancel
+    return {"run": request_cancel(job_id)}
 
 
 class TranscriptSubmitRequest(BaseModel):
@@ -2854,7 +3345,7 @@ async def post_job_file_transcript_create(
     # profile-folder-template change needed.
     srt_path = str(Path(file_row["destination_path"]).with_suffix(".srt"))
     try:
-        Path(srt_path).write_text(srt_content)
+        await on_drive(Path(srt_path).write_text, srt_content, writing=True)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Couldn't write .srt file: {exc}")
 
@@ -2890,6 +3381,19 @@ async def post_job_file_smart_selects_get(job_id: int, file_id: int, request: Re
         raise HTTPException(status_code=404, detail="No transcript stored for this file yet.")
     transcript_json = json.loads(row["transcript_json"])
     return {"candidates": find_smart_select_candidates(transcript_json)}
+
+
+@app.get("/post/jobs/{job_id}/files/{file_id}/highlights")
+async def post_job_file_highlights_get(job_id: int, file_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Phase 9 -- the non-dialogue counterpart to /smart-selects. Reads
+    back the real, already-computed candidates from Detect Highlights
+    (run_highlight_detection); never re-derives anything here. 404s
+    unless a 'complete' row exists for this file."""
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    row = await get_post_job_file_highlights(file_id, postgres_conn)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No highlight analysis stored for this file yet.")
+    return {"candidates": json.loads(row["candidates_json"])}
 
 
 @app.post("/post/jobs/{job_id}/files/{file_id}/visual-analysis")
@@ -3926,6 +4430,25 @@ async def run_claude_turn(
             final_message = await stream.get_final_message()
 
         if final_message.stop_reason != "tool_use":
+            if final_message.stop_reason == "max_tokens":
+                # Real bug found live (2026-09-29): this branch used to
+                # return silently regardless of WHY the turn ended --
+                # for a genuine mid-tool-call truncation, that meant
+                # discarding the in-flight tool_use block entirely
+                # (never dispatched, never added to history) and
+                # returning only whatever narration text streamed
+                # first, with no record anywhere of what actually
+                # happened. Frank would then see his own past "building
+                # it now" text on the next turn with no matching
+                # tool_result, and correctly conclude (but never
+                # disclose to Josh in the moment) that nothing had
+                # really happened. Logged server-side for fast future
+                # diagnosis, and now disclosed honestly to Josh instead
+                # of silently passed off as a complete reply.
+                print(f"[run_claude_turn] stop_reason=max_tokens -- turn truncated, {len(assistant_text)} char(s) streamed before cutoff")
+                cutoff_notice = "\n\n*(My response got cut off before finishing -- ask me to continue, or ask for a shorter version.)*"
+                assistant_text += cutoff_notice
+                await _safe_send(websocket, cutoff_notice)
             return assistant_text, generated_documents
 
         history.append({"role": "assistant", "content": final_message.content})
