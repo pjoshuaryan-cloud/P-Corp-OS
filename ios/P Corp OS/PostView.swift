@@ -127,7 +127,7 @@ private struct PostJobStatusRow: View {
         switch job.status {
         case "ingested", "premiere_project_created", "complete": return theme.statusGood
         case "ingest_failed", "cancelled": return theme.statusRisk
-        case "scanning", "ready", "ingesting", "verifying", "analyzing_media", "generating_proxies": return theme.statusHot
+        case "scanning", "ready", "ingesting", "verifying", "analyzing_media", "generating_proxies", "analyzing_color": return theme.statusHot
         default: return theme.textSecondary
         }
     }
@@ -155,6 +155,11 @@ private struct PostJobStatusRow: View {
                     ProgressView().controlSize(.small)
                     Text("Generating proxies…").font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
                 }
+            } else if job.status == "analyzing_color" {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Detecting highlights…").font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
+                }
             } else if job.isActive && job.totalBytes > 0 {
                 ProgressView(value: Double(job.bytesCopied), total: Double(job.totalBytes))
                     .tint(statusColor)
@@ -165,7 +170,8 @@ private struct PostJobStatusRow: View {
             } else if job.status == "ingested" {
                 Text("\(job.filesCopied) file(s) copied and verified."
                      + (job.mediaAnalyzedAt != nil ? " Media analyzed." : "")
-                     + (job.proxiesGeneratedAt != nil ? " Proxies generated." : ""))
+                     + (job.proxiesGeneratedAt != nil ? " Proxies generated." : "")
+                     + (job.highlightsGeneratedAt != nil ? " Highlights detected." : ""))
                     .font(PCorpFont.body(10.5))
                     .foregroundStyle(theme.textSecondary)
             } else if job.status == "premiere_project_created" {
@@ -212,6 +218,7 @@ private struct MediaReportView: View {
 
     @State private var transcriptSheetFile: PostJobFile?
     @State private var smartSelectsSheetFile: PostJobFile?
+    @State private var highlightsSheetFile: PostJobFile?
     @State private var visualAnalysisSheetFile: PostJobFile?
 
     var body: some View {
@@ -345,6 +352,16 @@ private struct MediaReportView: View {
                     }
 
                     Divider().overlay(theme.divider)
+                    sectionLabel("HIGHLIGHTS")
+                    Text("A real, deterministic motion/audio signal for footage with no dialogue to anchor Smart Selects on -- never a claim about which moment is creatively best. Use \"Assemble Rough Cut\" in the Premiere plugin to place these on a sequence.")
+                        .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                    ForEach(files.filter { $0.status == "verified" }) { file in
+                        Button(file.relativePath) { highlightsSheetFile = file }
+                            .font(PCorpFont.body(11.5))
+                            .foregroundStyle(theme.statusHot)
+                    }
+
+                    Divider().overlay(theme.divider)
                     sectionLabel("VISUAL ANALYSIS")
                     Text("Claude's real, honest read of a handful of sampled frames per file -- never a full-motion or frame-by-frame analysis, and never a claim about which take is best. Costs a real API call per run, unlike every other report on this page.")
                         .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
@@ -369,6 +386,9 @@ private struct MediaReportView: View {
             }
             .sheet(item: $smartSelectsSheetFile) { file in
                 SmartSelectsView(jobId: jobId, file: file, client: client)
+            }
+            .sheet(item: $highlightsSheetFile) { file in
+                HighlightsView(jobId: jobId, file: file, client: client)
             }
             .sheet(item: $visualAnalysisSheetFile) { file in
                 VisualAnalysisView(jobId: jobId, file: file, client: client)
@@ -553,6 +573,63 @@ private struct SmartSelectsView: View {
             }
             .task {
                 candidates = await client.fetchSmartSelects(jobId: jobId, fileId: file.id)
+                isLoading = false
+            }
+        }
+    }
+}
+
+/// Phase 9 (2026-09-28) -- iOS port of desktop's own HighlightsView.
+/// Real, deterministic motion/audio-energy candidates for footage with
+/// no dialogue to anchor Smart Selects on. Display only -- real marker/
+/// rough-cut assembly happens entirely in the Premiere plugin.
+private struct HighlightsView: View {
+    let jobId: Int
+    let file: PostJobFile
+    let client: PostClient
+    @Environment(\.appTheme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var candidates: [HighlightCandidate] = []
+    @State private var isLoading = true
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Real, deterministic motion/audio-energy candidates -- never a claim about which moment is creatively best. Use \"Assemble Rough Cut\" in the Premiere plugin to place these on a sequence.")
+                        .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+
+                    if isLoading {
+                        ProgressView().controlSize(.small)
+                    } else if candidates.isEmpty {
+                        Text("No candidates yet -- run \"Detect Highlights\" on this job from the desktop app first, or this file may not have any qualifying motion/audio peaks.")
+                            .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                    } else {
+                        ForEach(candidates) { candidate in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(String(format: "%.1fs (%.1fs long)", candidate.start, candidate.duration))
+                                    .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                                Text(candidate.source.capitalized)
+                                    .font(PCorpFont.body(12.5)).foregroundStyle(theme.textSecondary)
+                            }
+                            .padding(8)
+                            .cardSurface(radius: 6)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .background(theme.background)
+            .navigationTitle(file.relativePath)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task {
+                candidates = await client.fetchHighlights(jobId: jobId, fileId: file.id)
                 isLoading = false
             }
         }

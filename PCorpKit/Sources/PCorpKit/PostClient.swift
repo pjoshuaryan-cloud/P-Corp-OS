@@ -63,7 +63,18 @@ public final class PostClient: ObservableObject {
         do {
             let (data, _) = try await URLSession.shared.data(from: url("/post/jobs"))
             struct JobsResponse: Decodable { let jobs: [PostJob] }
-            jobs = try JSONDecoder().decode(JobsResponse.self, from: data).jobs
+            let fetched = try JSONDecoder().decode(JobsResponse.self, from: data).jobs
+            // Real bug found live (2026-09-29): @Published fires on every
+            // assignment regardless of whether the new value actually
+            // differs, so re-decoding an IDENTICAL job list on every 2.5s
+            // poll tick (the common case while idle) still republished
+            // `jobs` and re-rendered every observing view -- the real
+            // cause of a visible flicker on every poll, even with nothing
+            // actually changing. PostJob's own Equatable conformance
+            // makes this cheap to guard against directly.
+            if fetched != jobs {
+                jobs = fetched
+            }
         } catch {
             errorMessage = "Couldn't reach the backend — is it running?"
         }
@@ -77,7 +88,11 @@ public final class PostClient: ObservableObject {
         do {
             let (data, _) = try await URLSession.shared.data(from: url("/post/jobs/\(id)"))
             let job = try JSONDecoder().decode(PostJob.self, from: data)
-            if let index = jobs.firstIndex(where: { $0.id == id }) {
+            // Same unnecessary-republish guard as refreshJobsList above --
+            // this is the poll target used while a job isActive, so it
+            // fires much more often (every 2-3s per PostView's own active
+            // poll loop) and flickers just as visibly if left unguarded.
+            if let index = jobs.firstIndex(where: { $0.id == id }), jobs[index] != job {
                 jobs[index] = job
             }
             return job
@@ -209,6 +224,30 @@ public final class PostClient: ObservableObject {
             let (data, _) = try await URLSession.shared.data(from: url("/post/jobs/\(jobId)/proxies"))
             struct ProxiesResponse: Decodable { let proxies: [ProxyStatus] }
             return try JSONDecoder().decode(ProxiesResponse.self, from: data).proxies
+        } catch {
+            return []
+        }
+    }
+
+    // MARK: - Phase 9: non-dialogue highlight detection
+
+    public func detectHighlights(jobId: Int) async {
+        var request = URLRequest(url: url("/post/jobs/\(jobId)/detect-highlights"))
+        request.httpMethod = "POST"
+        let writeError = await performWrite(request)
+        await fetch()
+        if let writeError { errorMessage = writeError }
+    }
+
+    /// Real, deterministic motion/audio-energy candidates for footage
+    /// with no dialogue to anchor Smart Selects on -- fetched on demand
+    /// for display only. Real marker/rough-cut work happens entirely in
+    /// the plugin, never from this client.
+    public func fetchHighlights(jobId: Int, fileId: Int) async -> [HighlightCandidate] {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url("/post/jobs/\(jobId)/files/\(fileId)/highlights"))
+            struct CandidatesResponse: Decodable { let candidates: [HighlightCandidate] }
+            return try JSONDecoder().decode(CandidatesResponse.self, from: data).candidates
         } catch {
             return []
         }

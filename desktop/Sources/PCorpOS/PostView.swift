@@ -26,6 +26,7 @@ struct PostView: View {
     @State private var mediaReportFiles: [PostJobFile] = []
     @State private var proxyStatuses: [ProxyStatus]?
     @State private var proxyStatusJobName: String = ""
+    @State private var planningJob: PostJob?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -80,7 +81,9 @@ struct PostView: View {
                                             proxyStatuses = await client.fetchProxies(jobId: job.id)
                                             proxyStatusJobName = job.shootName
                                         }
-                                    }
+                                    },
+                                    onDetectHighlights: { Task { await client.detectHighlights(jobId: job.id) } },
+                                    onPlanEdit: { planningJob = job }
                                 )
                             }
                         }
@@ -90,6 +93,12 @@ struct PostView: View {
             }
         }
         .frame(width: 520, height: 680)
+        // Plan Edit covers the job list (see PlanEditView for why it isn't a nested popover or sheet).
+        .overlay {
+            if let job = planningJob {
+                PlanEditView(job: job, onBack: { planningJob = nil })
+            }
+        }
         .task {
             await client.fetch()
             startPollingIfNeeded()
@@ -163,6 +172,8 @@ struct PostView: View {
     @State private var draftShootName = ""
     @State private var draftClientName = ""
     @State private var draftSourcePath: String?
+    // Optional narrowing of draftSourcePath (the whole drive) to one folder on it.
+    @State private var draftSourceFolderPath: String?
     @State private var draftDestinationPath: String?
     @State private var draftDeliverableFormat = postDeliverableFormatOptions[0]
     @State private var draftResolution = postResolutionOptions[0]
@@ -197,7 +208,10 @@ struct PostView: View {
             }
 
             volumePicker("Source drive", selection: $draftSourcePath)
-            volumePicker("Destination drive", selection: $draftDestinationPath)
+            if let volumePath = draftSourcePath {
+                sourceFolderRow(volumePath: volumePath)
+            }
+            volumePicker("Destination drive", selection: $draftDestinationPath, showFreeSpace: true)
 
             Picker("Deliverable format", selection: $draftDeliverableFormat) {
                 ForEach(postDeliverableFormatOptions, id: \.self) { Text($0).tag($0) }
@@ -221,10 +235,67 @@ struct PostView: View {
         }
         .padding(12)
         .cardSurface(radius: 10)
+        .onChange(of: draftSourcePath) { _, _ in draftSourceFolderPath = nil }
+    }
+
+    /// Without a chosen folder the job copies the ENTIRE source drive (right
+    /// for a camera card, wrong for a big hard drive), so that state is
+    /// spelled out rather than left implicit.
+    @ViewBuilder
+    private func sourceFolderRow(volumePath: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("Source folder")
+                    .font(PCorpFont.body(12.5))
+                    .foregroundStyle(theme.textPrimary)
+                Spacer()
+                if draftSourceFolderPath != nil {
+                    Button("Use entire drive") { draftSourceFolderPath = nil }
+                        .buttonStyle(.borderless)
+                }
+                Button(draftSourceFolderPath == nil ? "Choose Folder…" : "Change…") {
+                    chooseSourceFolder(volumePath: volumePath)
+                }
+                .buttonStyle(.bordered)
+            }
+            if let folder = draftSourceFolderPath {
+                Text("Copying only: \(folder.dropFirst(volumePath.count).trimmingCharacters(in: CharacterSet(charactersIn: "/")))")
+                    .font(PCorpFont.body(10.5))
+                    .foregroundStyle(theme.textSecondary)
+            } else {
+                Text("Copying the ENTIRE drive. Choose a folder to copy just that folder.")
+                    .font(PCorpFont.body(10.5))
+                    .foregroundStyle(theme.statusHot)
+            }
+        }
+    }
+
+    private func chooseSourceFolder(volumePath: String) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: volumePath)
+        panel.prompt = "Choose Folder"
+        panel.message = "Choose the one folder to copy for this job."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        // Compare symlink-resolved paths, but store the path under the same
+        // mount point the drive picker used so the two always agree.
+        let root = URL(fileURLWithPath: volumePath).resolvingSymlinksInPath().path
+        let chosen = url.resolvingSymlinksInPath().path
+        if chosen == root {
+            draftSourceFolderPath = nil
+        } else if chosen.hasPrefix(root + "/") {
+            let relative = String(chosen.dropFirst(root.count + 1))
+            draftSourceFolderPath = URL(fileURLWithPath: volumePath).appendingPathComponent(relative).path
+        } else {
+            toastCenter.show("Choose a folder on the selected source drive", style: .warning)
+        }
     }
 
     @ViewBuilder
-    private func volumePicker(_ label: String, selection: Binding<String?>) -> some View {
+    private func volumePicker(_ label: String, selection: Binding<String?>, showFreeSpace: Bool = false) -> some View {
         if client.isLoadingSources {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
@@ -238,16 +309,21 @@ struct PostView: View {
             Picker(label, selection: selection) {
                 Text("Select…").tag(String?.none)
                 ForEach(client.sourceVolumes) { volume in
-                    Text(volume.name).tag(String?.some(volume.path))
+                    Text(volumeMenuLabel(volume, showFreeSpace: showFreeSpace)).tag(String?.some(volume.path))
                 }
             }
         }
     }
 
+    private func volumeMenuLabel(_ volume: SourceVolume, showFreeSpace: Bool) -> String {
+        guard showFreeSpace, let free = volume.freeBytes else { return volume.name }
+        return "\(volume.name) — \(ByteCountFormatter.string(fromByteCount: Int64(free), countStyle: .file)) free"
+    }
+
     private func createShoot() async {
         guard let sourcePath = draftSourcePath, let destinationPath = draftDestinationPath else { return }
         let draft = PostJobDraft(
-            profile: draftProfile, shootName: draftShootName, sourcePath: sourcePath,
+            profile: draftProfile, shootName: draftShootName, sourcePath: draftSourceFolderPath ?? sourcePath,
             destinationVolumePath: destinationPath,
             clientName: draftProfile == "alpha_mode" ? draftClientName : nil,
             sourceVolumeName: client.sourceVolumes.first(where: { $0.path == sourcePath })?.name,
@@ -256,7 +332,7 @@ struct PostView: View {
         )
         if let jobId = await client.createJob(draft) {
             toastCenter.show("POST job created", style: .success)
-            draftShootName = ""; draftClientName = ""; draftSourcePath = nil; draftDestinationPath = nil
+            draftShootName = ""; draftClientName = ""; draftSourcePath = nil; draftSourceFolderPath = nil; draftDestinationPath = nil
             isAddingShoot = false
             _ = jobId
         }
@@ -277,6 +353,8 @@ private struct PostJobRow: View {
     let onFetchProxyRecommendations: () async -> [ProxyRecommendation]
     let onGenerateProxies: () -> Void
     let onViewProxyStatus: () -> Void
+    let onDetectHighlights: () -> Void
+    let onPlanEdit: () -> Void
     @Environment(\.appTheme) private var theme
 
     @State private var recommendedProxyCount: Int?
@@ -285,7 +363,7 @@ private struct PostJobRow: View {
         switch job.status {
         case "ingested", "premiere_project_created", "complete": return theme.statusGood
         case "ingest_failed", "cancelled": return theme.statusRisk
-        case "scanning", "ready", "ingesting", "verifying", "analyzing_media", "generating_proxies": return theme.statusHot
+        case "scanning", "ready", "ingesting", "verifying", "analyzing_media", "generating_proxies", "analyzing_color": return theme.statusHot
         default: return theme.textSecondary
         }
     }
@@ -294,6 +372,12 @@ private struct PostJobRow: View {
     private var canCancel: Bool { job.isActive }
     private var canAnalyzeMedia: Bool { job.status == "ingested" }
     private var canCheckForProxies: Bool { job.status == "ingested" && job.mediaAnalyzedAt != nil }
+    private var canPlanEdit: Bool {
+        (job.status == "ingested" || job.status == "premiere_project_created") && job.mediaAnalyzedAt != nil
+    }
+    private var canDetectHighlights: Bool {
+        (job.status == "ingested" || job.status == "premiere_project_created") && job.mediaAnalyzedAt != nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -318,6 +402,11 @@ private struct PostJobRow: View {
                     ProgressView().controlSize(.small)
                     Text("Generating proxies…").font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
                 }
+            } else if job.status == "analyzing_color" {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Detecting highlights…").font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
+                }
             } else if job.isActive && job.totalBytes > 0 {
                 ProgressView(value: Double(job.bytesCopied), total: Double(job.totalBytes))
                     .tint(statusColor)
@@ -328,7 +417,8 @@ private struct PostJobRow: View {
             } else if job.status == "ingested" {
                 Text("\(job.filesCopied) file(s) copied and verified."
                      + (job.mediaAnalyzedAt != nil ? " Media analyzed." : "")
-                     + (job.proxiesGeneratedAt != nil ? " Proxies generated." : ""))
+                     + (job.proxiesGeneratedAt != nil ? " Proxies generated." : "")
+                     + (job.highlightsGeneratedAt != nil ? " Highlights detected." : ""))
                     .font(PCorpFont.body(10.5))
                     .foregroundStyle(theme.textSecondary)
                 if let count = recommendedProxyCount, count > 0 {
@@ -372,6 +462,14 @@ private struct PostJobRow: View {
                     Button("Proxy Status", action: onViewProxyStatus)
                         .buttonStyle(.bordered)
                 }
+                if canDetectHighlights {
+                    Button(job.highlightsGeneratedAt == nil ? "Detect Highlights" : "Re-detect Highlights", action: onDetectHighlights)
+                        .buttonStyle(.bordered)
+                }
+                if canPlanEdit {
+                    Button("Plan Edit", action: onPlanEdit)
+                        .buttonStyle(.bordered)
+                }
                 Button("Delete", role: .destructive, action: onDelete)
                     .buttonStyle(.bordered)
             }
@@ -406,6 +504,7 @@ private struct MediaReportView: View {
 
     @State private var transcriptSheetFile: PostJobFile?
     @State private var smartSelectsSheetFile: PostJobFile?
+    @State private var highlightsSheetFile: PostJobFile?
     @State private var visualAnalysisSheetFile: PostJobFile?
 
     var body: some View {
@@ -542,6 +641,17 @@ private struct MediaReportView: View {
                 }
 
                 Divider().overlay(theme.divider)
+                sectionLabel("HIGHLIGHTS")
+                Text("A real, deterministic motion/audio signal for footage with no dialogue to anchor Smart Selects on -- never a claim about which moment is creatively best. Use \"Assemble Rough Cut\" in the Premiere plugin to place these on a sequence.")
+                    .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                ForEach(files.filter { $0.status == "verified" }) { file in
+                    Button(file.relativePath) { highlightsSheetFile = file }
+                        .buttonStyle(.plain)
+                        .font(PCorpFont.body(11.5))
+                        .foregroundStyle(theme.statusHot)
+                }
+
+                Divider().overlay(theme.divider)
                 sectionLabel("VISUAL ANALYSIS")
                 Text("Claude's real, honest read of a handful of sampled frames per file -- never a full-motion or frame-by-frame analysis, and never a claim about which take is best. Costs a real API call per run, unlike every other report on this page.")
                     .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
@@ -560,6 +670,9 @@ private struct MediaReportView: View {
         }
         .popover(item: $smartSelectsSheetFile) { file in
             SmartSelectsView(jobId: jobId, file: file, client: client)
+        }
+        .popover(item: $highlightsSheetFile) { file in
+            HighlightsView(jobId: jobId, file: file, client: client)
         }
         .popover(item: $visualAnalysisSheetFile) { file in
             VisualAnalysisView(jobId: jobId, file: file, client: client)
@@ -725,6 +838,55 @@ private struct SmartSelectsView: View {
         .frame(width: 460, height: 480)
         .task {
             candidates = await client.fetchSmartSelects(jobId: jobId, fileId: file.id)
+            isLoading = false
+        }
+    }
+}
+
+/// Phase 9 (2026-09-28) -- non-dialogue highlight candidates (real
+/// motion/audio-energy signal, no LLM in the path), same card-list
+/// precedent as SmartSelectsView. Real marker/rough-cut assembly
+/// happens entirely in the Premiere plugin, never from this view.
+private struct HighlightsView: View {
+    let jobId: Int
+    let file: PostJobFile
+    let client: PostClient
+    @Environment(\.appTheme) private var theme
+
+    @State private var candidates: [HighlightCandidate] = []
+    @State private var isLoading = true
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Highlight Candidates").font(PCorpFont.display(18)).foregroundStyle(theme.textPrimary)
+                Text(file.relativePath).font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                Text("Real, deterministic motion/audio-energy candidates -- never a claim about which moment is creatively best. Use \"Assemble Rough Cut\" in the Premiere plugin to place these on a sequence.")
+                    .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+
+                if isLoading {
+                    ProgressView().controlSize(.small)
+                } else if candidates.isEmpty {
+                    Text("No candidates yet -- run \"Detect Highlights\" on this job first, or this file may not have any qualifying motion/audio peaks.")
+                        .font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                } else {
+                    ForEach(candidates) { candidate in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(String(format: "%.1fs (%.1fs long)", candidate.start, candidate.duration))
+                                .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                            Text(candidate.source.capitalized)
+                                .font(PCorpFont.body(12.5)).foregroundStyle(theme.textSecondary)
+                        }
+                        .padding(8)
+                        .cardSurface(radius: 6)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 460, height: 480)
+        .task {
+            candidates = await client.fetchHighlights(jobId: jobId, fileId: file.id)
             isLoading = false
         }
     }

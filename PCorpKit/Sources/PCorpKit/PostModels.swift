@@ -20,7 +20,7 @@ public struct PostProfile: Decodable {
     public let folders: [String]
 }
 
-public struct PostJob: Identifiable, Decodable {
+public struct PostJob: Identifiable, Decodable, Equatable {
     public let id: Int
     public let profile: String
     public let shootName: String
@@ -49,6 +49,7 @@ public struct PostJob: Identifiable, Decodable {
     public let frameRate: String?
     public let premiereProjectPath: String?
     public let proxiesGeneratedAt: String?
+    public let highlightsGeneratedAt: String?
 
     enum CodingKeys: String, CodingKey {
         case id, profile, status, resolution
@@ -76,6 +77,7 @@ public struct PostJob: Identifiable, Decodable {
         case frameRate = "frame_rate"
         case premiereProjectPath = "premiere_project_path"
         case proxiesGeneratedAt = "proxies_generated_at"
+        case highlightsGeneratedAt = "highlights_generated_at"
     }
 
     /// true while the background loop could plausibly be actively
@@ -383,6 +385,24 @@ public struct SmartSelectCandidate: Decodable, Identifiable {
     }
 }
 
+/// Phase 9 (2026-09-28) -- mirrors detect_highlight_candidates' exact
+/// output. The non-dialogue counterpart to SmartSelectCandidate: a real,
+/// deterministic motion/audio-energy signal, never a claim about which
+/// moment is creatively best. Stored (unlike smart selects, which are
+/// derived fresh every request) since the real ffmpeg analysis behind
+/// it is a genuine per-file background job, not a cheap re-derivation.
+public struct HighlightCandidate: Decodable, Identifiable {
+    public let start: Double
+    public let duration: Double
+    public let source: String   // "motion" | "audio" | "both"
+
+    public var id: Double { start }
+
+    enum CodingKeys: String, CodingKey {
+        case start, duration, source
+    }
+}
+
 /// Phase 8b (2026-09-27) -- a real, stored Claude vision judgment on
 /// sampled frames from one file. Fetched on demand, never preloaded.
 public struct VisualAnalysis: Decodable {
@@ -398,5 +418,289 @@ public struct VisualAnalysis: Decodable {
         case analysisText = "analysis_text"
         case frameCount = "frame_count"
         case createdAt = "created_at"
+    }
+}
+
+// MARK: - Edit planning (2026-10-09): style / song / opening clip
+
+/// One saved reference edit a plan can take its style from (GET /post/jobs/{id}/edit-options).
+public struct EditStyleOption: Decodable, Identifiable, Equatable {
+    public let slug: String
+    public let title: String
+    public let description: String
+    public let format: String
+    public let seconds: Double?
+    public let medianShotSeconds: Double?
+    public let shots: Int?
+    public let hasAccents: Bool
+    /// "music_montage" or "narrated_broll" (nil from an older backend, which only knew music-driven styles).
+    public let editType: String?
+
+    public var id: String { slug }
+
+    public var isNarratedStory: Bool { editType == "narrated_broll" }
+    public var isDialogueLed: Bool { editType == "dialogue_led" }
+
+    enum CodingKeys: String, CodingKey {
+        case slug, title, description, format, seconds, shots
+        case medianShotSeconds = "median_shot_seconds"
+        case hasAccents = "has_accents"
+        case editType = "edit_type"
+    }
+}
+
+public struct EditMusicFile: Decodable, Identifiable, Equatable {
+    public let path: String
+    public let name: String
+    public let megabytes: Double
+
+    public var id: String { path }
+}
+
+public struct EditMusicOptions: Decodable, Equatable {
+    public let folder: String
+    public let files: [EditMusicFile]
+    public let defaultPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case folder, files
+        case defaultPath = "default"
+    }
+}
+
+/// A clip the opening/closing slot can be filled with. `scene` is what the clip shows, when it has been probed.
+public struct EditClipOption: Decodable, Identifiable, Equatable {
+    public let fileId: Int
+    public let name: String
+    public let duration: Double
+    public let scene: String
+    public let people: Bool?
+    public let hasMoments: Bool
+
+    public var id: Int { fileId }
+
+    enum CodingKeys: String, CodingKey {
+        case name, duration, scene, people
+        case fileId = "file_id"
+        case hasMoments = "has_moments"
+    }
+}
+
+public struct EditPlanChecks: Decodable, Equatable {
+    public let shotCount: Int?
+    public let shotLengthMedian: Double?
+    public let styleMedian: Double?
+    public let cutsOnHits: Double?
+    public let distinctClips: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case shotCount = "shot_count"
+        case shotLengthMedian = "shot_length_median"
+        case styleMedian = "style_median"
+        case cutsOnHits = "cuts_on_hits"
+        case distinctClips = "distinct_clips"
+    }
+}
+
+public struct EditAccentCounts: Decodable, Equatable {
+    public let flashes: Int
+    public let zoomHits: Int
+    public let shotZoomBlur: Int
+    public let blackAndWhiteShots: Int
+    public let logo: Int
+    public let sfx: Int
+
+    enum CodingKeys: String, CodingKey {
+        case flashes, logo, sfx
+        case zoomHits = "zoom_hits"
+        case shotZoomBlur = "shot_zoom_blur"
+        case blackAndWhiteShots = "black_and_white_shots"
+    }
+}
+
+public struct EditPreviewInfo: Decodable, Equatable {
+    public let path: String
+    public let renderedAt: String
+    /// False when the plan's moments or music changed after this preview was rendered.
+    public let upToDate: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case renderedAt = "rendered_at"
+        case upToDate = "up_to_date"
+    }
+}
+
+public struct EditOpeningClip: Decodable, Equatable {
+    public let fileId: Int
+    public let name: String
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case fileId = "file_id"
+    }
+}
+
+/// What the job's saved edit plan is, and how far along it is.
+public struct EditSavedPlan: Decodable, Equatable {
+    public let plannedAt: String
+    public let style: String?
+    public let shots: Int
+    public let seconds: Double
+    public let musicName: String
+    public let musicInSeconds: Double?
+    public let tempoBpm: Double?
+    public let openingClip: EditOpeningClip?
+    public let checks: EditPlanChecks
+    public let notes: [String]
+    public let reviewed: Int
+    public let swapped: Int
+    public let accents: EditAccentCounts?
+    public let accentNotes: [String]
+    public let preview: EditPreviewInfo?
+
+    enum CodingKeys: String, CodingKey {
+        case style, shots, seconds, checks, notes, reviewed, swapped, accents, preview
+        case plannedAt = "planned_at"
+        case musicName = "music_name"
+        case musicInSeconds = "music_in_seconds"
+        case tempoBpm = "tempo_bpm"
+        case openingClip = "opening_clip"
+        case accentNotes = "accent_notes"
+    }
+}
+
+public struct EditMomentsCoverage: Decodable, Equatable {
+    public let probed: Int
+    public let total: Int
+}
+
+public struct EditOptions: Decodable, Equatable {
+    public let styles: [EditStyleOption]
+    public let music: EditMusicOptions
+    public let clips: [EditClipOption]
+    public let moments: EditMomentsCoverage
+    public let logo: String?
+    public let savedPlan: EditSavedPlan?
+    /// What describing the undescribed clips would cost, and the state of a run (also fetched on its own while polling).
+    public let describe: MomentsStatus?
+
+    enum CodingKeys: String, CodingKey {
+        case styles, music, clips, moments, logo, describe
+        case savedPlan = "saved_plan"
+    }
+}
+
+/// Body of POST /post/jobs/{id}/edit-plan. Nil fields are left out so the backend's own defaults apply.
+public struct EditPlanRequestBody: Encodable {
+    public var style: [String]
+    public var musicPath: String?
+    public var musicInSeconds: Double?
+    public var targetSeconds: Double?
+    public var bookendFileId: Int?
+    /// Narration script for a narrated b-roll story (nil = cut at the style's own rhythm). An older backend ignores it.
+    public var script: String?
+    /// Talking head: the clips that filmed the same interview (two or more; the first is the reference) and which one's own audio is the dialogue.
+    public var cameraFileIds: [Int]?
+    public var audioFileId: Int?
+    /// Corporate story: lay the job's logo over the b-roll as opening/closing brand cards and a corner logo bug, and burn the narration captions in (an older backend ignores these).
+    public var brandGraphics: Bool?
+    public var burnCaptions: Bool?
+    public var cardTagline: String?
+    public var cardContact: [String]?
+
+    public init(style: [String], musicPath: String? = nil, musicInSeconds: Double? = nil, targetSeconds: Double? = nil, bookendFileId: Int? = nil, script: String? = nil,
+                cameraFileIds: [Int]? = nil, audioFileId: Int? = nil, brandGraphics: Bool? = nil, burnCaptions: Bool? = nil, cardTagline: String? = nil, cardContact: [String]? = nil) {
+        self.style = style
+        self.musicPath = musicPath
+        self.musicInSeconds = musicInSeconds
+        self.targetSeconds = targetSeconds
+        self.bookendFileId = bookendFileId
+        self.script = script
+        self.cameraFileIds = cameraFileIds
+        self.audioFileId = audioFileId
+        self.brandGraphics = brandGraphics
+        self.burnCaptions = burnCaptions
+        self.cardTagline = cardTagline
+        self.cardContact = cardContact
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case style
+        case musicPath = "music_path"
+        case musicInSeconds = "music_in_seconds"
+        case targetSeconds = "target_seconds"
+        case bookendFileId = "bookend_file_id"
+        case script
+        case cameraFileIds = "camera_file_ids"
+        case audioFileId = "audio_file_id"
+        case brandGraphics = "brand_graphics"
+        case burnCaptions = "burn_captions"
+        case cardTagline = "card_tagline"
+        case cardContact = "card_contact"
+    }
+}
+
+// MARK: - Describing clips (2026-10-10): what each clip shows, found by Claude, costs real credits
+
+/// What describing the remaining clips would cost AT MOST, from measured tokens per clip and an assumed price.
+public struct MomentsEstimate: Decodable, Equatable {
+    public let clips: Int
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let usdAtMost: Double
+    public let assumption: String
+
+    enum CodingKeys: String, CodingKey {
+        case clips, assumption
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case usdAtMost = "usd_at_most"
+    }
+}
+
+public struct MomentsUsage: Decodable, Equatable {
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let calls: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case calls
+        case inputTokens = "in"
+        case outputTokens = "out"
+    }
+}
+
+/// A describe-clips run in the backend: "running", "done", "stopped" (credits ran out), "cancelled" or "failed".
+public struct MomentsRun: Decodable, Equatable {
+    public let state: String
+    public let total: Int
+    public let done: Int
+    public let failed: [String]
+    public let startedAt: String
+    public let finishedAt: String?
+    public let message: String?
+    public let usage: MomentsUsage?
+
+    public var isRunning: Bool { state == "running" }
+
+    enum CodingKeys: String, CodingKey {
+        case state, total, done, failed, message, usage
+        case startedAt = "started_at"
+        case finishedAt = "finished_at"
+    }
+}
+
+public struct MomentsStatus: Decodable, Equatable {
+    public let total: Int
+    public let described: Int
+    public let missing: Int
+    public let estimate: MomentsEstimate
+    public let run: MomentsRun?
+    public let apiKeySet: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case total, described, missing, estimate, run
+        case apiKeySet = "api_key_set"
     }
 }
