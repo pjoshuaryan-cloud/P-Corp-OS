@@ -32,6 +32,16 @@ EDIT_TYPES: dict[str, dict[str, Any]] = {
             "dissolves (the reference has a few; the plugin assembles hard cuts only)",
         ],
     },
+    "corporate_highlight": {
+        "label": "Corporate highlight cut to music",
+        "buildable": True,
+        "how": "A calm highlight for corporate work: cuts on the music's hits at a slower pace than a reel (about 2 s a shot), every shot from the steadiest stretch of its clip, a slow zoom (in or out) only on shots whose footage is static, hard cuts only. With the job's logo it adds the opening and closing brand cards.",
+        "missing": [
+            "story order: clips go in shoot order, or in an order you give; the planner can't reorder footage into a story",
+            "captions: a highlight to music has no narration, so none are made",
+            "accents: there are none by design (no flashes, dissolves or zoom hits)",
+        ],
+    },
     "dialogue_led": {
         "label": "Talking head / interview",
         "buildable": True,
@@ -60,6 +70,17 @@ INFERRED_STYLES: dict[str, dict[str, Any]] = {
         "event": "inferred from three edits (no food reference yet)",
         "format": "9:16 vertical reel (like the energy drink and furniture edits)",
         "style": "Inferred, not measured: the rhythm pooled from your energy drink, furniture and fashion edits. Replace it with a real food edit when you have one.",
+    },
+    "corporate-highlight-calm": {
+        "composite_of": ["corporate-distribution-company"],
+        "edit_type": "corporate_highlight",
+        "genre": "corporate highlight",
+        "client": "Corporate highlight",
+        "event": "calm cuts on the music",
+        "format": "any shape (vertical, horizontal or square)",
+        "style": "Calm, beat-synced corporate highlight: cuts on the music's hits at a slower pace than a reel, steadiest moments only, slow zooms on static footage, opening and closing brand cards. Built from Josh's direction (2026-10-14) and the corporate reference's shot rhythm; there is no measured corporate highlight to music yet.",
+        "target_seconds": 40,
+        "pace_note": True,
     },
 }
 
@@ -147,26 +168,40 @@ def recipe_lines(rec: dict[str, Any]) -> list[str]:
     return out
 
 
-def write_inferred_styles() -> list[str]:
-    """Writes each INFERRED_STYLES entry as a composite reference record: no edit of its own, just the list of measured
-    references it pools (post_style expands it). Returns the slugs written."""
+def write_inferred_styles(only: list[str] | None = None) -> list[str]:
+    """Writes each INFERRED_STYLES entry (or just the slugs in `only`) as a composite reference record: no edit of its own, just the list
+    of measured references it pools (post_style expands it). Returns the slugs written."""
     import json
     from statistics import mean, median
     from app import post_reference as pr
+    from app.post_steady import CALM_PACE
     written = []
     for slug, spec in INFERRED_STYLES.items():
+        if only is not None and slug not in only:
+            continue
         parts = [pr.load_reference(x) for x in spec["composite_of"]]
-        lengths = sorted(sh["end"] - sh["start"] for r in parts for sh in r["edit"]["shots"])
+        scale = CALM_PACE if spec.get("pace_note") else 1.0  # a calm style's card shows its CALM shot lengths, not the reference's
+        lengths = sorted((sh["end"] - sh["start"]) * scale for r in parts for sh in r["edit"]["shots"])
         n = len(lengths)
         q = lambda p: round(lengths[min(n - 1, int(p * n))], 2)
-        summary = {"shot_count": n, "duration_seconds": round(mean(r["edit"]["duration_seconds"] for r in parts), 1),
+        duration = spec.get("target_seconds") or round(mean(r["edit"]["duration_seconds"] for r in parts), 1)
+        summary = {"shot_count": n if not spec.get("target_seconds") else max(1, round(spec["target_seconds"] / max(median(lengths), 0.1))), "duration_seconds": duration,
                    "shot_length_seconds": {"mean": round(mean(lengths), 2), "median": q(0.5), "p10": q(0.1), "p90": q(0.9), "min": round(lengths[0], 2), "max": round(lengths[-1], 2)}}
-        tags = {"genre": "food and drink promo", "client": spec["client"], "event": spec["event"], "format": spec["format"], "style": spec["style"],
-                "edit_type": spec["edit_type"], "inferred": True, "composite_of": spec["composite_of"], "added_by": "Claude, 2026-10-13 (inferred, not measured)"}
+        tags = {"genre": spec.get("genre", "food and drink promo"), "client": spec["client"], "event": spec["event"], "format": spec["format"], "style": spec["style"],
+                "edit_type": spec["edit_type"], "inferred": True, "composite_of": spec["composite_of"], "added_by": "Claude, 2026-10-14 (inferred, not measured)" if spec.get("pace_note") else "Claude, 2026-10-13 (inferred, not measured)"}
         record = {"slug": slug, "tags": tags, "summary": summary, "music_sync": None, "composite_of": spec["composite_of"]}
         (pr.REFERENCE_DIR / f"{slug}.json").write_text(json.dumps(record, indent=1))
         written.append(slug)
     return written
+
+
+def ensure_inferred_styles(slugs: list[str] | None = None) -> None:
+    """Makes sure the code-defined styles exist as records (backend/data is not in git, so a fresh checkout or a wiped folder heals itself).
+    With `slugs`, only those that are asked for are checked."""
+    from app import post_reference as pr
+    missing = [s for s in INFERRED_STYLES if (slugs is None or s in slugs) and not (pr.REFERENCE_DIR / f"{s}.json").exists()]
+    if missing:
+        write_inferred_styles(only=missing)
 
 
 def _food_section() -> list[str]:

@@ -439,6 +439,8 @@ public struct EditStyleOption: Decodable, Identifiable, Equatable {
     public var id: String { slug }
 
     public var isNarratedStory: Bool { editType == "narrated_broll" }
+    /// A calm corporate highlight cut to the music's hits (opening and closing brand cards, no narration, no accents).
+    public var isCorporateHighlight: Bool { editType == "corporate_highlight" }
     public var isDialogueLed: Bool { editType == "dialogue_led" }
 
     enum CodingKeys: String, CodingKey {

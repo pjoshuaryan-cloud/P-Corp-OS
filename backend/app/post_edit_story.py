@@ -32,10 +32,7 @@ from app.post_style import StoryStyle, StyleProfile
 MIN_PHRASE_SECONDS = 0.9  # a two-word phrase ("and trust") still needs a moment on screen; the reference's shortest caption shots are ~0.9-1.0 s
 MAX_PHRASE_SECONDS = 3.5
 MAX_SCRIPT_CHARS = 20000
-# Josh's direction (2026-10-14): corporate edits are CALMER than the Diplomat reference (median shot 1.63 s). Every shot length / phrase length is
-# multiplied by this. 1.0 = exactly the reference's pace. A stated, adjustable default -- not measured from anything.
-CALM_PACE = 1.3
-MIN_PACE, MAX_PACE = 0.8, 2.0
+from app.post_steady import CALM_PACE, MAX_PACE, MIN_PACE  # noqa: E402,F401  (kept importable from here: the planner's tests and callers use these names)
 # words a long clause is happy to be split BEFORE (a natural place to breathe)
 _BREAK_BEFORE = {"and", "with", "that", "to", "for", "in", "across", "from", "while", "so", "which", "who", "as", "by", "on", "of", "our", "their", "every"}
 
@@ -144,31 +141,14 @@ def story_timeline(story: StoryStyle, *, fps: float, script: str | None = None, 
 
 # -------------------------------------------------------------------------------------------------------------- the plan
 def _steady_window(clip: dict, length: float, taken: list[tuple[float, float]]) -> dict[str, Any]:
-    """The steadiest window of the clip for this slot (no cut inside, smooth, sharp, not dark), as `choose_window` would return it."""
-    m = clip["steady"]
-    dur = min(clip["duration"], m["seconds"])  # the analysis may cover less than the whole clip (first five minutes)
-    length = min(length, dur)
-    lo = min(COMPOSE_MIN_START, max(dur - length, 0.0))
-    hi = max(dur - length - 0.04, 0.0)
-    w = post_steady.steadiest_window(m, dur, length, taken, lo=lo, hi=hi)
-    if w["cuts"]:
-        source = "steadiest window -- but every window of this clip has a cut in it (least bad)"
-    elif w["static"]:
-        source = "steadiest window (static footage, no cut inside)"
-    else:
-        source = "steadiest window (no cut inside, smooth, sharp)"
-    return {"start": w["start"], "duration": w["duration"], "source": source,
-            "steady": {"score": round(w["score"], 4), "cuts": w["cuts"], "mean_motion": round(w["mean_motion"], 4), "peak_motion": round(w["peak_motion"], 4),
-                       "jerk": round(w["jerk"], 4), "blur": round(w["blur"], 3), "static": w["static"]}}
+    """Kept as a name for the tests and callers that already use it: see post_steady.window_for_slot."""
+    return post_steady.window_for_slot(clip, length, taken)
 
 
-def build_story_plan(*, profile: StyleProfile, timeline: dict[str, Any], music_in: float, fps: float, clips: list[dict], bookend_file_id: int | None, seed: int = 7, slow_zooms: bool = True) -> dict[str, Any]:
-    """Clip + moment for every slot of the timeline. Clips run in the order given (shoot order unless the caller passed one),
-    spread evenly through them; the opener and the closing hold use the bookend clip if there is one."""
-    story = profile.story
-    if story is None:
-        raise EditPlanError(f"'{profile.name}' isn't a narrated b-roll style.")
-    slots = timeline["slots"]
+def assign_clips_to_slots(slots: list[dict[str, Any]], *, fps: float, clips: list[dict], bookend_file_id: int | None, seed: int = 7, slow_zooms: bool = True) -> dict[str, Any]:
+    """Clip + steadiest window for every slot ({role, start_frame, frames, phrase?}), shared by the narrated story and the corporate highlight to music.
+    Clips run in the order given (shoot order unless the caller passed one), spread evenly; the opener and the closing hold use the bookend clip if
+    there is one; a slot a clip has no clean stretch for moves to another clip. Returns {shots, zooms, by_id, bookend}."""
     n_body = sum(1 for s in slots if s["role"] == "body")
     exclude = {bookend_file_id} if bookend_file_id is not None else set()
     has_moments = any(c.get("events") for c in clips)
@@ -221,6 +201,18 @@ def build_story_plan(*, profile: StyleProfile, timeline: dict[str, Any], music_i
             **({"phrase": sl["phrase"]} if sl.get("phrase") else {}),
         })
     zooms = post_steady.plan_zooms(shots, fps, seed=seed) if slow_zooms else []
+    return {"shots": shots, "zooms": zooms, "by_id": by_id, "bookend": bookend}
+
+
+def build_story_plan(*, profile: StyleProfile, timeline: dict[str, Any], music_in: float, fps: float, clips: list[dict], bookend_file_id: int | None, seed: int = 7, slow_zooms: bool = True) -> dict[str, Any]:
+    """Clip + moment for every slot of the timeline. Clips run in the order given (shoot order unless the caller passed one),
+    spread evenly through them; the opener and the closing hold use the bookend clip if there is one."""
+    story = profile.story
+    if story is None:
+        raise EditPlanError(f"'{profile.name}' isn't a narrated b-roll style.")
+    slots = timeline["slots"]
+    got = assign_clips_to_slots(slots, fps=fps, clips=clips, bookend_file_id=bookend_file_id, seed=seed, slow_zooms=slow_zooms)
+    shots, zooms, by_id, bookend = got["shots"], got["zooms"], got["by_id"], got["bookend"]
     lengths = [s["duration_frames"] / fps for s in shots if s["role"] == "body"]
     total_frames = timeline["total_frames"]
     hold = next((s["seconds"] for s in slots if s["role"] == "end_card"), 0.0)

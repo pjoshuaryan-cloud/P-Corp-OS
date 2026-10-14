@@ -120,38 +120,77 @@ def render_card(logo_path: str, size: tuple[int, int], out_dir: Path, *, role: s
     lines = [l.strip() for l in (lines or []) if l and l.strip()][:4]
     logo = _trim_transparent(_open_logo(logo_path))
     lay = c["opener" if role == "opener" else "closer"]
+    logo_src = logo
     logo = _fit(logo, c["logo_width_share"] * W, c["logo_lockup_height_share"] * H)
     im = Image.new("RGBA", (W, H), bg + (255,))
     d = ImageDraw.Draw(im)
-    logo_top = round((lay["logo_top_share"] if lines else 0.5 - (logo.height / H) / 2) * H)
-    im.alpha_composite(logo, ((W - logo.width) // 2, logo_top))
-    if lines and role == "opener":
-        font = _fit_font_to_width(lines[0], "bold_italic", logo.width, int(0.075 * H))
-        box = d.textbbox((0, 0), lines[0], font=font)
-        d.text(((W - (box[2] - box[0])) / 2 - box[0], lay["text_top_share"] * H - box[1]), lines[0], font=font, fill=ink)
-    elif lines:
-        size_px = int(lay["text_line_height_share"] * H * 0.95)
-        font = _font("demi", size_px)
-        y = lay["text_top_share"] * H
-        for line in lines:
-            box = d.textbbox((0, 0), line, font=font)
-            d.text(((W - (box[2] - box[0])) / 2 - box[0], y - box[1]), line, font=font, fill=ink)
-            y += lay["text_line_height_share"] * H * 1.18
+    if W / H < 1.5:
+        # Vertical, square or 4:5. The reference's layout is shares of a 16:9 frame; stretched to a tall frame the logo floats high and the text sizes (shares of
+        # the height) balloon. Here the logo and its text are ONE group, centred a little above the middle, and every size is the reference's 16:9 size scaled by how
+        # wide the logo is here compared with there (the reference at 3840 x 2160).
+        ref_logo = _fit(logo_src, c["logo_width_share"] * 3840, c["logo_lockup_height_share"] * 2160)
+        k = logo.width / max(1, ref_logo.width)
+        gap = max(0.0, (lay["text_top_share"] - lay["logo_top_share"]) * 2160 - ref_logo.height) * k
+        if lines and role == "opener":
+            font = _fit_font_to_width(lines[0], "bold_italic", logo.width, int(0.075 * 2160 * k))
+            box = d.textbbox((0, 0), lines[0], font=font)
+            block = box[3] - box[1]
+        elif lines:
+            line_h = lay["text_line_height_share"] * 2160 * k
+            font = _font("demi", int(line_h * 0.95))
+            block = line_h + (len(lines) - 1) * line_h * 1.18
+        else:
+            gap, block = 0.0, 0.0
+        top = round((H - (logo.height + gap + block)) * 0.46)
+        im.alpha_composite(logo, ((W - logo.width) // 2, top))
+        y = top + logo.height + gap
+        if lines and role == "opener":
+            d.text(((W - (box[2] - box[0])) / 2 - box[0], y - box[1]), lines[0], font=font, fill=ink)
+        elif lines:
+            for line in lines:
+                box = d.textbbox((0, 0), line, font=font)
+                d.text(((W - (box[2] - box[0])) / 2 - box[0], y - box[1]), line, font=font, fill=ink)
+                y += line_h * 1.18
+    else:
+        logo_top = round((lay["logo_top_share"] if lines else 0.5 - (logo.height / H) / 2) * H)
+        im.alpha_composite(logo, ((W - logo.width) // 2, logo_top))
+        if lines and role == "opener":
+            font = _fit_font_to_width(lines[0], "bold_italic", logo.width, int(0.075 * H))
+            box = d.textbbox((0, 0), lines[0], font=font)
+            d.text(((W - (box[2] - box[0])) / 2 - box[0], lay["text_top_share"] * H - box[1]), lines[0], font=font, fill=ink)
+        elif lines:
+            size_px = int(lay["text_line_height_share"] * H * 0.95)
+            font = _font("demi", size_px)
+            y = lay["text_top_share"] * H
+            for line in lines:
+                box = d.textbbox((0, 0), line, font=font)
+                d.text(((W - (box[2] - box[0])) / 2 - box[0], y - box[1]), line, font=font, fill=ink)
+                y += lay["text_line_height_share"] * H * 1.18
     out_dir.mkdir(parents=True, exist_ok=True)
-    tag = _tag("card", role, W, H, bg, ink, lines, Path(logo_path).stat().st_size, Path(logo_path).stat().st_mtime_ns)
+    tag = _tag("card2", role, W, H, bg, ink, lines, Path(logo_path).stat().st_size, Path(logo_path).stat().st_mtime_ns)
     path = out_dir / f"corp_card_{role}_{tag}.png"
     im.convert("RGB").save(path, optimize=True)
     return {"file": str(path), "name": path.name}
 
 
 # ------------------------------------------------------------------------------------------------------------- the bug
+VERTICAL_BUG_WIDTH_SHARE = 0.24  # the logo plate's width on a vertical / square frame (the reference's 15% of a 16:9 frame would be tiny on a phone)
+
+
 def render_logo_bug(logo_path: str, size: tuple[int, int], out_dir: Path, style: dict[str, Any]) -> dict[str, Any]:
     """A full-frame transparent image: the logo on a white rounded plate in the top-right corner, where the reference has it."""
     W, H = size
     b = style["logo_bug"]
-    x0, x1, y0, y1 = b["left_share"] * W, b["right_share"] * W, b["top_share"] * H, b["bottom_share"] * H
+    if W / H >= 1.5:  # landscape: the box measured on the reference's own 16:9 frame
+        x0, x1, y0, y1 = b["left_share"] * W, b["right_share"] * W, b["top_share"] * H, b["bottom_share"] * H
+    else:
+        # vertical, square or 4:5: stretching the 16:9 box over this shape would make a tall plate with the logo lost in it. Keep the
+        # reference's plate PROPORTIONS, make it a larger share of the (narrower) frame, and sit it the same 5% in from the top-right corner.
+        ref_aspect = ((b["right_share"] - b["left_share"]) * 16) / ((b["bottom_share"] - b["top_share"]) * 9)
+        plate_w_f = VERTICAL_BUG_WIDTH_SHARE * W
+        x1, y0 = W - 0.05 * W, 0.05 * H
+        x0, y1 = x1 - plate_w_f, y0 + plate_w_f / ref_aspect
     plate_w, plate_h = round(x1 - x0), round(y1 - y0)
-    # a plate keeps the reference's proportions on this frame shape: fit it inside the box measured on a 16:9 frame
     im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ss = 4  # draw the plate 4x larger and shrink it: smooth rounded corners
     plate = Image.new("RGBA", (plate_w * ss, plate_h * ss), (0, 0, 0, 0))
@@ -161,7 +200,7 @@ def render_logo_bug(logo_path: str, size: tuple[int, int], out_dir: Path, style:
     plate.alpha_composite(logo, ((plate_w - logo.width) // 2, (plate_h - logo.height) // 2))
     im.alpha_composite(plate, (round(x0), round(y0)))
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"corp_logo_bug_{_tag('bug', W, H, b, Path(logo_path).stat().st_size, Path(logo_path).stat().st_mtime_ns)}.png"
+    path = out_dir / f"corp_logo_bug_{_tag('bug2', W, H, b, Path(logo_path).stat().st_size, Path(logo_path).stat().st_mtime_ns)}.png"
     im.save(path, optimize=True)
     return {"file": str(path), "name": path.name, "box": [round(x0), round(y0), round(x1), round(y1)]}
 
@@ -224,7 +263,7 @@ def render_caption(text: str, size: tuple[int, int], out_dir: Path, style: dict[
 
 # --------------------------------------------------------------------------------------------------------------- the plan
 def build_graphics(plan: dict[str, Any], *, job: dict, logo_path: str | None, size: tuple[int, int] | None, out_dir: Path, tagline: str | None, contact_lines: list[str] | None,
-                   burn_captions: bool = True, style_slugs: list[str] | None = None) -> tuple[dict[str, Any] | None, list[str]]:
+                   burn_captions: bool = True, style_slugs: list[str] | None = None, logo_bug: bool = True) -> tuple[dict[str, Any] | None, list[str]]:
     """Renders the cards, logo bug and caption images for a story plan and describes where to place them. Returns (graphics, notes);
     graphics is None when it can't be done (and `notes` says why). Slots: the plan's `opener` and `end_card` shots are the card slots (the
     b-roll underneath stays as the fallback if a card fails to place); the bug spans between them; each caption sits on its narrated shot."""
@@ -247,7 +286,7 @@ def build_graphics(plan: dict[str, Any], *, job: dict, logo_path: str | None, si
         graphics["cards"].append({**c, "role": "closer", "start_frame": closer["start_frame"], "frames": closer["duration_frames"]})
     bug_start = (opener["start_frame"] + opener["duration_frames"]) if opener else 0
     bug_end = closer["start_frame"] if closer else plan["duration_frames"]
-    if bug_end - bug_start > 24:
+    if logo_bug and bug_end - bug_start > 24:
         b = render_logo_bug(logo_path, size, out_dir, style)
         graphics["logo_bug"] = {**b, "start_frame": bug_start, "frames": bug_end - bug_start}
     narrated = [s for s in shots if s.get("phrase")]

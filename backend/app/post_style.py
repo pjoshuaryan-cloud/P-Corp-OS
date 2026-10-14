@@ -14,6 +14,7 @@ from statistics import mean, median
 from app.post_reference import list_references, load_reference
 
 PACING_BINS = 10
+HIGHLIGHT_TARGET_SECONDS = 40.0  # Josh's corporate highlight runs 35-45 s
 
 
 REFERENCE_FPS = 25.0  # references don't record their frame rate; Josh's reels are 25 fps
@@ -170,6 +171,7 @@ class StyleProfile:
     inferred: bool = False  # True = pooled from other references as a stand-in, not measured from an edit of this kind
     story: StoryStyle | None = None  # set for a narrated b-roll story: the planner builds it from a timeline, not from the music's hits
     dialogue: DialogueStyle | None = None  # set for a multicam interview: cameras switched at quiet gaps over continuous dialogue
+    highlight: bool = False  # a corporate highlight cut to the music's hits at a calm pace (post_edit_highlight.py); `story` then only carries the reference's shot rhythm
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -297,9 +299,13 @@ def _expand(slugs: list[str]) -> tuple[list[dict], bool]:
 def profile_from_references(slugs: list[str], name: str | None = None) -> StyleProfile:
     """Pools the saved references named in `slugs` into one profile. Raises ValueError for a reference the planner can't
     build from (a talking head or a narrated b-roll story), saying so plainly."""
-    from app.post_edit_types import type_info
+    from app.post_edit_types import ensure_inferred_styles, type_info
     if not slugs:
         raise ValueError("Pick at least one reference edit for the style.")
+    ensure_inferred_styles(slugs)
+    highlight = any((load_reference(sl).get("tags") or {}).get("edit_type") == "corporate_highlight" for sl in slugs)
+    if highlight and len(slugs) > 1:
+        raise ValueError("The corporate highlight style is a complete style of its own: it can't be pooled with other references.")
     refs, inferred = _expand(slugs)
     kinds = {edit_type_of(rec) for rec in refs}
     if len(kinds) > 1:
@@ -334,7 +340,7 @@ def profile_from_references(slugs: list[str], name: str | None = None) -> StyleP
     curve = [mean(b) if b else overall for b in bins]
     ranked = sorted(lengths)
     p90 = ranked[min(len(ranked) - 1, int(0.90 * len(ranked)))]
-    return StyleProfile(
+    profile = StyleProfile(
         name=name or " + ".join(slugs), source_slugs=list(slugs), target_duration_seconds=round(mean(durations), 1),
         shot_lengths=lengths, pacing_curve=[round(c, 3) for c in curve], end_card_seconds=round(mean(ends), 2) if ends else 0.0,
         hit_snap_rate=round(mean(snaps), 2) if snaps else 0.8,
@@ -343,12 +349,21 @@ def profile_from_references(slugs: list[str], name: str | None = None) -> StyleP
         edit_type=next(iter(kinds)), story=story_style_from_records(refs) if next(iter(kinds)) == "narrated_broll" else None,
         dialogue=dialogue_style_from_records(refs) if next(iter(kinds)) == "dialogue_led" else None,
     )
+    if highlight:
+        story = profile.story
+        if story is None:
+            raise ValueError("The corporate highlight style needs the corporate reference's shot rhythm, and none could be read from it.")
+        profile.highlight, profile.edit_type = True, "corporate_highlight"
+        profile.target_duration_seconds = HIGHLIGHT_TARGET_SECONDS
+        profile.accents = None  # hard cuts only: corporate edits have no flashes or other accents
+    return profile
 
 
 def available_styles(buildable_only: bool = True, **tag_filters) -> list[dict]:
     """Saved references a job can take its style from (optionally filtered by tags such as genre). By default only the ones
     the planner can build from; pass buildable_only=False to see every saved reference (talking head, corporate...)."""
-    from app.post_edit_types import type_info
+    from app.post_edit_types import ensure_inferred_styles, type_info
+    ensure_inferred_styles()
     records = list_references(**tag_filters)
     if not buildable_only:
         return records

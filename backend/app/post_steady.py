@@ -40,6 +40,11 @@ STATIC_PEAK = 0.03            # ... and no single moment above this (still windo
 DARK_LUMA = 0.08              # a window whose picture is nearly black is not a usable moment
 
 # --- slow zoom ---
+# Josh's direction (2026-10-14): corporate edits are CALMER than the Diplomat reference (median shot 1.63 s). Shot / phrase lengths are multiplied by
+# this. 1.0 = exactly the reference's pace. A stated, adjustable default -- not measured from anything.
+CALM_PACE = 1.3
+MIN_PACE, MAX_PACE = 0.8, 2.0
+
 ZOOM_MIN_PERCENT = 2.5        # total scale change over a shot; the reference's clean slow zooms were ~3% over the shot
 ZOOM_MAX_PERCENT = 5.0
 ZOOM_PERCENT_PER_SECOND = 1.8  # in between, longer shots zoom a little more so the move stays slow
@@ -147,6 +152,27 @@ def steadiest_window(m: dict[str, Any], duration: float, length: float, taken: l
         s = lo
         return {"start": round(s, 3), "duration": round(length, 3), "overlaps_earlier_use": True, **score_window(m, s, length)}
     return {"start": round(best[1], 3), "duration": round(length, 3), "overlaps_earlier_use": False, **best[2]}
+
+
+def window_for_slot(clip: dict[str, Any], length: float, taken: list[tuple[float, float]]) -> dict[str, Any]:
+    """The steadiest window of `clip` for a slot of `length` seconds, shaped like the planner's other window choices
+    ({start, duration, source, steady}): no cut inside, smooth, sharp, not dark, clear of windows already used from the clip."""
+    from app.post_media import COMPOSE_MIN_START  # same start margin as the planner's other window choices (cameras are still settling in the first moments)
+    m = clip["steady"]
+    dur = min(clip["duration"], m["seconds"])  # the analysis may cover less than the whole clip (first five minutes)
+    length = min(length, dur)
+    lo = min(COMPOSE_MIN_START, max(dur - length, 0.0))
+    hi = max(dur - length - 0.04, 0.0)
+    w = steadiest_window(m, dur, length, taken, lo=lo, hi=hi)
+    if w["cuts"]:
+        source = "steadiest window -- but every window of this clip has a cut in it (least bad)"
+    elif w["static"]:
+        source = "steadiest window (static footage, no cut inside)"
+    else:
+        source = "steadiest window (no cut inside, smooth, sharp)"
+    return {"start": w["start"], "duration": w["duration"], "source": source,
+            "steady": {"score": round(w["score"], 4), "cuts": w["cuts"], "mean_motion": round(w["mean_motion"], 4), "peak_motion": round(w["peak_motion"], 4),
+                       "jerk": round(w["jerk"], 4), "blur": round(w["blur"], 3), "static": w["static"]}}
 
 
 def plan_zooms(shots: list[dict[str, Any]], fps: float, *, seed: int = 7) -> list[dict[str, Any]]:

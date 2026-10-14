@@ -53,6 +53,7 @@ struct PlanEditView: View {
     private var options: EditOptions? { client.options }
     private var selectedStyle: EditStyleOption? { options?.styles.first { $0.slug == styleSlug } }
     private var isStory: Bool { selectedStyle?.isNarratedStory == true }
+    private var isHighlight: Bool { selectedStyle?.isCorporateHighlight == true }
     private var isDialogue: Bool { selectedStyle?.isDialogueLed == true }
     private var dialogueSourceId: Int? { cameraIds.contains(dialogueFileId ?? -1) ? dialogueFileId : cameraIds.first }
     private var scriptTrimmed: String { scriptText.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -240,7 +241,7 @@ struct PlanEditView: View {
             sectionLabel(options.savedPlan == nil ? "PLAN AN EDIT" : "PLAN AGAIN")
 
             styleSection(options)
-            if isStory { scriptSection; brandSection(options) }
+            if isStory { scriptSection; brandSection(options) } else if isHighlight { brandSection(options) }
             songSection(options)
             lengthSection
             if isDialogue { camerasSection(options) } else { openingSection(options) }
@@ -259,7 +260,7 @@ struct PlanEditView: View {
                 .disabled(inputProblem != nil || isPlanning || job.mediaAnalyzedAt == nil)
                 if isPlanning {
                     ProgressView().controlSize(.small)
-                    Text(isDialogue ? "Lining up the cameras by sound and finding the gaps in the dialogue…" : (isStory ? "Planning the story…" : "Listening to the song and cutting on its hits…")).font(PCorpFont.body(11)).foregroundStyle(theme.textSecondary)
+                    Text(isDialogue ? "Lining up the cameras by sound and finding the gaps in the dialogue…" : (isStory ? "Planning the story…" : (isHighlight ? "Listening to the song and finding the steadiest shots…" : "Listening to the song and cutting on its hits…"))).font(PCorpFont.body(11)).foregroundStyle(theme.textSecondary)
                 }
             }
             Text("Nothing in Premiere changes until you click Assemble Edit there.")
@@ -269,21 +270,23 @@ struct PlanEditView: View {
 
     // MARK: - Form sections
 
-    /// Corporate story only: the opening/closing brand cards, the corner logo and the burned-in captions, all from the job's logo.
+    /// Corporate story and corporate highlight: the opening/closing brand cards, the corner logo and the burned-in captions, all from the job's logo.
     @ViewBuilder
     private func brandSection(_ options: EditOptions) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            fieldLabel("Brand cards, logo and captions")
+            fieldLabel(isHighlight ? "Opening and closing brand cards" : "Brand cards, logo and captions")
             Toggle(isOn: $brandGraphics) {
                 Text("Lay them over the b-roll").font(PCorpFont.body(12))
             }
             .toggleStyle(.switch).controlSize(.small)
             .disabled(options.logo == nil)
             if let logo = options.logo {
-                Text("Logo: \(URL(fileURLWithPath: logo).lastPathComponent). Opening and closing cards, a logo in the top-right corner for the body, and captions at the bottom, matched to your reference. They go on V2, V3 and V4 above the b-roll.")
+                Text(isHighlight
+                     ? "Logo: \(URL(fileURLWithPath: logo).lastPathComponent). An opening card over the first shot and a closing card over the last, matched to your corporate reference. They go on V2 above the b-roll."
+                     : "Logo: \(URL(fileURLWithPath: logo).lastPathComponent). Opening and closing cards, a logo in the top-right corner for the body, and captions at the bottom, matched to your reference. They go on V2, V3 and V4 above the b-roll.")
                     .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
             } else {
-                Text("No logo found in this job's graphics folder. Put a PNG logo there to get brand cards, the corner logo and captions.")
+                Text(isHighlight ? "No logo found in this job's graphics folder. Put a PNG logo there to get the opening and closing cards." : "No logo found in this job's graphics folder. Put a PNG logo there to get brand cards, the corner logo and captions.")
                     .font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
             }
             if brandGraphics && options.logo != nil {
@@ -659,10 +662,10 @@ struct PlanEditView: View {
             script: isStory && !scriptTrimmed.isEmpty ? scriptTrimmed : nil,
             cameraFileIds: isDialogue ? cameraIds : nil,
             audioFileId: isDialogue ? dialogueSourceId : nil,
-            brandGraphics: isStory ? brandGraphics : nil,
+            brandGraphics: (isStory || isHighlight) ? brandGraphics : nil,
             burnCaptions: isStory ? burnCaptions : nil,
-            cardTagline: isStory && !cardTagline.trimmingCharacters(in: .whitespaces).isEmpty ? cardTagline.trimmingCharacters(in: .whitespaces) : nil,
-            cardContact: isStory ? cardContactLines : nil
+            cardTagline: (isStory || isHighlight) && !cardTagline.trimmingCharacters(in: .whitespaces).isEmpty ? cardTagline.trimmingCharacters(in: .whitespaces) : nil,
+            cardContact: (isStory || isHighlight) ? cardContactLines : nil
         )
         let saved = await client.plan(body, withAccents: addAccents && selectedStyle?.hasAccents != false, withSoundEffects: addSoundEffects)
         isPlanning = false

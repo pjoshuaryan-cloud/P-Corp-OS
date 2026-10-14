@@ -1696,6 +1696,65 @@ async function placeSoundEffects(project, editor, plan, tpf, keepAlive, runId) {
     return placed;
 }
 
+// ------------------------------------------------------------------ Fill the frame (corporate highlight)
+//
+// plan.fit === "fill": every clip is scaled so its picture covers the whole sequence frame, centred. A 16:9 clip in a vertical sequence would otherwise show as an
+// unscaled square with black bars above and below (Premiere places clips at their native size); a smaller clip in a bigger sequence would sit small in the middle.
+// The size is read from the project item's "Video Info" column -- what Premiere itself sees, so rotated phone footage is right too. A clip that already has the
+// sequence's shape and size is left at 100. Scale is set as a plain value (centre stays centred); a slow zoom afterwards reads this as its base.
+async function fillFrameScale(project, sequence, plan, tpf, keepAlive) {
+    const frame = await sequence.getFrameSize();
+    if (!frame || !frame.width || !frame.height) return "Fill the frame: couldn't read the sequence size, so clips were left at their own size.";
+    const byStart = await trackItemsByStart(sequence, "video", 0);
+    const todo = [];
+    let already = 0, unreadable = 0;
+    for (const shot of plan.shots) {
+        const trackItem = byStart.get(shot.start_frame * tpf);
+        if (!trackItem) continue;
+        try {
+            const projectItem = await trackItem.getProjectItem();
+            keepAlive.push(projectItem);
+            const columns = JSON.parse(await ppro.Metadata.getProjectColumnsMetadata(projectItem));
+            const info = columns.find((c) => c.ColumnID === "Column.Intrinsic.VideoInfo");
+            const size = parseVideoInfo(info && info.ColumnValue);
+            if (!size) { unreadable++; continue; }
+            const cover = Math.ceil(Math.max(frame.width / size.width, frame.height / size.height) * 10000) / 100;  // rounded UP to 0.01%: never a hair short of the frame edge
+            if (Math.abs(cover - 100) < 0.5) { already++; continue; }
+            const scale = await findMotionScale(trackItem, keepAlive);
+            if (!scale) { unreadable++; continue; }
+            const keyframe = scale.createKeyframe(cover);
+            keepAlive.push(keyframe);
+            todo.push({ shot, scale, keyframe, cover });
+        } catch (e) {
+            unreadable++;
+            log(`Warning: couldn't read the size of shot ${shot.index}'s clip (${e}).`);
+        }
+    }
+    let applied = 0;
+    for (let i = 0; i < todo.length; i += ACCENT_BATCH) {
+        const batch = todo.slice(i, i + ACCENT_BATCH);
+        try {
+            await transact(project, "P Corp POST -- Fill the frame", (compound) => {
+                for (const t of batch) compound.addAction(t.scale.createSetValueAction(t.keyframe, true));
+            });
+            applied += batch.length;
+        } catch (e) {
+            log(`Warning: a batch of frame-filling scales failed (${e}).`);
+        }
+        await sleep(ROUGH_CUT_PAUSE_MS);
+    }
+    let verified = 0;
+    for (const t of todo) {
+        try {
+            const value = Number((await t.scale.getValueAtTime(ppro.TickTime.createWithTicks("0"))).value);
+            if (Math.abs(value - t.cover) < 0.05) verified++;
+            else log(`Warning: shot ${t.shot.index}: the scale reads back as ${value} (wanted ${t.cover}).`);
+        } catch (e) { /* the read-back is a check, not a step */ }
+    }
+    return `Fill the frame: ${applied} of ${todo.length} clip(s) scaled to cover ${frame.width} x ${frame.height} (${verified} read back correctly), ${already} already the right size`
+        + (unreadable ? `, ${unreadable} left alone because their size couldn't be read.` : ".");
+}
+
 // ------------------------------------------------------------------ Slow zooms (corporate edits)
 //
 // plan.zooms.items: [{shot_index, start_frame, frames, direction: "in"|"out", percent}] -- only shots whose footage is static (backend/app/post_steady.py).
@@ -2216,6 +2275,10 @@ async function assembleEdit() {
             }
             log(`  placed ${Math.min(i + ROUGH_CUT_BATCH_SIZE, placeable.length)} of ${placeable.length}`);
             await sleep(ROUGH_CUT_PAUSE_MS);
+        }
+        if (plan.fit === "fill") {
+            log("Scaling the clips to fill the frame…");
+            try { log(await fillFrameScale(project, sequence, plan, tpf, keepAlive)); } catch (e) { log(`Note: the fill-the-frame step failed (${e}). The edit itself is fine.`); }
         }
         await project.save();
 

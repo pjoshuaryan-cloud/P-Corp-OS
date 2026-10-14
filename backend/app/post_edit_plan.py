@@ -67,10 +67,11 @@ def choose_music_window(hits: list[list[float]], track_seconds: float, duration:
     return best_start
 
 
-def plan_cut_times(hits: list[list[float]], duration: float, profile: StyleProfile, rng: random.Random) -> list[dict]:
+def plan_cut_times(hits: list[list[float]], duration: float, profile: StyleProfile, rng: random.Random, opener_seconds: float | None = None) -> list[dict]:
     """Cut points (seconds from the start of the edit) in the style's rhythm, each snapped to a music hit.
     `hits` are [time_from_edit_start, strength_percentile]. Returns [{"t", "hit_pct", "on_hit"}], first at 0,
-    last = where the closing card begins (or `duration` if the style has none)."""
+    last = where the closing card begins (or `duration` if the style has none). With `opener_seconds` the first shot is an opening-card slot:
+    it ends on the strongest hit within 0.6 s of that length (off the beat at exactly that length when there is none)."""
     usable = sorted((h for h in hits if h[1] >= HIT_USABLE_PERCENTILE and 0.0 <= h[0] <= duration), key=lambda h: h[0])
     body_end = duration - profile.end_card_seconds if profile.end_card_seconds else duration
 
@@ -84,6 +85,14 @@ def plan_cut_times(hits: list[list[float]], duration: float, profile: StyleProfi
     if end_hit:
         body_end = end_hit[0]
     t = 0.0
+    if opener_seconds:
+        near = [h for h in usable if abs(h[0] - opener_seconds) <= 0.6 and h[0] > 0.5]
+        if near:
+            pick = max(near, key=lambda h: (h[1] / 100.0 - 0.4 * abs(h[0] - opener_seconds), -h[0]))
+            t, pct, on = pick[0], pick[1], True
+        else:
+            t, pct, on = opener_seconds, None, False
+        cuts.append({"t": round(t, 4), "hit_pct": pct, "on_hit": on})
     mean_len = profile.mean_shot_seconds
     curve = profile.pacing_curve
     while True:
@@ -398,7 +407,7 @@ async def plan_for_job(
     seed: int = 7, use_moments: bool = True, label: str | None = None, script: str | None = None,
     camera_file_ids: list[int] | None = None, audio_file_id: int | None = None,
     brand_graphics: bool = True, burn_captions: bool = True, card_tagline: str | None = None, card_contact: list[str] | None = None,
-    pace: float | None = None, slow_zooms: bool = True, postgres_conn: Any = None,
+    pace: float | None = None, slow_zooms: bool = True, logo_bug: bool | None = None, fill_frame: bool | None = None, postgres_conn: Any = None,
 ) -> dict[str, Any]:
     """The whole thing for one job: style -> clips -> song analysis -> plan -> music cut written next to the
     project, plan saved as edit_plan_latest.json. Raises EditPlanError with a plain message when something's missing."""
@@ -428,12 +437,12 @@ async def plan_for_job(
                                            target_seconds=target_seconds, fps=_fps_from_job(job), seed=seed, label=label)
     fps = _fps_from_job(job)
     timeline = None
-    if profile.story is not None:  # a narrated b-roll story: paced by its narration (or the style's own rhythm), not by the music's hits
+    graphics_logo = graphics_size = None
+    if profile.story is not None and brand_graphics:  # an opening/closing brand card (and for a story: logo bug, caption images) need a logo and a known sequence size
+        from app.post_brand_graphics import frame_size_for_job
+        graphics_logo, graphics_size = await on_drive(find_logo, job), frame_size_for_job(job)
+    if profile.story is not None and not profile.highlight:  # a narrated b-roll story: paced by its narration (or the style's own rhythm), not by the music's hits
         from app.post_edit_story import CALM_PACE, build_story_plan, story_timeline  # noqa: F401  (build_story_plan is used below)
-        graphics_logo = graphics_size = None
-        if brand_graphics:  # an opening/closing brand card, logo bug and caption images need a logo and a known sequence size
-            from app.post_brand_graphics import frame_size_for_job
-            graphics_logo, graphics_size = await on_drive(find_logo, job), frame_size_for_job(job)
         timeline = story_timeline(profile.story, fps=fps, script=script, target_seconds=duration, seed=seed, has_bookend=bookend_file_id is not None,
                                   with_opener=bookend_file_id is not None or bool(graphics_logo and graphics_size), pace=CALM_PACE if pace is None else pace)
         duration = timeline["total_seconds"]
@@ -448,7 +457,15 @@ async def plan_for_job(
     song = await on_drive(bring_song_into_project, song, mdir, timeout=180.0, writing=True)  # only after it decoded fine
     music_in = choose_music_window(analysis["hits"], analysis["duration"], duration, music_in_seconds)
     steady_counts = None
-    if timeline is not None:
+    if profile.highlight:  # a calm highlight cut to the music's hits: steadiest windows, slow zooms on static shots, hard cuts only
+        from app.post_edit_highlight import build_highlight_plan
+        from app.post_steady import CALM_PACE as _CALM, analyse_clips
+        steady_counts = await analyse_clips(clips, job)
+        plan = build_highlight_plan(profile=profile, hits=analysis["hits"], music_in=music_in, duration=duration, fps=fps, clips=clips, bookend_file_id=bookend_file_id,
+                                    seed=seed, pace=_CALM if pace is None else pace, slow_zooms=slow_zooms, with_opener=bookend_file_id is not None or bool(graphics_logo and graphics_size),
+                                    fill_frame=True if fill_frame is None else fill_frame)
+        plan["notes"].append(f"Steadiness: {steady_counts['analysed']} clip(s) analysed now, {steady_counts['cached']} from this job's cache" + (f", {steady_counts['unreadable']} unreadable (those were planned the old way, from the middle of the clip)." if steady_counts["unreadable"] else "."))
+    elif timeline is not None:
         from app.post_steady import analyse_clips  # reads each clip at low resolution to find its steadiest window and whether it's static (cached per job)
         steady_counts = await analyse_clips(clips, job)
         plan = build_story_plan(profile=profile, timeline=timeline, music_in=music_in, fps=fps, clips=clips, bookend_file_id=bookend_file_id, seed=seed, slow_zooms=slow_zooms)
@@ -459,14 +476,15 @@ async def plan_for_job(
     music_in = apply_music_lead(plan, profile, music_in)
     out_dir = edit_dir(job)
     await on_drive(_make_dirs, out_dir, mdir, writing=True)
-    if timeline is not None and brand_graphics:
+    if (timeline is not None or profile.highlight) and brand_graphics:
         from app.post_brand_graphics import GraphicsError, GRAPHICS_SUBFOLDER, build_graphics
         if plan.get("narration"):
             plan["captions_path"] = str(out_dir / "captions.srt")
         try:
             gfx, gfx_notes = await on_drive(
                 lambda: build_graphics(plan, job=job, logo_path=graphics_logo, size=graphics_size, out_dir=Path(job["destination_root"]) / _GRAPHICS_FOLDER[job["profile"]] / GRAPHICS_SUBFOLDER,
-                                       tagline=card_tagline, contact_lines=card_contact, burn_captions=burn_captions, style_slugs=style),
+                                       tagline=card_tagline, contact_lines=card_contact, burn_captions=burn_captions, style_slugs=style,
+                                       logo_bug=(not profile.highlight) if logo_bug is None else logo_bug),
                 writing=True, timeout=240.0)
         except GraphicsError as exc:
             gfx, gfx_notes = None, [f"Brand graphics skipped: {exc}"]
