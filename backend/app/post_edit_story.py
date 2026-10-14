@@ -25,12 +25,17 @@ import re
 import statistics
 from typing import Any
 
-from app.post_edit_plan import EditPlanError, MIN_SHOT_FRAMES, MUSIC_FADE_OUT_SECONDS, _scene_key, choose_window, select_clips, select_clips_by_moments
+from app import post_steady
+from app.post_edit_plan import COMPOSE_MIN_START, EditPlanError, MIN_SHOT_FRAMES, MUSIC_FADE_OUT_SECONDS, _scene_key, choose_window, select_clips, select_clips_by_moments
 from app.post_style import StoryStyle, StyleProfile
 
 MIN_PHRASE_SECONDS = 0.9  # a two-word phrase ("and trust") still needs a moment on screen; the reference's shortest caption shots are ~0.9-1.0 s
 MAX_PHRASE_SECONDS = 3.5
 MAX_SCRIPT_CHARS = 20000
+# Josh's direction (2026-10-14): corporate edits are CALMER than the Diplomat reference (median shot 1.63 s). Every shot length / phrase length is
+# multiplied by this. 1.0 = exactly the reference's pace. A stated, adjustable default -- not measured from anything.
+CALM_PACE = 1.3
+MIN_PACE, MAX_PACE = 0.8, 2.0
 # words a long clause is happy to be split BEFORE (a natural place to breathe)
 _BREAK_BEFORE = {"and", "with", "that", "to", "for", "in", "across", "from", "while", "so", "which", "who", "as", "by", "on", "of", "our", "their", "every"}
 
@@ -81,25 +86,28 @@ def split_script(script: str, max_words: int = 6, min_words: int = 2) -> list[st
     return [" ".join(p) for p in merged]
 
 
-def phrase_seconds(phrase: str, words_per_second: float) -> float:
-    """How long a phrase takes to say at the style's narration pace (an estimate), kept within what a shot can sensibly hold."""
-    return min(MAX_PHRASE_SECONDS, max(MIN_PHRASE_SECONDS, len(phrase.split()) / words_per_second))
+def phrase_seconds(phrase: str, words_per_second: float, pace: float = 1.0) -> float:
+    """How long a phrase takes to say at the style's narration pace (an estimate), kept within what a shot can sensibly hold.
+    A calmer `pace` raises both limits (a shot may be held longer, and never flashes by shorter)."""
+    return min(MAX_PHRASE_SECONDS * pace, max(MIN_PHRASE_SECONDS * pace, len(phrase.split()) / words_per_second))
 
 
 # ---------------------------------------------------------------------------------------------------------- the timeline
-def story_timeline(story: StoryStyle, *, fps: float, script: str | None = None, target_seconds: float | None = None, seed: int = 7, has_bookend: bool = False, with_opener: bool | None = None) -> dict[str, Any]:
+def story_timeline(story: StoryStyle, *, fps: float, script: str | None = None, target_seconds: float | None = None, seed: int = 7, has_bookend: bool = False, with_opener: bool | None = None, pace: float = 1.0) -> dict[str, Any]:
     """The slots of the edit, in seconds snapped to the frame grid: [opener] + body shots + closing hold.
     With a script the body is one shot per phrase; without, shots are drawn from the style's own lengths until the target length."""
+    if not (MIN_PACE <= pace <= MAX_PACE):
+        raise EditPlanError(f"The pace has to be between {MIN_PACE} and {MAX_PACE} (1.0 = the reference's own pace, higher = calmer); got {pace}.")
     rng = random.Random(seed)
     opener = story.opener_seconds if (has_bookend if with_opener is None else with_opener) else 0.0  # the opener slot: for the bookend clip or for an opening brand card
     phrases: list[str] | None = None
     if script is not None and script.strip():
         if len(script) > MAX_SCRIPT_CHARS:
             raise EditPlanError(f"The narration script is {len(script):,} characters; the limit is {MAX_SCRIPT_CHARS:,}. Plan it in sections.")
-        phrases = split_script(script, max_words=story.max_phrase_words)
+        phrases = split_script(script, max_words=max(2, round(story.max_phrase_words * pace)))  # calmer = a few more words (so a longer shot) per phrase
         if not phrases:
             raise EditPlanError("The narration script has no words in it.")
-        body = [phrase_seconds(p, story.words_per_second) for p in phrases]
+        body = [phrase_seconds(p, story.words_per_second, pace) for p in phrases]
         hold = story.closing_hold_seconds
     else:
         total = float(target_seconds or 0)
@@ -109,7 +117,7 @@ def story_timeline(story: StoryStyle, *, fps: float, script: str | None = None, 
         remaining = total - hold - opener
         body, used = [], 0.0
         while True:
-            length = rng.choice(story.body_lengths)
+            length = rng.choice(story.body_lengths) * pace
             if used + length > remaining - 0.4:
                 break
             body.append(length)
@@ -131,11 +139,30 @@ def story_timeline(story: StoryStyle, *, fps: float, script: str | None = None, 
         boundaries.append(max(boundaries[-1] + MIN_SHOT_FRAMES, round(cum * fps)))
     for sl, a, b in zip(slots, boundaries, boundaries[1:]):
         sl["start_frame"], sl["frames"] = a, b - a
-    return {"slots": slots, "total_frames": boundaries[-1], "total_seconds": round(boundaries[-1] / fps, 3), "phrases": phrases}
+    return {"slots": slots, "total_frames": boundaries[-1], "total_seconds": round(boundaries[-1] / fps, 3), "phrases": phrases, "pace": pace}
 
 
 # -------------------------------------------------------------------------------------------------------------- the plan
-def build_story_plan(*, profile: StyleProfile, timeline: dict[str, Any], music_in: float, fps: float, clips: list[dict], bookend_file_id: int | None, seed: int = 7) -> dict[str, Any]:
+def _steady_window(clip: dict, length: float, taken: list[tuple[float, float]]) -> dict[str, Any]:
+    """The steadiest window of the clip for this slot (no cut inside, smooth, sharp, not dark), as `choose_window` would return it."""
+    m = clip["steady"]
+    dur = min(clip["duration"], m["seconds"])  # the analysis may cover less than the whole clip (first five minutes)
+    length = min(length, dur)
+    lo = min(COMPOSE_MIN_START, max(dur - length, 0.0))
+    hi = max(dur - length - 0.04, 0.0)
+    w = post_steady.steadiest_window(m, dur, length, taken, lo=lo, hi=hi)
+    if w["cuts"]:
+        source = "steadiest window -- but every window of this clip has a cut in it (least bad)"
+    elif w["static"]:
+        source = "steadiest window (static footage, no cut inside)"
+    else:
+        source = "steadiest window (no cut inside, smooth, sharp)"
+    return {"start": w["start"], "duration": w["duration"], "source": source,
+            "steady": {"score": round(w["score"], 4), "cuts": w["cuts"], "mean_motion": round(w["mean_motion"], 4), "peak_motion": round(w["peak_motion"], 4),
+                       "jerk": round(w["jerk"], 4), "blur": round(w["blur"], 3), "static": w["static"]}}
+
+
+def build_story_plan(*, profile: StyleProfile, timeline: dict[str, Any], music_in: float, fps: float, clips: list[dict], bookend_file_id: int | None, seed: int = 7, slow_zooms: bool = True) -> dict[str, Any]:
     """Clip + moment for every slot of the timeline. Clips run in the order given (shoot order unless the caller passed one),
     spread evenly through them; the opener and the closing hold use the bookend clip if there is one."""
     story = profile.story
@@ -164,15 +191,36 @@ def build_story_plan(*, profile: StyleProfile, timeline: dict[str, Any], music_i
             clip = next((c for c in reversed(clips) if c["duration"] >= length + 0.2), clips[-1])
         if clip["duration"] < length + 0.2:  # too short for the slot: the next clip in order that fits
             clip = next((c for c in clips if c["duration"] >= length + 0.2 and (sl["role"] != "body" or c["file_id"] not in exclude)), clip)
-        w = choose_window(clip, length, used.get(clip["file_id"], []))
+        w = _steady_window(clip, length, used.get(clip["file_id"], [])) if clip.get("steady") else choose_window(clip, length, used.get(clip["file_id"], []))
+        if sl["role"] != "body" and bookend is None and (w.get("steady") or {}).get("cuts"):
+            # The opener / closing hold with no establishing clip given: any clip with a clean stretch long enough (a hold is long: 6 s)
+            for alt in (list(reversed(clips)) if sl["role"] == "end_card" else list(clips)):
+                if not alt.get("steady") or alt["duration"] < length + 0.2:
+                    continue
+                w_alt = _steady_window(alt, length, used.get(alt["file_id"], []))
+                if not w_alt["steady"]["cuts"]:
+                    clip, w = alt, w_alt
+                    break
+        if sl["role"] == "body" and (w.get("steady") or {}).get("cuts"):
+            # No cut-free stretch of this clip is long enough for the slot: take the next clip (shoot order) that can hold it cleanly.
+            pos = next((k for k, c in enumerate(clips) if c["file_id"] == clip["file_id"]), 0)
+            for alt in clips[pos + 1:] + clips[:pos]:
+                if not alt.get("steady") or alt["file_id"] in exclude or alt["duration"] < length + 0.2:
+                    continue
+                w_alt = _steady_window(alt, length, used.get(alt["file_id"], []))
+                if not w_alt["steady"]["cuts"]:
+                    clip, w = alt, w_alt
+                    break
         used.setdefault(clip["file_id"], []).append((w["start"], w["start"] + w["duration"]))
         shots.append({
             "index": i + 1, "role": sl["role"], "file_id": clip["file_id"], "name": clip["name"], "path": clip["path"],
             "start_frame": sl["start_frame"], "duration_frames": sl["frames"],
             "source_in": w["start"], "source_out": round(w["start"] + sl["frames"] / fps, 3),
             "moment_source": w["source"], "cut_hit_percentile": None, "cut_on_hit": False,
+            **({"steady": w["steady"]} if w.get("steady") else {}),
             **({"phrase": sl["phrase"]} if sl.get("phrase") else {}),
         })
+    zooms = post_steady.plan_zooms(shots, fps, seed=seed) if slow_zooms else []
     lengths = [s["duration_frames"] / fps for s in shots if s["role"] == "body"]
     total_frames = timeline["total_frames"]
     hold = next((s["seconds"] for s in slots if s["role"] == "end_card"), 0.0)
@@ -189,17 +237,24 @@ def build_story_plan(*, profile: StyleProfile, timeline: dict[str, Any], music_i
             "style_median": round(statistics.median(story.body_lengths), 2), "style_mean": round(statistics.mean(story.body_lengths), 2),
             "cuts_on_hits": None,  # a story is not cut to the beat
             "distinct_clips": len({s["file_id"] for s in shots}),
-            "moment_sources": {k: sum(1 for s in shots if s["moment_source"].startswith(k)) for k in ("event", "composition", "hand-set", "middle")},
+            "moment_sources": {k: sum(1 for s in shots if s["moment_source"].startswith(k)) for k in ("steadiest", "event", "composition", "hand-set", "middle")},
+            "steady": {"pace": timeline.get("pace", 1.0), "shots_with_a_steady_window": sum(1 for s in shots if s.get("steady")),
+                       "shots_with_a_cut_inside": sum(1 for s in shots if (s.get("steady") or {}).get("cuts")),
+                       "static_body_shots": sum(1 for s in shots if s["role"] == "body" and (s.get("steady") or {}).get("static")), "slow_zooms": len(zooms)},
             "consecutive_same_scene": sum(1 for a, b in zip(shots, shots[1:]) if a["file_id"] != b["file_id"] and by_id[a["file_id"]].get("scene") and _scene_key(by_id[a["file_id"]]) == _scene_key(by_id[b["file_id"]])),
             "bookend": bookend is not None, "closing_hold_seconds": round(hold, 2),
         },
         "notes": [
             "Shots are cut at the style's own pace and are NOT timed to the music; the song is a bed that fades out over the closing hold.",
             "Clips run in shoot order (or the order you gave), spread evenly through them. The planner does not reorder footage into a story.",
-            "Not placed by this plan: brand cards at the start and end, the corner logo, burned-in captions, dissolves. The closing hold is where the brand card goes.",
+            "Hard cuts only: no dissolves, flashes, dips or other accents -- a cleaner cut, by design (the reference's 6 short dissolves are not reproduced).",
+            f"Pace is {timeline.get('pace', 1.0):g}x the reference's (1.0 = its own, higher = calmer); shots are taken from the STEADIEST window of each clip -- no cut inside, smooth, sharp, not dark.",
             "Which moment of each clip is used is NOT validated as your taste (moment_source says where it came from) -- review and swap.",
         ],
     }
+    if zooms:
+        plan["zooms"] = {"items": zooms, "note": "Slow zooms (push-in or pull-out) only on shots whose footage is static / has little action; shots that already move get none."}
+        plan["notes"].append(f"{len(zooms)} of {sum(1 for s in shots if s['role'] == 'body')} body shots are static footage and get a slow zoom ({sum(1 for z in zooms if z['direction'] == 'in')} push-in, {sum(1 for z in zooms if z['direction'] == 'out')} pull-out); the rest already move, so they get none.")
     if narration:
         plan["narration"] = narration
         plan["notes"].insert(1, "Shot lengths come from the narration script: each phrase is one shot, as long as that phrase takes to say at the style's pace. That is an estimate; re-time to the real voice-over.")

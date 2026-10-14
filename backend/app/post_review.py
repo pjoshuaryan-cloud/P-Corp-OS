@@ -179,6 +179,12 @@ def apply_choice(plan: dict[str, Any], clips: list[dict], slot_index: int, file_
             "source_out": round(chosen["source_in"] + shot["duration_frames"] / fps, 3),
             "moment_source": f"picked in review" + (f" -- event ({chosen['kind']}): {chosen['what']}" if chosen["kind"] else ""),
         })
+        # A story plan's steadiness / slow zoom were measured on the OLD moment. The new one hasn't been measured, so it gets no zoom
+        # (a moving shot with a zoom on top is exactly what the zoom rule exists to prevent).
+        shot.pop("steady", None)
+        zooms = (plan.get("zooms") or {}).get("items")
+        if zooms:
+            plan["zooms"]["items"] = [z for z in zooms if z["shot_index"] != slot_index]
         if plan.get("mode") == "multicam":
             shot["moment_source"] = f"angle switched in review -- {clip['name']}"
             shot["angle"] = next(i for i, c in enumerate(plan["cameras"]) if c["file_id"] == clip["file_id"])

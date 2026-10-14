@@ -398,7 +398,7 @@ async def plan_for_job(
     seed: int = 7, use_moments: bool = True, label: str | None = None, script: str | None = None,
     camera_file_ids: list[int] | None = None, audio_file_id: int | None = None,
     brand_graphics: bool = True, burn_captions: bool = True, card_tagline: str | None = None, card_contact: list[str] | None = None,
-    postgres_conn: Any = None,
+    pace: float | None = None, slow_zooms: bool = True, postgres_conn: Any = None,
 ) -> dict[str, Any]:
     """The whole thing for one job: style -> clips -> song analysis -> plan -> music cut written next to the
     project, plan saved as edit_plan_latest.json. Raises EditPlanError with a plain message when something's missing."""
@@ -429,13 +429,13 @@ async def plan_for_job(
     fps = _fps_from_job(job)
     timeline = None
     if profile.story is not None:  # a narrated b-roll story: paced by its narration (or the style's own rhythm), not by the music's hits
-        from app.post_edit_story import build_story_plan, story_timeline  # noqa: F401  (build_story_plan is used below)
+        from app.post_edit_story import CALM_PACE, build_story_plan, story_timeline  # noqa: F401  (build_story_plan is used below)
         graphics_logo = graphics_size = None
         if brand_graphics:  # an opening/closing brand card, logo bug and caption images need a logo and a known sequence size
             from app.post_brand_graphics import frame_size_for_job
             graphics_logo, graphics_size = await on_drive(find_logo, job), frame_size_for_job(job)
         timeline = story_timeline(profile.story, fps=fps, script=script, target_seconds=duration, seed=seed, has_bookend=bookend_file_id is not None,
-                                  with_opener=bookend_file_id is not None or bool(graphics_logo and graphics_size))
+                                  with_opener=bookend_file_id is not None or bool(graphics_logo and graphics_size), pace=CALM_PACE if pace is None else pace)
         duration = timeline["total_seconds"]
     mdir = music_dir(job)
     song = music_path or await on_drive(post_music.find_music_file, str(mdir))
@@ -447,8 +447,12 @@ async def plan_for_job(
         raise EditPlanError(str(exc)) from exc
     song = await on_drive(bring_song_into_project, song, mdir, timeout=180.0, writing=True)  # only after it decoded fine
     music_in = choose_music_window(analysis["hits"], analysis["duration"], duration, music_in_seconds)
+    steady_counts = None
     if timeline is not None:
-        plan = build_story_plan(profile=profile, timeline=timeline, music_in=music_in, fps=fps, clips=clips, bookend_file_id=bookend_file_id, seed=seed)
+        from app.post_steady import analyse_clips  # reads each clip at low resolution to find its steadiest window and whether it's static (cached per job)
+        steady_counts = await analyse_clips(clips, job)
+        plan = build_story_plan(profile=profile, timeline=timeline, music_in=music_in, fps=fps, clips=clips, bookend_file_id=bookend_file_id, seed=seed, slow_zooms=slow_zooms)
+        plan["notes"].append(f"Steadiness: {steady_counts['analysed']} clip(s) analysed now, {steady_counts['cached']} from this job's cache" + (f", {steady_counts['unreadable']} unreadable (those were planned the old way, from the middle of the clip)." if steady_counts["unreadable"] else "."))
     else:
         plan = build_plan(profile=profile, hits=analysis["hits"], music_in=music_in, duration=duration, fps=fps,
                           clips=clips, bookend_file_id=bookend_file_id, seed=seed)

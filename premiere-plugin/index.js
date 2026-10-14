@@ -1696,6 +1696,111 @@ async function placeSoundEffects(project, editor, plan, tpf, keepAlive, runId) {
     return placed;
 }
 
+// ------------------------------------------------------------------ Slow zooms (corporate edits)
+//
+// plan.zooms.items: [{shot_index, start_frame, frames, direction: "in"|"out", percent}] -- only shots whose footage is static (backend/app/post_steady.py).
+// Each is Motion > Scale animated over the whole shot by two keyframes, linear: push-in goes from the shot's current scale to current x (1 + percent/100), pull-out the
+// other way round. The current scale is read first (100 normally) so a project with another default media scaling still gets the right percentage.
+//
+// Two things found in real Premiere (2026-10-14) that a read-back through the API does NOT reveal -- only exported frames and the saved project file do:
+//   1. keyframe times count from the start of the SOURCE clip, so they are the shot's in-point (trackItem.getInPoint()) plus the offset into the shot. Keyframes at 0 and
+//      the shot's length, on a shot that begins 4 s into its clip, were already over when the shot started: it sat at the end value the whole time (10 of 15 shots).
+//   2. the order: time-varying switch first, then the keyframes. Without the switch the animation renders but is not saved into the project file.
+// Verified with static textured clips (so only the zoom can change between frames): 15 of 15 shots render the keyframed scale and 15 of 15 are saved in the .prproj.
+const ZOOM_BATCH = 20;
+
+async function findMotionScale(trackItem, keepAlive) {
+    const chain = await trackItem.getComponentChain();
+    keepAlive.push(chain);
+    const count = await chain.getComponentCount();
+    for (let i = 0; i < count; i++) {
+        const component = await chain.getComponentAtIndex(i);
+        keepAlive.push(component);
+        if ((await component.getMatchName()) !== "AE.ADBE Motion") continue;
+        const params = await component.getParamCount();
+        for (let k = 0; k < params; k++) {
+            const param = await component.getParam(k);
+            if (param.displayName === "Scale") return param;
+        }
+    }
+    return null;
+}
+
+async function placeShotZooms(project, sequence, plan, tpf, keepAlive) {
+    const items = (plan.zooms && plan.zooms.items) || [];
+    if (items.length === 0) return "";
+    const byStart = await trackItemsByStart(sequence, "video", 0);
+    const zeroTick = ppro.TickTime.createWithTicks("0");
+    keepAlive.push(zeroTick);
+    const prepared = [];
+    let skipped = 0;
+    for (const z of items) {
+        const trackItem = byStart.get(z.start_frame * tpf);
+        if (!trackItem) {
+            log(`Note: shot ${z.shot_index} isn't on the timeline, so its slow zoom was skipped.`);
+            skipped++;
+            continue;
+        }
+        try {
+            const scale = await findMotionScale(trackItem, keepAlive);
+            if (!scale) throw new Error("no Scale setting found on the clip");
+            if (!(await scale.areKeyframesSupported())) throw new Error("Scale can't be keyframed on this clip");
+            // Keyframe times count from the start of the SOURCE clip, not from the start of the shot (found live 2026-10-14: keyframes at 0..2.5 s
+            // on a shot that begins 4 s into its clip were already over when the shot started, so it sat at the end value the whole time).
+            const inTicks = Number((await trackItem.getInPoint()).ticksNumber);
+            const atTicks = ppro.TickTime.createWithTicks(String(inTicks));
+            keepAlive.push(atTicks);
+            const base = Number((await scale.getValueAtTime(atTicks)).value);
+            const far = base * (1 + z.percent / 100);
+            const from = z.direction === "in" ? base : far;
+            const to = z.direction === "in" ? far : base;
+            const first = scale.createKeyframe(from);
+            first.position = ppro.TickTime.createWithTicks(String(inTicks));
+            const last = scale.createKeyframe(to);
+            last.position = ppro.TickTime.createWithTicks(String(inTicks + z.frames * tpf));
+            keepAlive.push(first, last);
+            prepared.push({ z, scale, first, last, from, to, inTicks });
+        } catch (e) {
+            log(`Warning: couldn't prepare the slow zoom on shot ${z.shot_index} (${e}).`);
+            skipped++;
+        }
+    }
+    let applied = 0;
+    for (let i = 0; i < prepared.length; i += ZOOM_BATCH) {
+        const batch = prepared.slice(i, i + ZOOM_BATCH);
+        try {
+            // order matters (tested live 2026-10-14): the time-varying switch FIRST, then the two keyframes. Keyframes added without the switch
+            // render but are NOT saved into the project file; the order used here is the one that renders AND persists.
+            await transact(project, "P Corp POST -- Slow zooms", (compound) => {
+                for (const p of batch) {
+                    compound.addAction(p.scale.createSetTimeVaryingAction(true));
+                    compound.addAction(p.scale.createAddKeyframeAction(p.first));
+                    compound.addAction(p.scale.createAddKeyframeAction(p.last));
+                }
+            });
+            applied += batch.length;
+        } catch (e) {
+            log(`Warning: a batch of slow zooms failed (${e}).`);
+            skipped += batch.length;
+        }
+        await sleep(ROUGH_CUT_PAUSE_MS);
+    }
+    // read every one back: the animation must really be there and end where the plan says
+    let verified = 0;
+    for (const p of prepared) {
+        try {
+            const endValue = Number((await p.scale.getValueAtTime(ppro.TickTime.createWithTicks(String(p.inTicks + p.z.frames * tpf)))).value);
+            if ((await p.scale.isTimeVarying()) && Math.abs(endValue - p.to) < 0.05) verified++;
+            else log(`Warning: shot ${p.z.shot_index}: the slow zoom reads back as ${endValue} at its end (wanted ${p.to.toFixed(2)}).`);
+        } catch (e) {
+            log(`Warning: couldn't read back the slow zoom on shot ${p.z.shot_index} (${e}).`);
+        }
+    }
+    const pushIn = prepared.filter((p) => p.z.direction === "in").length;
+    return `Slow zooms: ${applied} of ${items.length} placed (${pushIn} push-in, ${prepared.length - pushIn} pull-out), ${verified} read back correctly`
+        + (skipped ? `, ${skipped} skipped.` : ".");
+}
+
 /** Runs every accent phase; each one is non-fatal. Returns a one-line summary. */
 async function placeAccents(project, sequence, editor, plan, tpf, keepAlive, runId) {
     const a = plan.accents;
@@ -2118,6 +2223,16 @@ async function assembleEdit() {
         log(await placeMusic(project, sequenceEditor, plan, keepAlive));
         await project.save();
 
+        if (plan.zooms && plan.zooms.items && plan.zooms.items.length > 0) {
+            log(`Adding slow zooms to the ${plan.zooms.items.length} shot(s) whose footage is static…`);
+            try {
+                log(await placeShotZooms(project, sequence, plan, tpf, keepAlive));
+            } catch (e) {
+                log(`Note: the slow zoom step failed (${e}). The edit itself is fine.`);
+            }
+            await project.save();
+        }
+
         if (plan.accents) {
             log("Placing accents (flashes, zoom hits, effects, logo, sound effects)…");
             try {
@@ -2154,7 +2269,7 @@ async function assembleEdit() {
         });
         log(`Done. ${placed} of ${plan.shots.length} planned shot(s) placed on "${sequenceName}" `
             + `(${placeable.length - restrictedCount} can be stretched past their cut, ${restrictedCount} cannot). `
-            + (plan.accents ? "With the accents listed above." : (plan.graphics ? "Hard cuts with the brand graphics listed above." : "Hard cuts only -- no effects, flashes or sound effects.")));
+            + (plan.accents ? "With the accents listed above." : (plan.graphics ? "Hard cuts with the brand graphics" + ((plan.zooms && plan.zooms.items && plan.zooms.items.length) ? " and slow zooms" : "") + " listed above." : ((plan.zooms && plan.zooms.items && plan.zooms.items.length) ? "Hard cuts with slow zooms on the static shots listed above." : "Hard cuts only -- no effects, flashes or sound effects."))));
     } catch (e) {
         log(`Failed: ${e.message || e}`);
     } finally {
