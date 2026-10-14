@@ -64,30 +64,56 @@ final class VoiceOutput: NSObject, ObservableObject {
         isSpeaking = true
 
         fetchTask = Task {
+            // Which step is running, so a failure says WHAT failed instead of one catch-all message (2026-10-13: the
+            // old message always blamed ElevenLabs/the backend, even though the backend answered every request it
+            // received fine -- the failure was somewhere inside this app and the message hid where).
+            var step = "building the request"
             do {
                 var request = URLRequest(url: speakURL)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.httpBody = try JSONEncoder().encode(["text": trimmed])
 
+                step = "contacting the backend"
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard generation == thisGeneration else { return } // superseded while in flight
 
+                step = "reading the backend's reply"
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                    throw VoiceOutputError.badResponse
+                    throw VoiceOutputError.badResponse((response as? HTTPURLResponse)?.statusCode)
                 }
 
+                step = "decoding the audio (\(data.count) bytes)"
                 let newPlayer = try AVAudioPlayer(data: data)
                 newPlayer.isMeteringEnabled = true
                 newPlayer.delegate = self
                 player = newPlayer
-                newPlayer.play()
+                step = "starting playback"
+                guard newPlayer.play() else { throw VoiceOutputError.playbackRefused }
                 startMetering(generation: thisGeneration)
             } catch {
                 guard generation == thisGeneration else { return }
                 isSpeaking = false
-                errorMessage = "Couldn't reach Frank's voice (ElevenLabs) — check backend/.env is configured and the backend is reachable."
+                let ns = error as NSError
+                errorMessage = "Frank's voice failed while \(step): \(error.localizedDescription) (\(ns.domain) \(ns.code))"
+                // NSError's description embeds the full request URL, which carries the auth token -- strip it before it touches disk.
+                let safe = "\(error) | \(ns.domain) \(ns.code)".replacingOccurrences(of: #"token=[^&\s,")]*"#, with: "token=…", options: .regularExpression)
+                Self.appendDebugLine("speak failed while \(step): \(safe) | host \(speakURL.host ?? "?"):\(speakURL.port ?? 0)")
             }
+        }
+    }
+
+    /// A one-line trace in /tmp so a failure can be diagnosed after the fact (the unified log shows nothing for this app).
+    private static func appendDebugLine(_ line: String) {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let data = Data("\(stamp) \(line)\n".utf8)
+        let path = "/tmp/pcorp-voice-output.log"
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            FileManager.default.createFile(atPath: path, contents: data)
         }
     }
 
@@ -130,6 +156,14 @@ extension VoiceOutput: AVAudioPlayerDelegate {
     }
 }
 
-private enum VoiceOutputError: Error {
-    case badResponse
+private enum VoiceOutputError: Error, LocalizedError {
+    case badResponse(Int?)
+    case playbackRefused
+
+    var errorDescription: String? {
+        switch self {
+        case .badResponse(let code): return "the backend answered \(code.map(String.init) ?? "with no HTTP status")"
+        case .playbackRefused: return "the audio player refused to start"
+        }
+    }
 }

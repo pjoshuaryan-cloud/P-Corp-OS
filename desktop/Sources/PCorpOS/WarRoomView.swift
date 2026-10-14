@@ -79,6 +79,9 @@ struct WarRoomView: View {
     /// empty-guard/cancellation/error surfacing -- nothing new needed there.
     private func triggerGreetingIfNeeded(at date: Date) {
         guard !Self.hasGreetedThisLaunch else { return }
+        // Wait for the backend (2026-10-13): launched while it was still starting, the greeting's one-and-only attempt got
+        // "connection refused" and left an error on screen for the rest of the session. It now speaks as soon as it's connected.
+        guard backend.isConnected else { return }
         Self.hasGreetedThisLaunch = true
         voiceOutput.speak("\(timeOfDayGreeting(at: date)), Josh. What are we working on today?")
     }
@@ -236,6 +239,7 @@ struct WarRoomView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 48)
                 .onAppear { triggerGreetingIfNeeded(at: currentDate) }
+                .onChange(of: backend.isConnected) { _, connected in if connected { triggerGreetingIfNeeded(at: currentDate) } }
 
                 Spacer(minLength: 20)
 
