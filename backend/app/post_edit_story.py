@@ -25,7 +25,7 @@ import re
 import statistics
 from typing import Any
 
-from app import post_steady
+from app import post_pick, post_steady
 from app.post_edit_plan import COMPOSE_MIN_START, EditPlanError, MIN_SHOT_FRAMES, MUSIC_FADE_OUT_SECONDS, _scene_key, choose_window, select_clips, select_clips_by_moments
 from app.post_style import StoryStyle, StyleProfile
 
@@ -146,51 +146,67 @@ def _steady_window(clip: dict, length: float, taken: list[tuple[float, float]]) 
 
 
 def assign_clips_to_slots(slots: list[dict[str, Any]], *, fps: float, clips: list[dict], bookend_file_id: int | None, seed: int = 7, slow_zooms: bool = True) -> dict[str, Any]:
-    """Clip + steadiest window for every slot ({role, start_frame, frames, phrase?}), shared by the narrated story and the corporate highlight to music.
-    Clips run in the order given (shoot order unless the caller passed one), spread evenly; the opener and the closing hold use the bookend clip if
-    there is one; a slot a clip has no clean stretch for moves to another clip. Returns {shots, zooms, by_id, bookend}."""
+    """Clip + best window for every slot ({role, start_frame, frames, phrase?}), shared by the narrated story and the corporate highlight to music.
+    When the clips have been analysed (post_steady), every slot is filled by post_pick: the cleanest stretch of the clip that does not look like a shot already in
+    the edit, broadly following the shoot's order. Without an analysis the old rule is used (clips spread evenly in the order given). The opener and the closing hold
+    use the bookend clip if there is one. Returns {shots, zooms, by_id, bookend, repetition}."""
     n_body = sum(1 for s in slots if s["role"] == "body")
     exclude = {bookend_file_id} if bookend_file_id is not None else set()
     has_moments = any(c.get("events") for c in clips)
     chosen = (select_clips_by_moments if has_moments else select_clips)(clips, max(n_body, 1), exclude)
     by_id = {c["file_id"]: c for c in clips}
     bookend = by_id.get(bookend_file_id) if bookend_file_id is not None else None
+    picker = post_pick.Picker(clips) if any(c.get("steady") for c in clips) else None
+    post_steady.clear_series_cache()
     used: dict[int, list[tuple[float, float]]] = {}
     shots: list[dict[str, Any]] = []
     body_i = 0
     for i, sl in enumerate(slots):
         length = sl["frames"] / fps
-        if sl["role"] == "body":
-            clip = chosen[min(body_i, len(chosen) - 1)]
-            body_i += 1
-        elif bookend is not None:
-            clip = bookend
-        elif sl["role"] == "opener":  # an opening brand card with no establishing clip: the card covers whatever is under it
-            clip = clips[0]
-        else:  # no establishing clip given: hold the last clip of the shoot that is long enough
-            clip = next((c for c in reversed(clips) if c["duration"] >= length + 0.2), clips[-1])
-        if clip["duration"] < length + 0.2:  # too short for the slot: the next clip in order that fits
-            clip = next((c for c in clips if c["duration"] >= length + 0.2 and (sl["role"] != "body" or c["file_id"] not in exclude)), clip)
-        w = _steady_window(clip, length, used.get(clip["file_id"], [])) if clip.get("steady") else choose_window(clip, length, used.get(clip["file_id"], []))
-        if sl["role"] != "body" and bookend is None and (w.get("steady") or {}).get("cuts"):
-            # The opener / closing hold with no establishing clip given: any clip with a clean stretch long enough (a hold is long: 6 s)
-            for alt in (list(reversed(clips)) if sl["role"] == "end_card" else list(clips)):
-                if not alt.get("steady") or alt["duration"] < length + 0.2:
-                    continue
-                w_alt = _steady_window(alt, length, used.get(alt["file_id"], []))
-                if not w_alt["steady"]["cuts"]:
-                    clip, w = alt, w_alt
-                    break
-        if sl["role"] == "body" and (w.get("steady") or {}).get("cuts"):
-            # No cut-free stretch of this clip is long enough for the slot: take the next clip (shoot order) that can hold it cleanly.
-            pos = next((k for k, c in enumerate(clips) if c["file_id"] == clip["file_id"]), 0)
-            for alt in clips[pos + 1:] + clips[:pos]:
-                if not alt.get("steady") or alt["file_id"] in exclude or alt["duration"] < length + 0.2:
-                    continue
-                w_alt = _steady_window(alt, length, used.get(alt["file_id"], []))
-                if not w_alt["steady"]["cuts"]:
-                    clip, w = alt, w_alt
-                    break
+        picked = None
+        if picker is not None and (sl["role"] == "body" or bookend is None):
+            target = (body_i + 0.5) / max(n_body, 1) if sl["role"] == "body" else (0.0 if sl["role"] == "opener" else 1.0)
+            picked = picker.pick(length, target, exclude=exclude if sl["role"] == "body" else None)
+        similar_to_previous = None
+        if picked is not None:
+            clip, w = picked["clip"], picked["window"]
+            similar_to_previous = picker.register(clip, w, picked["sig"])
+            if sl["role"] == "body":
+                body_i += 1
+        else:
+            if sl["role"] == "body":
+                clip = chosen[min(body_i, len(chosen) - 1)]
+                body_i += 1
+            elif bookend is not None:
+                clip = bookend
+            elif sl["role"] == "opener":  # an opening brand card with no establishing clip: the card covers whatever is under it
+                clip = clips[0]
+            else:  # no establishing clip given: hold the last clip of the shoot that is long enough
+                clip = next((c for c in reversed(clips) if c["duration"] >= length + 0.2), clips[-1])
+            if clip["duration"] < length + 0.2:  # too short for the slot: the next clip in order that fits
+                clip = next((c for c in clips if c["duration"] >= length + 0.2 and (sl["role"] != "body" or c["file_id"] not in exclude)), clip)
+            w = _steady_window(clip, length, used.get(clip["file_id"], [])) if clip.get("steady") else choose_window(clip, length, used.get(clip["file_id"], []))
+            if sl["role"] != "body" and bookend is None and (w.get("steady") or {}).get("cuts"):
+                # The opener / closing hold with no establishing clip given: any clip with a clean stretch long enough (a hold is long: 6 s)
+                for alt in (list(reversed(clips)) if sl["role"] == "end_card" else list(clips)):
+                    if not alt.get("steady") or alt["duration"] < length + 0.2:
+                        continue
+                    w_alt = _steady_window(alt, length, used.get(alt["file_id"], []))
+                    if not w_alt["steady"]["cuts"]:
+                        clip, w = alt, w_alt
+                        break
+            if sl["role"] == "body" and (w.get("steady") or {}).get("cuts"):
+                # No cut-free stretch of this clip is long enough for the slot: take the next clip (shoot order) that can hold it cleanly.
+                pos = next((k for k, c in enumerate(clips) if c["file_id"] == clip["file_id"]), 0)
+                for alt in clips[pos + 1:] + clips[:pos]:
+                    if not alt.get("steady") or alt["file_id"] in exclude or alt["duration"] < length + 0.2:
+                        continue
+                    w_alt = _steady_window(alt, length, used.get(alt["file_id"], []))
+                    if not w_alt["steady"]["cuts"]:
+                        clip, w = alt, w_alt
+                        break
+            if picker is not None:
+                similar_to_previous = picker.register(clip, w)
         used.setdefault(clip["file_id"], []).append((w["start"], w["start"] + w["duration"]))
         shots.append({
             "index": i + 1, "role": sl["role"], "file_id": clip["file_id"], "name": clip["name"], "path": clip["path"],
@@ -199,9 +215,12 @@ def assign_clips_to_slots(slots: list[dict[str, Any]], *, fps: float, clips: lis
             "moment_source": w["source"], "cut_hit_percentile": None, "cut_on_hit": False,
             **({"steady": w["steady"]} if w.get("steady") else {}),
             **({"phrase": sl["phrase"]} if sl.get("phrase") else {}),
+            **({"alike_previous": round(similar_to_previous, 2)} if similar_to_previous is not None and picker.chosen[-1]["sig"] is not None else {}),
         })
     zooms = post_steady.plan_zooms(shots, fps, seed=seed) if slow_zooms else []
-    return {"shots": shots, "zooms": zooms, "by_id": by_id, "bookend": bookend}
+    repetition = picker.report() if picker is not None else None
+    post_steady.clear_series_cache()  # the per-clip arrays were only needed while picking
+    return {"shots": shots, "zooms": zooms, "by_id": by_id, "bookend": bookend, "repetition": repetition}
 
 
 def build_story_plan(*, profile: StyleProfile, timeline: dict[str, Any], music_in: float, fps: float, clips: list[dict], bookend_file_id: int | None, seed: int = 7, slow_zooms: bool = True) -> dict[str, Any]:
@@ -212,7 +231,7 @@ def build_story_plan(*, profile: StyleProfile, timeline: dict[str, Any], music_i
         raise EditPlanError(f"'{profile.name}' isn't a narrated b-roll style.")
     slots = timeline["slots"]
     got = assign_clips_to_slots(slots, fps=fps, clips=clips, bookend_file_id=bookend_file_id, seed=seed, slow_zooms=slow_zooms)
-    shots, zooms, by_id, bookend = got["shots"], got["zooms"], got["by_id"], got["bookend"]
+    shots, zooms, by_id, bookend, repetition = got["shots"], got["zooms"], got["by_id"], got["bookend"], got["repetition"]
     lengths = [s["duration_frames"] / fps for s in shots if s["role"] == "body"]
     total_frames = timeline["total_frames"]
     hold = next((s["seconds"] for s in slots if s["role"] == "end_card"), 0.0)
@@ -235,10 +254,11 @@ def build_story_plan(*, profile: StyleProfile, timeline: dict[str, Any], music_i
                        "static_body_shots": sum(1 for s in shots if s["role"] == "body" and (s.get("steady") or {}).get("static")), "slow_zooms": len(zooms)},
             "consecutive_same_scene": sum(1 for a, b in zip(shots, shots[1:]) if a["file_id"] != b["file_id"] and by_id[a["file_id"]].get("scene") and _scene_key(by_id[a["file_id"]]) == _scene_key(by_id[b["file_id"]])),
             "bookend": bookend is not None, "closing_hold_seconds": round(hold, 2),
+            "repetition": repetition,
         },
         "notes": [
             "Shots are cut at the style's own pace and are NOT timed to the music; the song is a bed that fades out over the closing hold.",
-            "Clips run in shoot order (or the order you gave), spread evenly through them. The planner does not reorder footage into a story.",
+            "Every analysed clip is a candidate for every shot: each is the cleanest stretch of its clip that does not look like a shot already in the edit, and the edit broadly follows the shoot's order. The planner does not reorder footage into a story.",
             "Hard cuts only: no dissolves, flashes, dips or other accents -- a cleaner cut, by design (the reference's 6 short dissolves are not reproduced).",
             f"Pace is {timeline.get('pace', 1.0):g}x the reference's (1.0 = its own, higher = calmer); shots are taken from the STEADIEST window of each clip -- no cut inside, smooth, sharp, not dark.",
             "Which moment of each clip is used is NOT validated as your taste (moment_source says where it came from) -- review and swap.",

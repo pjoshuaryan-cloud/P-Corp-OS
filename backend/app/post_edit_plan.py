@@ -459,17 +459,19 @@ async def plan_for_job(
     steady_counts = None
     if profile.highlight:  # a calm highlight cut to the music's hits: steadiest windows, slow zooms on static shots, hard cuts only
         from app.post_edit_highlight import build_highlight_plan
-        from app.post_steady import CALM_PACE as _CALM, analyse_clips
+        from app.post_steady import CALM_PACE as _CALM, analyse_clips, coverage_note
         steady_counts = await analyse_clips(clips, job)
         plan = build_highlight_plan(profile=profile, hits=analysis["hits"], music_in=music_in, duration=duration, fps=fps, clips=clips, bookend_file_id=bookend_file_id,
                                     seed=seed, pace=_CALM if pace is None else pace, slow_zooms=slow_zooms, with_opener=bookend_file_id is not None or bool(graphics_logo and graphics_size),
                                     fill_frame=True if fill_frame is None else fill_frame)
         plan["notes"].append(f"Steadiness: {steady_counts['analysed']} clip(s) analysed now, {steady_counts['cached']} from this job's cache" + (f", {steady_counts['unreadable']} unreadable (those were planned the old way, from the middle of the clip)." if steady_counts["unreadable"] else "."))
+        plan["notes"].append(coverage_note(clips))
     elif timeline is not None:
-        from app.post_steady import analyse_clips  # reads each clip at low resolution to find its steadiest window and whether it's static (cached per job)
+        from app.post_steady import analyse_clips, coverage_note  # reads each clip at low resolution to find its steadiest window and whether it's static (cached per job)
         steady_counts = await analyse_clips(clips, job)
         plan = build_story_plan(profile=profile, timeline=timeline, music_in=music_in, fps=fps, clips=clips, bookend_file_id=bookend_file_id, seed=seed, slow_zooms=slow_zooms)
         plan["notes"].append(f"Steadiness: {steady_counts['analysed']} clip(s) analysed now, {steady_counts['cached']} from this job's cache" + (f", {steady_counts['unreadable']} unreadable (those were planned the old way, from the middle of the clip)." if steady_counts["unreadable"] else "."))
+        plan["notes"].append(coverage_note(clips))
     else:
         plan = build_plan(profile=profile, hits=analysis["hits"], music_in=music_in, duration=duration, fps=fps,
                           clips=clips, bookend_file_id=bookend_file_id, seed=seed)

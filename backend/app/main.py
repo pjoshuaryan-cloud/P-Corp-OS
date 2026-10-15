@@ -3117,6 +3117,9 @@ async def _review_context(job_id: int, request: Request):
     if plan is None:
         raise HTTPException(status_code=404, detail=f"Job #{job_id} has no edit plan yet -- plan one first.")
     clips = await on_drive(attach_moments, await load_job_clips(job_id, postgres_conn), job)
+    if plan.get("mode") in ("highlight", "story"):
+        from app.post_steady import analyse_clips  # a corporate plan's swaps come from the steadiness analysis (cached per job, so this is a read, not a re-analysis)
+        await analyse_clips(clips, job)
     return job, plan, clips, postgres_conn
 
 

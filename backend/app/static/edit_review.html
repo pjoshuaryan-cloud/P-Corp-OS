@@ -134,7 +134,7 @@ function video(c, autoplay) {
   };
   seen.observe(holder); return holder;
 }
-function kindPill(c) { const k = c.kind; const s = document.createElement("span"); s.className = "pill kind"; s.textContent = k ? k.replace("_", " ") : "no event known"; s.style.color = k ? `var(--${k})` : "var(--muted)"; return s; }
+function kindPill(c) { const k = c.kind; const s = document.createElement("span"); s.className = "pill kind"; s.textContent = k ? k.replace("_", " ") : (c.tag || "no event known"); s.style.color = k ? `var(--${k})` : "var(--muted)"; return s; }
 const originLabel = { same_clip: "same clip", other_clip: "other clip", original: "original" };
 function cardFor(slot) {
   const card = document.createElement("section"); card.className = "card" + (slot.approved ? " approved" : ""); card.dataset.index = slot.index;
@@ -159,7 +159,7 @@ function cardFor(slot) {
   for (const a of slot.alternatives) {
     const b = document.createElement("button"); b.className = "alt"; b.title = [a.what, a.scene].filter(Boolean).join(" — ");
     b.appendChild(video(a, false));
-    const lab = document.createElement("div"); lab.className = "lab"; lab.innerHTML = `<span style="color:${a.kind ? `var(--${a.kind})` : "var(--muted)"}">${a.kind ? a.kind.replace("_", " ") : "?"}</span><br>${originLabel[a.origin] || a.origin}${a.origin === "other_clip" ? "<br>" + a.name.replace("MNSTR", "").replace(".MP4", "") : ""}`;
+    const lab = document.createElement("div"); lab.className = "lab"; lab.innerHTML = `<span style="color:${a.kind ? `var(--${a.kind})` : "var(--muted)"}">${a.kind ? a.kind.replace("_", " ") : (a.tag || "?")}</span><br>${originLabel[a.origin] || a.origin}${a.origin === "other_clip" ? "<br>" + a.name.replace("MNSTR", "").replace(".MP4", "") : ""}`;
     b.appendChild(lab); b.onclick = () => choose(slot, a, "swap", card, b); alts.appendChild(b);
   }
   card.appendChild(alts); return card;

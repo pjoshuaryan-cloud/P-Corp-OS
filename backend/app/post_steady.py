@@ -16,6 +16,7 @@ Josh's real Diplomat footage (see the constants) -- adjustable, not a claim abou
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import random
@@ -38,6 +39,16 @@ SOFT_CUT_ISOLATION = 5.0      #   while fast camera movement raises the samples 
 STATIC_MOTION = 0.016         # mean frame-to-frame change (0..1) below this = "too static / lacks action": gets a slow zoom. Real Diplomat footage splits cleanly: steadiest windows are 0.005-0.009 (nearly still) or >= 0.031 (moving), nothing between
 STATIC_PEAK = 0.03            # ... and no single moment above this (still windows peak <= 0.02; moving ones >= 0.034) -- somebody walking through is action, not a still shot
 DARK_LUMA = 0.08              # a window whose picture is nearly black is not a usable moment
+UNDER_LUMA = 0.16             # mean brightness below this = underexposed (a soft penalty, not a ban: a moody shot can be dark on purpose)
+OVER_LUMA = 0.86              # ... above this = overexposed
+BLOWN_SHARE = 0.15            # more than this share of the frame at pure white = blown highlights
+
+# --- picture signature (2026-10-15): so the planner can tell when two shots look alike ---
+# One 16x9 grey thumbnail per second of every clip (the 160x90 frame averaged in 10x10 blocks). On Josh's real corporate footage the correlation of two
+# thumbnails separated same-scene from different-scene shots with AUC 0.98 (same-scene pairs averaged 0.68, different-scene pairs 0.02), and it ignores
+# colour grading, so the same aerial in two colour treatments still counts as the same look.
+THUMB_W, THUMB_H = 16, 9
+EVENT_BONUS = 0.05            # steadiness-score points a window earns for covering a clip's strongest described event (Claude's judgment; small on purpose)
 
 # --- slow zoom ---
 # Josh's direction (2026-10-14): corporate edits are CALMER than the Diplomat reference (median shot 1.63 s). Shot / phrase lengths are multiplied by
@@ -94,6 +105,9 @@ def measure(frames: np.ndarray) -> dict[str, Any]:
     motion = np.concatenate([[flicker_free[0]], flicker_free])  # sample i: change from sample i-1 (the first repeats the second)
     lap = (f[:, 1:-1, 1:-1] * 4 - f[:, :-2, 1:-1] - f[:, 2:, 1:-1] - f[:, 1:-1, :-2] - f[:, 1:-1, 2:])
     sharp = lap.reshape(len(f), -1).var(axis=1)
+    hi = (f >= 0.97).reshape(len(f), -1).mean(axis=1)
+    secs = frames[:: int(SAMPLE_FPS)]
+    thumbs = secs.reshape(len(secs), THUMB_H, FRAME_H // THUMB_H, THUMB_W, FRAME_W // THUMB_W).astype(np.float32).mean(axis=(2, 4)).round().astype(np.uint8)
     usual = float(np.median(motion)) or 1e-4
     spikes = []
     for i in range(1, len(motion)):
@@ -103,7 +117,8 @@ def measure(frames: np.ndarray) -> dict[str, Any]:
         if big or lone:
             spikes.append(int(i))
     return {"fps": SAMPLE_FPS, "motion": [round(float(x), 5) for x in motion], "sharp": [round(float(x), 6) for x in sharp],
-            "luma": [round(float(x), 4) for x in luma], "spikes": spikes, "seconds": round(len(f) / SAMPLE_FPS, 2)}
+            "luma": [round(float(x), 4) for x in luma], "hi": [round(float(x), 4) for x in hi], "spikes": spikes, "seconds": round(len(f) / SAMPLE_FPS, 2),
+            "thumbs": base64.b64encode(thumbs.tobytes()).decode("ascii"), "thumb_n": int(len(thumbs))}
 
 
 def _window_indices(m: dict[str, Any], start: float, length: float) -> tuple[int, int]:
@@ -113,24 +128,52 @@ def _window_indices(m: dict[str, Any], start: float, length: float) -> tuple[int
     return i0, i1
 
 
+# The series are stored as JSON lists; scoring thousands of windows converts them over and over, so each clip's arrays are made once per plan.
+_SERIES: dict[int, tuple[dict[str, Any], dict[str, np.ndarray]]] = {}
+
+
+def clear_series_cache() -> None:
+    _SERIES.clear()
+
+
+def _series(m: dict[str, Any]) -> dict[str, np.ndarray]:
+    hit = _SERIES.get(id(m))
+    if hit is not None and hit[0] is m:
+        return hit[1]
+    arrays = {"motion": np.asarray(m["motion"], dtype=np.float64), "sharp": np.asarray(m["sharp"], dtype=np.float64), "luma": np.asarray(m["luma"], dtype=np.float64),
+              "hi": np.asarray(m["hi"], dtype=np.float64) if m.get("hi") else np.zeros(len(m["motion"])), "spikes": np.asarray(m["spikes"], dtype=np.int64)}
+    arrays["typical_sharp"] = float(np.median(arrays["sharp"])) or 1e-6  # type: ignore[assignment]
+    _SERIES[id(m)] = (m, arrays)
+    return arrays
+
+
 def score_window(m: dict[str, Any], start: float, length: float) -> dict[str, Any]:
-    """How steady one window [start, start+length] of the clip is. Lower `score` = steadier; `cuts` > 0 means a hard cut inside it."""
+    """How steady one window [start, start+length] of the clip is. Lower `score` = steadier; `cuts` > 0 means a hard cut inside it.
+    Also counts exposure (2026-10-15): a window that is mostly underexposed, overexposed or full of blown highlights is not a good shot."""
+    a = _series(m)
     i0, i1 = _window_indices(m, start, length)
-    motion = np.array(m["motion"][i0 + 1:i1] or m["motion"][i0:i1 + 1])  # the change INTO each sample after the first one in the window
-    sharp = np.array(m["sharp"][i0:i1])
-    luma = np.array(m["luma"][i0:i1])
-    cuts = sum(1 for s in m["spikes"] if i0 + 1 <= s <= i1)
-    typical_sharp = float(np.median(m["sharp"])) or 1e-6
+    motion = a["motion"][i0 + 1:i1]
+    if len(motion) == 0:
+        motion = a["motion"][i0:i1 + 1]  # the change INTO each sample after the first one in the window
+    sharp = a["sharp"][i0:i1]
+    luma = a["luma"][i0:i1]
+    cuts = int(np.count_nonzero((a["spikes"] >= i0 + 1) & (a["spikes"] <= i1)))
     jerk = float(np.abs(np.diff(motion)).mean()) if len(motion) > 1 else 0.0
-    blur = max(0.0, 1.0 - float(sharp.min()) / typical_sharp) if len(sharp) else 0.0
-    dark = 1.0 if (len(luma) and float(luma.mean()) < DARK_LUMA) else 0.0
+    blur = max(0.0, 1.0 - float(sharp.min()) / a["typical_sharp"]) if len(sharp) else 0.0  # type: ignore[operator]
+    mean_luma = float(luma.mean()) if len(luma) else 0.5
+    dark = 1.0 if (len(luma) and mean_luma < DARK_LUMA) else 0.0
+    under = max(0.0, (UNDER_LUMA - mean_luma) / UNDER_LUMA)
+    over = max(0.0, (mean_luma - OVER_LUMA) / (1.0 - OVER_LUMA))
+    blown = max(0.0, float(a["hi"][i0:i1].mean()) - BLOWN_SHARE) if i1 > i0 else 0.0
+    exposure = 0.6 * under + 0.6 * over + 1.5 * blown
     mean_m, peak = float(motion.mean()), float(motion.max())
-    score = 4.0 * jerk + 1.0 * peak + 0.5 * mean_m + 0.8 * blur + 2.0 * dark + (50.0 * cuts)
-    return {"score": score, "cuts": cuts, "mean_motion": mean_m, "peak_motion": peak, "jerk": jerk, "blur": blur, "dark": bool(dark),
+    score = 4.0 * jerk + 1.0 * peak + 0.5 * mean_m + 0.8 * blur + 2.0 * dark + exposure + (50.0 * cuts)
+    return {"score": score, "cuts": cuts, "mean_motion": mean_m, "peak_motion": peak, "jerk": jerk, "blur": blur, "dark": bool(dark), "exposure": exposure, "luma": mean_luma,
             "static": bool(cuts == 0 and not dark and mean_m < STATIC_MOTION and peak < STATIC_PEAK)}
 
 
-def steadiest_window(m: dict[str, Any], duration: float, length: float, taken: list[tuple[float, float]], *, lo: float = 0.0, hi: float | None = None) -> dict[str, Any]:
+def steadiest_window(m: dict[str, Any], duration: float, length: float, taken: list[tuple[float, float]], *, lo: float = 0.0, hi: float | None = None,
+                     bonus: Any = None) -> dict[str, Any]:
     """The steadiest `length`-second window of the clip that doesn't overlap windows already used from it.
     Starts are tried every quarter second; ties lean towards the middle of the clip (the opening and closing seconds of a take are
     where cameras are still settling or already moving)."""
@@ -145,7 +188,7 @@ def steadiest_window(m: dict[str, Any], duration: float, length: float, taken: l
             continue
         sc = score_window(m, float(s), length)
         centre_bias = 0.002 * abs((s + length / 2.0) - mid) / max(duration, 1.0)
-        total = sc["score"] + centre_bias
+        total = sc["score"] + centre_bias - (bonus(float(s)) if bonus else 0.0)  # `bonus`: steadiness-score points a window earns (a described event inside it)
         if best is None or total < best[0]:
             best = (total, float(s), sc)
     if best is None:  # every start overlaps an earlier use: take the least-bad regardless
@@ -155,24 +198,65 @@ def steadiest_window(m: dict[str, Any], duration: float, length: float, taken: l
 
 
 def window_for_slot(clip: dict[str, Any], length: float, taken: list[tuple[float, float]]) -> dict[str, Any]:
-    """The steadiest window of `clip` for a slot of `length` seconds, shaped like the planner's other window choices
-    ({start, duration, source, steady}): no cut inside, smooth, sharp, not dark, clear of windows already used from the clip."""
+    """The best window of `clip` for a slot of `length` seconds, shaped like the planner's other window choices ({start, duration, source, steady}):
+    no cut inside, smooth, sharp, well exposed, clear of windows already used from the clip. If Claude has described the clip (`events`, from Describe clips),
+    a window that covers its strongest event earns a small bonus, so among equally clean stretches the one with something happening wins."""
     from app.post_media import COMPOSE_MIN_START  # same start margin as the planner's other window choices (cameras are still settling in the first moments)
     m = clip["steady"]
     dur = min(clip["duration"], m["seconds"])  # the analysis may cover less than the whole clip (first five minutes)
     length = min(length, dur)
     lo = min(COMPOSE_MIN_START, max(dur - length, 0.0))
     hi = max(dur - length - 0.04, 0.0)
-    w = steadiest_window(m, dur, length, taken, lo=lo, hi=hi)
+    events = [e for e in (clip.get("events") or []) if e.get("t") is not None]
+
+    def covered(start: float) -> dict[str, Any] | None:
+        inside = [e for e in events if start + 0.15 <= e["t"] <= start + length - 0.15]
+        return max(inside, key=lambda e: e.get("punch", 0)) if inside else None
+
+    bonus = (lambda start: EVENT_BONUS * covered(start)["punch"] / 10.0 if covered(start) else 0.0) if events else None  # type: ignore[index]
+    w = steadiest_window(m, dur, length, taken, lo=lo, hi=hi, bonus=bonus)
+    event = covered(w["start"]) if events else None
     if w["cuts"]:
         source = "steadiest window -- but every window of this clip has a cut in it (least bad)"
+    elif event:
+        source = f"steadiest window around an event ({event.get('kind', 'moment')}): {event.get('what', '')} -- Claude's judgment, not checked against your taste"
     elif w["static"]:
         source = "steadiest window (static footage, no cut inside)"
     else:
         source = "steadiest window (no cut inside, smooth, sharp)"
-    return {"start": w["start"], "duration": w["duration"], "source": source,
+    return {"start": w["start"], "duration": w["duration"], "source": source, "overlaps_earlier_use": w.get("overlaps_earlier_use", False),
+            "event_punch": (event.get("punch") if event else None),
             "steady": {"score": round(w["score"], 4), "cuts": w["cuts"], "mean_motion": round(w["mean_motion"], 4), "peak_motion": round(w["peak_motion"], 4),
-                       "jerk": round(w["jerk"], 4), "blur": round(w["blur"], 3), "static": w["static"]}}
+                       "jerk": round(w["jerk"], 4), "blur": round(w["blur"], 3), "static": w["static"], "exposure": round(w["exposure"], 3), "luma": round(w["luma"], 3)}}
+
+
+# ------------------------------------------------------------------------------------------------------ picture signatures
+def decode_thumbs(m: dict[str, Any]) -> np.ndarray | None:
+    """The clip's per-second thumbnails as (seconds, 144) unit vectors with the mean removed (so a dot product is a brightness-independent correlation),
+    or None for an analysis made before signatures existed."""
+    raw, n = m.get("thumbs"), m.get("thumb_n")
+    if not raw or not n:
+        return None
+    a = np.frombuffer(base64.b64decode(raw), dtype=np.uint8).reshape(int(n), THUMB_W * THUMB_H).astype(np.float32)
+    a -= a.mean(axis=1, keepdims=True)
+    norm = np.linalg.norm(a, axis=1, keepdims=True)
+    norm[norm == 0] = 1.0
+    return a / norm
+
+
+def window_signature(thumbs: np.ndarray | None, start: float, length: float) -> np.ndarray | None:
+    """What a window looks like: the thumbnails at its start, middle and end (so a camera move across a scene still matches that scene)."""
+    if thumbs is None or not len(thumbs):
+        return None
+    idx = sorted({min(len(thumbs) - 1, max(0, int(t))) for t in (start + 0.1, start + length / 2.0, start + length - 0.1)})
+    return thumbs[idx]
+
+
+def similarity(a: np.ndarray | None, b: np.ndarray | None) -> float:
+    """How alike two windows look, -1..1 (the best match between any of their sampled frames). 0.0 when either has no signature."""
+    if a is None or b is None:
+        return 0.0
+    return float((a @ b.T).max())
 
 
 def plan_zooms(shots: list[dict[str, Any]], fps: float, *, seed: int = 7) -> list[dict[str, Any]]:
@@ -198,6 +282,9 @@ def plan_zooms(shots: list[dict[str, Any]], fps: float, *, seed: int = 7) -> lis
 
 
 # --------------------------------------------------------------------------------------------------------------- caching
+CACHE_VERSION = 2  # 2 (2026-10-15): adds the picture signature and the blown-highlight series; a version-1 cache is read again once
+
+
 def cache_path(job: dict[str, Any]) -> Path:
     from app.post_edit_plan import edit_dir  # local import: post_edit_plan imports this module
     return edit_dir(job) / "steadiness.json"
@@ -239,8 +326,9 @@ async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, con
         key = str(clip["file_id"])
         fp = await on_drive(_fingerprint, clip["path"])
         hit = cache.get(key)
-        if hit and fp and hit.get("fp") == fp and hit.get("v") == 1:
+        if hit and fp and hit.get("fp") == fp and hit.get("v") == CACHE_VERSION:
             clip["steady"] = hit["m"]
+            clip["thumbs"] = decode_thumbs(hit["m"])
             counts["cached"] += 1
             return
         frames = await read_clip(clip["path"], limiter)
@@ -249,7 +337,8 @@ async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, con
             return
         m = measure(frames)
         clip["steady"] = m
-        cache[key] = {"fp": fp, "v": 1, "m": m}
+        clip["thumbs"] = decode_thumbs(m)
+        cache[key] = {"fp": fp, "v": CACHE_VERSION, "m": m}
         counts["analysed"] += 1
         dirty = True
 
@@ -257,3 +346,16 @@ async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, con
     if dirty:
         await on_drive(save_cache, job, cache, writing=True)
     return counts
+
+
+def coverage_note(clips: list[dict[str, Any]]) -> str:
+    """One plain sentence on how much of the footage the planner actually looked through."""
+    total = len(clips)
+    read = [c for c in clips if c.get("steady")]
+    long_ones = [c for c in read if c["duration"] > MAX_ANALYSED_SECONDS + 0.5]
+    text = f"Looked through {len(read)} of {total} clips for the cleanest stretches"
+    if len(read) < total:
+        text += f" ({total - len(read)} couldn't be read and were left out of the picks)"
+    if long_ones:
+        text += f"; {len(long_ones)} clip(s) run past {int(MAX_ANALYSED_SECONDS // 60)} minutes, so only their first {int(MAX_ANALYSED_SECONDS // 60)} minutes were read"
+    return text + "."

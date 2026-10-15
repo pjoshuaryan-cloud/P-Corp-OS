@@ -76,7 +76,7 @@ def build_highlight_plan(
         raise EditPlanError("That length leaves no room for shots between the opening and closing cards. Use a longer edit.")
     slots = [{"role": "opener" if (i == 0 and with_opener) else ("end_card" if i == len(raw) - 1 else "body"), "start_frame": f0, "frames": f1 - f0} for i, (f0, f1) in enumerate(raw)]
     got = assign_clips_to_slots(slots, fps=fps, clips=clips, bookend_file_id=bookend_file_id, seed=seed, slow_zooms=slow_zooms)
-    shots, zooms, by_id, bookend = got["shots"], got["zooms"], got["by_id"], got["bookend"]
+    shots, zooms, by_id, bookend, repetition = got["shots"], got["zooms"], got["by_id"], got["bookend"], got["repetition"]
     for shot, cut in zip(shots, kept):
         shot["cut_hit_percentile"], shot["cut_on_hit"] = cut["hit_pct"], cut["on_hit"]
     body = [s for s in shots if s["role"] == "body"]
@@ -96,12 +96,17 @@ def build_highlight_plan(
                        "static_body_shots": sum(1 for s in body if (s.get("steady") or {}).get("static")), "slow_zooms": len(zooms)},
             "consecutive_same_scene": sum(1 for a, b in zip(shots, shots[1:]) if a["file_id"] != b["file_id"] and by_id[a["file_id"]].get("scene") and _scene_key(by_id[a["file_id"]]) == _scene_key(by_id[b["file_id"]])),
             "bookend": bookend is not None, "closing_hold_seconds": round(hold, 2), "opener_slot": with_opener,
+            "repetition": repetition,
         },
         "notes": [
             "Cuts land on the music's hits (the share on a hit is in the checks) at a calm pace: shot lengths follow the corporate reference's rhythm times the pace. There is no measured corporate highlight to music, so the rhythm is the narrated reference's, adapted.",
             "Hard cuts only: no dissolves, flashes, dips or other accents. Every shot is taken from the STEADIEST window of its clip -- no cut inside, smooth, sharp, not dark.",
             f"Pace is {pace:g}x the reference's (1.0 = its own, higher = calmer). The song starts on a strong hit and fades out over the closing hold.",
-            "Clips run in shoot order (or the order you gave), spread evenly through them. The planner does not reorder footage into a story.",
+            "Every analysed clip is a candidate for every shot. Each shot is the cleanest stretch of its clip (no cut, smooth, sharp, well exposed) that does not look like a shot already in the edit, and the edit broadly follows the shoot's order. "
+            "It does not reorder footage into a story.",
+            *(["Repetition: " + (f"{repetition['distinct_looks']} distinct looks in {repetition['shots']} shots; {repetition['alike_neighbours']} neighbouring pair(s) look alike"
+                                 + (" -- the footage has too few different scenes to avoid repeating" if repetition["distinct_looks"] * 2 < repetition["shots"] else "") + ".")]
+              if repetition and repetition.get("has_signatures") else []),
             "Which moment of each clip is used is NOT validated as your taste (moment_source says where it came from) -- review and swap.",
         ],
     }

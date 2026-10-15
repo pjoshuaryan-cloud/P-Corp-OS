@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app import post_pick
 from app.post_media import COMPOSE_MIN_START, FFMPEG_PATH
 from app.post_edit_plan import EVENT_LEAD_SECONDS, _clamp, _scene_key
 from app.ssd_guard import on_drive
@@ -33,6 +34,23 @@ _CLIP_RENDER_LIMIT = asyncio.Semaphore(3)
 
 class ReviewError(RuntimeError):
     pass
+
+
+_ALTERNATIVES_CACHE: dict[tuple, dict[int, list[dict[str, Any]]]] = {}  # picker alternatives are the slow part of a review: kept for as long as the plan is unchanged
+
+
+def _is_steady_plan(plan: dict[str, Any], clips: list[dict]) -> bool:
+    """A corporate plan (narrated story or highlight) whose clips have been analysed: swaps come from the picker, not from Claude's event list."""
+    return plan.get("mode") in ("highlight", "story") and any(c.get("steady") for c in clips)
+
+
+def _picker_alternatives(plan: dict[str, Any], clips: list[dict]) -> dict[int, list[dict[str, Any]]]:
+    key = (tuple((s["file_id"], round(s["source_in"], 3), s["duration_frames"]) for s in plan["shots"]), tuple(sorted(c["file_id"] for c in clips if c.get("steady"))))
+    if key not in _ALTERNATIVES_CACHE:
+        if len(_ALTERNATIVES_CACHE) >= 4:
+            _ALTERNATIVES_CACHE.pop(next(iter(_ALTERNATIVES_CACHE)))
+        _ALTERNATIVES_CACHE[key] = post_pick.alternatives(plan, clips)
+    return _ALTERNATIVES_CACHE[key]
 
 
 def candidate_id(file_id: int, start: float) -> str:
@@ -107,11 +125,16 @@ def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
     review = plan.get("review") or {}
     approved = set(review.get("approved", []))
     originals = review.get("original", {})
+    steady_plan = _is_steady_plan(plan, clips)
+    picked = _picker_alternatives(plan, clips) if steady_plan else {}
     slots = []
     for shot in plan["shots"]:
         length = shot["duration_frames"] / fps
         clip = by_id.get(shot["file_id"])
         current = _describe(clip, shot["file_id"], shot["name"], shot["source_in"], length, "current")
+        if steady_plan:
+            current["what"] = shot["moment_source"]
+            current["tag"] = "picked in review" if shot["moment_source"].startswith("picked in review") else ("static" if (shot.get("steady") or {}).get("static") else "steady")
         alts: list[dict] = []
         seen = {current["id"]}
 
@@ -122,7 +145,12 @@ def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
         orig = originals.get(str(shot["index"]))
         if orig and candidate_id(orig["file_id"], orig["source_in"]) != current["id"]:
             add(_describe(by_id.get(orig["file_id"]), orig["file_id"], orig["name"], orig["source_in"], length, "original"))
-        if clip:  # other events in the same clip
+        if steady_plan:  # the picker's ranked swaps: clean stretches that don't look like the shots around this one
+            for cand in picked.get(shot["index"], []):
+                described = _describe(by_id.get(cand["file_id"]), cand["file_id"], cand["name"], cand["source_in"], length, cand["origin"])
+                described.update({"what": cand["note"], "tag": cand["tag"], "kind": None, "punch": None})
+                add(described)
+        elif clip:  # other events in the same clip
             n = 0
             for e in sorted(clip.get("events") or [], key=lambda e: -e["punch"]):
                 if n >= SAME_CLIP_ALTERNATIVES:
@@ -130,7 +158,7 @@ def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
                 before = len(alts)
                 add(_describe(clip, clip["file_id"], clip["name"], _window_start(clip, e["t"], min(length, clip["duration"])), min(length, clip["duration"]), "same_clip"), SAME_CLIP_MIN_GAP_SECONDS)
                 n += len(alts) - before
-        if shot["role"] == "body" and shot["file_id"] in by_id:  # strong events from neighbouring clips not used elsewhere
+        if not steady_plan and shot["role"] == "body" and shot["file_id"] in by_id:  # strong events from neighbouring clips not used elsewhere
             pos = order.index(shot["file_id"])
             near = [by_id[i] for i in order[max(0, pos - NEIGHBOURHOOD): pos + NEIGHBOURHOOD + 1] if i != shot["file_id"] and i not in used and by_id[i].get("events")]
             near.sort(key=lambda c: -max(e["punch"] for e in c["events"]))
@@ -167,6 +195,12 @@ def apply_choice(plan: dict[str, Any], clips: list[dict], slot_index: int, file_
     wanted = candidate_id(file_id, source_in)
     options = {c["id"]: c for c in [slot["current"], *slot["alternatives"]]}
     chosen = options.get(wanted)
+    if chosen is None and _is_steady_plan(plan, clips) and post_pick.valid_alternative(plan, clips, slot_index, file_id, source_in) is not None:
+        # The list of swaps for a shot depends on its neighbours, so it can change after another swap: a page opened earlier still offers the old one.
+        # It is still the job's own clip with a clean stretch (no cut inside), so it is accepted.
+        clip_ = next(c for c in clips if c["file_id"] == file_id)
+        chosen = _describe(clip_, file_id, clip_["name"], source_in, shot["duration_frames"] / plan["fps"], "other_clip" if file_id != shot["file_id"] else "same_clip")
+        chosen.update({"what": "a clean stretch offered earlier", "tag": "steady", "kind": None, "punch": None})
     if chosen is None:
         raise ReviewError("That moment isn't one of the options for this shot any more -- reload the page.")
     review = plan.setdefault("review", {"approved": [], "original": {}})
@@ -182,6 +216,7 @@ def apply_choice(plan: dict[str, Any], clips: list[dict], slot_index: int, file_
         # A story plan's steadiness / slow zoom were measured on the OLD moment. The new one hasn't been measured, so it gets no zoom
         # (a moving shot with a zoom on top is exactly what the zoom rule exists to prevent).
         shot.pop("steady", None)
+        shot.pop("alike_previous", None)
         zooms = (plan.get("zooms") or {}).get("items")
         if zooms:
             plan["zooms"]["items"] = [z for z in zooms if z["shot_index"] != slot_index]
