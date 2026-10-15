@@ -173,14 +173,27 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
 </plist>
 PLIST
 
-echo "Ad-hoc signing..."
+# Signing identity. WHY THIS MATTERS (2026-10-15): an ad-hoc signature ("-") makes the app's identity the hash of its own code,
+# so every rebuild is a brand-new app to macOS and every saved permission (microphone, calendar, Desktop folder) stops
+# matching -- push-to-talk then hears silence and Frank never speaks, with the Settings toggle still looking ON. Signing with
+# a real certificate gives the app an identity that stays the same across rebuilds, so permissions are granted once and kept.
+# PCORP_SIGN_IDENTITY overrides; otherwise the first Apple Development identity in the keychain is used (the same one the iPhone
+# builds use); only if there is none does it fall back to ad-hoc, loudly.
+SIGN_IDENTITY="${PCORP_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/ {print $2; exit}')}"
 # codesign rejects any resource fork / Finder-info extended attributes on
 # copied files ("resource fork, Finder information, or similar detritus not
 # allowed") — some of the source resource files (already in the repo,
 # original artwork) carry them. Strip before signing, not after — signing
 # then stripping would invalidate the just-created signature.
 xattr -cr "$APP_BUNDLE"
-codesign --force --sign - "$APP_BUNDLE"
+if [ -n "$SIGN_IDENTITY" ]; then
+    echo "Signing with identity $SIGN_IDENTITY (stable across rebuilds, so macOS permissions are kept)..."
+    codesign --force --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+else
+    echo "WARNING: no signing identity found -- falling back to ad-hoc signing."
+    echo "         Every rebuild will reset the app's microphone/calendar permissions and Frank's voice input will stop working."
+    codesign --force --sign - "$APP_BUNDLE"
+fi
 
 echo "Done: $APP_BUNDLE"
 echo "Backend shim: Contents/MacOS/PCorpOSBackend, registerable via Settings → Launch at Login (SMAppService, stage 3)"

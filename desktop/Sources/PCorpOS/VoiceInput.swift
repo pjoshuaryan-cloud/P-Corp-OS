@@ -69,11 +69,36 @@ final class VoiceInput: ObservableObject {
         lastStopNote = nil
         transcript = ""
 
+        // Check the microphone BEFORE recording. A blocked mic doesn't fail -- the engine just delivers silence, which used to end
+        // as "Didn't hear anything, so I stopped" and look like Frank was broken (2026-10-15: macOS had been rejecting this app's
+        // saved microphone permission since a rebuild changed its signature; see build_app.sh).
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .denied, .restricted:
+            errorMessage = "Microphone access is blocked for P Corp OS, so I can't hear you. Turn it on in System Settings → Privacy & Security → Microphone. If it already looks on, macOS is holding a permission from an older build: quit the app, run  tccutil reset Microphone media.alphamode.pcorpos  in Terminal, reopen it, and allow the microphone when asked."
+            onFinished(nil)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if granted {
+                        self.requestSpeechAuthorization(onFinished: onFinished)
+                    } else {
+                        self.errorMessage = "Microphone access wasn't allowed, so I can't hear you. Turn it on in System Settings → Privacy & Security → Microphone, then try again."
+                        onFinished(nil)
+                    }
+                }
+            }
+        default:
+            requestSpeechAuthorization(onFinished: onFinished)
+        }
+    }
+
+    private func requestSpeechAuthorization(onFinished: @escaping (String?) -> Void) {
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             Task { @MainActor in
                 guard let self else { return }
                 guard status == .authorized else {
-                    self.errorMessage = "Speech recognition permission not granted."
+                    self.errorMessage = "Speech recognition permission not granted. Turn it on in System Settings → Privacy & Security → Speech Recognition."
                     onFinished(nil)
                     return
                 }

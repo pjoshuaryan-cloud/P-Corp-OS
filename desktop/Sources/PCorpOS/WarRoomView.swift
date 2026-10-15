@@ -79,11 +79,11 @@ struct WarRoomView: View {
     /// empty-guard/cancellation/error surfacing -- nothing new needed there.
     private func triggerGreetingIfNeeded(at date: Date) {
         guard !Self.hasGreetedThisLaunch else { return }
-        // Wait for the backend (2026-10-13): launched while it was still starting, the greeting's one-and-only attempt got
-        // "connection refused" and left an error on screen for the rest of the session. It now speaks as soon as it's connected.
-        guard backend.isConnected else { return }
+        // Wait for the backend (2026-10-13, reworked 2026-10-15): launched while it was still starting, the greeting's one-and-only
+        // attempt got "connection refused" and left an error on screen for the rest of the session. `backend.isConnected` didn't
+        // prevent that (it's true as soon as the socket attempt starts), so the greeting now waits until the backend really answers.
         Self.hasGreetedThisLaunch = true
-        voiceOutput.speak("\(timeOfDayGreeting(at: date)), Josh. What are we working on today?")
+        voiceOutput.speakWhenBackendReady("\(timeOfDayGreeting(at: date)), Josh. What are we working on today?")
     }
 
     /// The greeting's "N things require your attention" list (2026-08-20,

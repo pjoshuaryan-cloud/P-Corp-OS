@@ -53,6 +53,37 @@ final class VoiceOutput: NSObject, ObservableObject {
     // site too.
     private var speakURL: URL { BackendHost.url(path: "/speak") }
 
+    /// Speaks once the backend is actually answering requests, for a line spoken at launch (the greeting). The backend and the
+    /// app start together at login (or the backend is restarted), and the backend takes ~25 s before it listens -- speaking
+    /// straight away got "connection refused" and left an error on the orb for the whole session. `BackendClient.isConnected`
+    /// can't be the signal: it turns true when the socket attempt STARTS, not when it succeeds (2026-10-15). Any HTTP reply to
+    /// /health counts as answering (a 422 for a missing token still proves the server is up). If anything else speaks or stops
+    /// in the meantime, the waiting greeting is dropped. After the timeout it speaks anyway so a real failure still surfaces.
+    func speakWhenBackendReady(_ text: String, timeoutSeconds: Double = 120) {
+        let startedGeneration = generation
+        Task {
+            let deadline = Date().addingTimeInterval(timeoutSeconds)
+            while Date() < deadline {
+                guard generation == startedGeneration else { return }
+                if await Self.backendIsAnswering() { break }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+            guard generation == startedGeneration else { return }
+            speak(text)
+        }
+    }
+
+    private static func backendIsAnswering() async -> Bool {
+        var request = URLRequest(url: BackendHost.url(path: "/health"))
+        request.timeoutInterval = 3
+        do {
+            _ = try await URLSession.shared.data(for: request)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func speak(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
