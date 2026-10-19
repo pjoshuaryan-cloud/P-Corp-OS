@@ -382,6 +382,9 @@ DATA_BACKEND = os.environ.get("DATA_BACKEND", "sqlite")
 CLOUD_POSTGRES_DSN = os.environ.get("CLOUD_POSTGRES_DSN")
 
 MODEL = "claude-sonnet-5"
+# Describe clips (app/post_moments.py) looks at pictures to find each clip's best moments. Tested 2026-10-19 on 168 of Josh's real shots (learning/vision_eval.py):
+# claude-sonnet-5-5 scored 8.9% first try / 25.6% top-3, claude-sonnet-5 8.3% / 20.2% (random 6.5% / 18.1%) -- a gap inside the noise, so this is a recommendation, not a proof.
+DESCRIBE_MODEL = "claude-sonnet-5-5"
 # Real bug found 2026-07-31: 1024 was cutting off longer replies mid-
 # generation (confirmed directly -- a multi-phase SOP relayed from the
 # Operations Agent got truncated, twice, in real use). Raising the
@@ -3304,13 +3307,13 @@ async def post_job_find_moments(job_id: int, body: FindMomentsRequest, _: None =
         raise HTTPException(status_code=400, detail="max_clips must be at least 1.")
     client = AsyncAnthropic(api_key=api_key)
     try:
-        await check_credit(client, MODEL)
+        await check_credit(client, DESCRIBE_MODEL)
     except VisionUnavailableError as exc:
         raise HTTPException(status_code=402, detail=str(exc))
     except MomentsError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     try:
-        run = start_run(job_id, client, MODEL, clips, folder, max_calls=count, planned_total=count)
+        run = start_run(job_id, client, DESCRIBE_MODEL, clips, folder, max_calls=count, planned_total=count)
     except MomentsError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     async with _pooled_postgres_conn() as postgres_conn:
