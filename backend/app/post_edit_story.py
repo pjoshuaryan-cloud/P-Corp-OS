@@ -260,7 +260,7 @@ def build_story_plan(*, profile: StyleProfile, timeline: dict[str, Any], music_i
             "Shots are cut at the style's own pace and are NOT timed to the music; the song is a bed that fades out over the closing hold.",
             "Every analysed clip is a candidate for every shot: each is the cleanest stretch of its clip that does not look like a shot already in the edit, and the edit broadly follows the shoot's order. The planner does not reorder footage into a story.",
             "Hard cuts only: no dissolves, flashes, dips or other accents -- a cleaner cut, by design (the reference's 6 short dissolves are not reproduced).",
-            f"Pace is {timeline.get('pace', 1.0):g}x the reference's (1.0 = its own, higher = calmer); shots are taken from the STEADIEST window of each clip -- no cut inside, smooth, sharp, not dark.",
+            f"Pace is {timeline.get('pace', 1.0):g}x the reference's (1.0 = its own, higher = calmer); " + post_steady.moment_note(shots),
             "Which moment of each clip is used is NOT validated as your taste (moment_source says where it came from) -- review and swap.",
         ],
     }

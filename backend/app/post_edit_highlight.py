@@ -16,6 +16,7 @@ import random
 import statistics
 from typing import Any
 
+from app import post_steady
 from app.post_edit_plan import EditPlanError, MIN_SHOT_FRAMES, _scene_key, plan_cut_times
 from app.post_edit_story import assign_clips_to_slots
 from app.post_steady import CALM_PACE, MAX_PACE, MIN_PACE
@@ -100,7 +101,7 @@ def build_highlight_plan(
         },
         "notes": [
             "Cuts land on the music's hits (the share on a hit is in the checks) at a calm pace: shot lengths follow the corporate reference's rhythm times the pace. There is no measured corporate highlight to music, so the rhythm is the narrated reference's, adapted.",
-            "Hard cuts only: no dissolves, flashes, dips or other accents. Every shot is taken from the STEADIEST window of its clip -- no cut inside, smooth, sharp, not dark.",
+            "Hard cuts only: no dissolves, flashes, dips or other accents. " + post_steady.moment_note(shots),
             f"Pace is {pace:g}x the reference's (1.0 = its own, higher = calmer). The song starts on a strong hit and fades out over the closing hold.",
             "Every analysed clip is a candidate for every shot. Each shot is the cleanest stretch of its clip (no cut, smooth, sharp, well exposed) that does not look like a shot already in the edit, and the edit broadly follows the shoot's order. "
             "It does not reorder footage into a story.",

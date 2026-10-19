@@ -52,6 +52,11 @@ BLOWN_SHARE = 0.15            # more than this share of the frame at pure white 
 # colour grading, so the same aerial in two colour treatments still counts as the same look.
 THUMB_W, THUMB_H = 16, 9
 EVENT_BONUS = 0.05            # steadiness-score points a window earns for covering a clip's strongest described event (Claude's judgment; small on purpose)
+# 2026-10-19: when Claude has described a clip, the shot is centred on its best described event (first one whose stretch has no cut and isn't black); the steadiest
+# stretch is only the fallback. Measured on 168 of Josh's real shots from 21 projects (learning/vision_eval.py): the steadiest stretch lands on the moment he used
+# LESS often than a random one (top-3 10% vs 18%), while Claude's picks from the pictures hit 26-27% (top-1 9-12% vs 6.5%). A thin edge, but the only one found.
+# False restores the steadiest-with-a-small-bonus behaviour.
+EVENT_FIRST = True
 
 # --- slow zoom ---
 # Josh's direction (2026-10-14): corporate edits are CALMER than the Diplomat reference (median shot 1.63 s). Shot / phrase lengths are multiplied by
@@ -201,9 +206,10 @@ def steadiest_window(m: dict[str, Any], duration: float, length: float, taken: l
 
 
 def window_for_slot(clip: dict[str, Any], length: float, taken: list[tuple[float, float]]) -> dict[str, Any]:
-    """The best window of `clip` for a slot of `length` seconds, shaped like the planner's other window choices ({start, duration, source, steady}):
-    no cut inside, smooth, sharp, well exposed, clear of windows already used from the clip. If Claude has described the clip (`events`, from Describe clips),
-    a window that covers its strongest event earns a small bonus, so among equally clean stretches the one with something happening wins."""
+    """The best window of `clip` for a slot of `length` seconds, shaped like the planner's other window choices ({start, duration, source, steady}).
+    If Claude has described the clip (`events`, from Describe clips) and EVENT_FIRST is on, the window is centred on its best event whose stretch is usable
+    (no hard cut inside, not black, clear of windows already used from the clip). Otherwise -- or when no described event qualifies -- the steadiest stretch:
+    no cut inside, smooth, sharp, well exposed, with a small bonus where it covers a described event."""
     from app.post_media import COMPOSE_MIN_START  # same start margin as the planner's other window choices (cameras are still settling in the first moments)
     m = clip["steady"]
     dur = min(clip["duration"], m["seconds"])  # the analysis may cover less than the whole clip (first five minutes)
@@ -211,6 +217,22 @@ def window_for_slot(clip: dict[str, Any], length: float, taken: list[tuple[float
     lo = min(COMPOSE_MIN_START, max(dur - length, 0.0))
     hi = max(dur - length - 0.04, 0.0)
     events = [e for e in (clip.get("events") or []) if e.get("t") is not None]
+
+    def shaped(start: float, duration: float, source: str, event: dict[str, Any] | None, rec: dict[str, Any], overlaps: bool) -> dict[str, Any]:
+        return {"start": round(start, 3), "duration": round(duration, 3), "source": source, "overlaps_earlier_use": overlaps,
+                "event_punch": (event.get("punch") if event else None),
+                "steady": {"score": round(rec["score"], 4), "cuts": rec["cuts"], "mean_motion": round(rec["mean_motion"], 4), "peak_motion": round(rec["peak_motion"], 4),
+                           "jerk": round(rec["jerk"], 4), "blur": round(rec["blur"], 3), "static": rec["static"], "exposure": round(rec["exposure"], 3), "luma": round(rec["luma"], 3)}}
+
+    if EVENT_FIRST:
+        for e in sorted(events, key=lambda e: -float(e.get("punch", 0))):   # Claude's best first
+            start = min(max(float(e["t"]) - length / 2.0, lo), hi)
+            if any(start < b and start + length > a for a, b in taken):
+                continue
+            rec = score_window(m, start, length)
+            if rec["cuts"] or rec["dark"]:
+                continue
+            return shaped(start, length, f"event pick ({e.get('kind', 'moment')}): {e.get('what', '')} -- Claude's judgment from the pictures, not checked against your taste", e, rec, False)
 
     def covered(start: float) -> dict[str, Any] | None:
         inside = [e for e in events if start + 0.15 <= e["t"] <= start + length - 0.15]
@@ -227,10 +249,18 @@ def window_for_slot(clip: dict[str, Any], length: float, taken: list[tuple[float
         source = "steadiest window (static footage, no cut inside)"
     else:
         source = "steadiest window (no cut inside, smooth, sharp)"
-    return {"start": w["start"], "duration": w["duration"], "source": source, "overlaps_earlier_use": w.get("overlaps_earlier_use", False),
-            "event_punch": (event.get("punch") if event else None),
-            "steady": {"score": round(w["score"], 4), "cuts": w["cuts"], "mean_motion": round(w["mean_motion"], 4), "peak_motion": round(w["peak_motion"], 4),
-                       "jerk": round(w["jerk"], 4), "blur": round(w["blur"], 3), "static": w["static"], "exposure": round(w["exposure"], 3), "luma": round(w["luma"], 3)}}
+    return shaped(w["start"], w["duration"], source, event, w, w.get("overlaps_earlier_use", False))
+
+
+def moment_note(shots: list[dict[str, Any]]) -> str:
+    """The plan-notes sentence about how each shot's stretch of its clip was chosen -- so a plan never claims 'steadiest' for shots cut on a described event."""
+    n = sum(1 for s in shots if str(s.get("moment_source", "")).startswith("event pick"))
+    steady = "the STEADIEST window of its clip -- no cut inside, smooth, sharp, not dark"
+    if not n:
+        return f"Every shot is taken from {steady}."
+    rest = len(shots) - n
+    return (f"{n} of {len(shots)} shots are centred on a moment Claude picked from the clip's pictures (Describe clips): no cut inside and not black, but not necessarily the steadiest part of the clip."
+            + (f" The other {rest} are {steady}." if rest else ""))
 
 
 # ------------------------------------------------------------------------------------------------------ picture signatures

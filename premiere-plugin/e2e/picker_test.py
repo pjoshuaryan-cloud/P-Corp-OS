@@ -102,6 +102,29 @@ check("a clean clip's window covers its strongest described event", w["start"] <
 plain = post_steady.window_for_slot(clip(1, "A", dur=40), 2.0, [])
 check("without a description nothing changes: the usual steadiest window", "event" not in plain["source"])
 
+# ---- event first (2026-10-19): Claude's best described event wins over the steadiest stretch --------------------------------------------
+two = clip(1, "A", dur=40); two["events"] = [{"t": 10.0, "kind": "reveal", "punch": 6, "what": "tilts up to the sign"}, {"t": 28.0, "kind": "action", "punch": 9, "what": "toast"}]
+w = post_steady.window_for_slot(two, 2.0, [])
+check("the stretch is centred on the strongest event, not just somewhere clean", abs((w["start"] + 1.0) - 28.0) < 0.01 and w["source"].startswith("event pick") and w["event_punch"] == 9, (w["start"], w["source"][:40]))
+w2 = post_steady.window_for_slot(two, 2.0, [(w["start"], w["start"] + w["duration"])])
+check("a second shot from the same clip goes to the next event, not a quarter second along the first", abs((w2["start"] + 1.0) - 10.0) < 0.01 and w2["event_punch"] == 6, (w2["start"], w2["event_punch"]))
+w3 = post_steady.window_for_slot(two, 2.0, [(w["start"], w["start"] + 2.0), (w2["start"], w2["start"] + 2.0)])
+check("with every described event used it falls back to a steady stretch", not w3["source"].startswith("event pick") and w3["overlaps_earlier_use"] is False, w3["source"][:40])
+cut = clip(1, "A", dur=40, cuts=(28 * 8,)); cut["events"] = list(two["events"])
+wc = post_steady.window_for_slot(cut, 2.0, [])
+check("an event with a hard cut inside its stretch is skipped for the next one", abs((wc["start"] + 1.0) - 10.0) < 0.01 and wc["steady"]["cuts"] == 0, (wc["start"], wc["steady"]["cuts"]))
+black = clip(1, "A", dur=40, luma=0.02); black["events"] = list(two["events"])
+check("a black stretch is never chosen as an event", not post_steady.window_for_slot(black, 2.0, [])["source"].startswith("event pick"))
+early = clip(1, "A", dur=40); early["events"] = [{"t": 0.2, "kind": "action", "punch": 8, "what": "first frame action"}]
+check("an event at the very start keeps the settling margin", abs(post_steady.window_for_slot(early, 2.0, [])["start"] - 0.3) < 0.01, post_steady.window_for_slot(early, 2.0, [])["start"])
+tail = clip(1, "A", dur=20); tail["events"] = [{"t": 19.9, "kind": "action", "punch": 8, "what": "last moment"}]
+wt = post_steady.window_for_slot(tail, 2.0, [])
+check("an event at the very end still gives a stretch that lies inside the clip", wt["start"] + wt["duration"] <= 20.0, (wt["start"], wt["duration"]))
+post_steady.EVENT_FIRST = False
+off = post_steady.window_for_slot(two, 2.0, [])
+post_steady.EVENT_FIRST = True
+check("switching the rule off restores the steadiest-window behaviour", not off["source"].startswith("event pick"), off["source"][:40])
+
 # ---- the old path is untouched for clips that were never analysed -------------------------------------------------------------------
 legacy = [{"file_id": i, "name": f"L{i}.MP4", "path": f"/x/L{i}.MP4", "duration": 20.0, "scene": ""} for i in range(1, 7)]
 g = run(legacy, [2.0] * 3)
@@ -143,6 +166,21 @@ check("a stretch with a cut in it is refused", refused(1, 10, 5.0))
 check("a stretch past the end of the clip is refused", refused(1, other["file_id"], 29.5))
 check("a clip that isn't in the job is refused", refused(1, 999, 1.0))
 check("without analysis the review keeps its old event-based swaps", not post_review._is_steady_plan({"mode": "highlight"}, [{"file_id": 1}]))
+
+# ---- a plan over DESCRIBED clips cuts on Claude's events, and the review offers them as swaps -------------------------------------------
+desc_pool = []
+for i in range(8):
+    c = clip(i, "ABCDEFGH"[i], dur=30); c["events"] = [{"t": 9.0 + i, "kind": "action", "punch": 8, "what": f"thing {i}"}, {"t": 21.0, "kind": "reveal", "punch": 5, "what": "second"}]
+    desc_pool.append(c)
+dg = run(desc_pool, [2.0] * 4)
+centre = lambda s: s["source_in"] + s["duration_frames"] / 24 / 2
+check("a plan over described clips cuts on each clip's best event", all(s["moment_source"].startswith("event pick") and abs(centre(s) - (9.0 + s["file_id"])) < 0.3 for s in dg["shots"]),
+      [(s["file_id"], round(centre(s), 1), s["moment_source"][:12]) for s in dg["shots"]])
+check("the plan still counts those shots as event-based", dg["summary"]["moment_sources"]["event"] == 4 if "summary" in dg else True)
+dplan = {"mode": "highlight", "fps": 24, "duration_seconds": 8.0, "style": "test", "shots": dg["shots"], "checks": {"bookend": False}}
+dalts = post_pick.alternatives(dplan, desc_pool)
+check("swaps for described clips are event picks too, and never have a cut inside", all(len(v) >= 1 for v in dalts.values()) and any("event pick" in a["note"] for v in dalts.values() for a in v)
+      and all(a["steady"]["cuts"] == 0 for v in dalts.values() for a in v))
 
 # ---- speed: a big shoot --------------------------------------------------------------------------------------------------------------
 import time
