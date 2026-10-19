@@ -81,7 +81,7 @@ def prepare(samples: list[evaluate.Sample], measures: dict[str, dict]) -> list[d
         hit = np.array([evaluate.overlap(float(x), s.src_in, L) >= evaluate.HIT_OVERLAP for x in starts], dtype=float)
         if not hit.any():
             continue
-        items.append({"project": s.project, "starts": starts, "L": L, "x": window_features(m, starts, L, dur), "hit": hit})
+        items.append({"project": s.project, "path": s.path, "src_in": s.src_in, "starts": starts, "L": L, "x": window_features(m, starts, L, dur), "hit": hit})
     return items
 
 
@@ -92,7 +92,7 @@ def cross_validate(items: list[dict], l2: float = 0.5) -> dict:
         folds = [[j for j in range(len(items)) if j % 5 == f] for f in range(5)]
     else:
         folds = [[j for j, i in enumerate(items) if i["project"] == p] for p in projects]
-    hits1, hits3, rnd1, rnd3, per_project = [], [], [], [], {}
+    hits1, hits3, rnd1, rnd3, per_project, rows = [], [], [], [], {}, []
     for fold in folds:
         test = set(fold); train = [(items[j]["x"], items[j]["hit"]) for j in range(len(items)) if j not in test]
         if len(train) < 5:
@@ -107,5 +107,6 @@ def cross_validate(items: list[dict], l2: float = 0.5) -> dict:
                 rp = evaluate.top_k(rng.random(len(it["starts"])), it["starts"], it["L"], 3); r3 += any(h(p) for p in rp)
             rnd3.append(r3 / 60)
             per_project.setdefault(it["project"], []).append((hits3[-1], rnd3[-1]))
+            rows.append({"project": it["project"], "path": it["path"], "src_in": it["src_in"], "hit1": hits1[-1], "hit3": hits3[-1], "random_hit3": rnd3[-1], "picks": [float(x) for x in picks], "L": float(it["L"])})
     return {"n": len(hits1), "hit1": float(np.mean(hits1)), "hit3": float(np.mean(hits3)), "random_hit1": float(np.mean(rnd1)), "random_hit3": float(np.mean(rnd3)),
-            "hit3_ci": evaluate.bootstrap([float(x) for x in hits3]), "per_project": per_project}
+            "hit3_ci": evaluate.bootstrap([float(x) for x in hits3]), "per_project": per_project, "rows": rows}

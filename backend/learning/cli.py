@@ -15,7 +15,7 @@ import os
 import sys
 import time
 
-from learning import dataset, evaluate, footage
+from learning import dataset, evaluate, footage, rank_local
 
 PRUNE = footage.SKIP_DIRS | {"AMM - APP", "P-Corp", "alpha-mode-media-app", "AlphaMode-Redesign", "Library", ".Trash"}
 
@@ -69,14 +69,14 @@ def cmd_inventory(args: argparse.Namespace) -> int:
     return 0
 
 
-def _inventory() -> dict:
-    return json.loads((footage.DEFAULT_DATA / "inventory.json").read_text())
+def _inventory(name: str = "inventory.json") -> dict:
+    return json.loads((footage.DEFAULT_DATA / name).read_text())
 
 
 def cmd_measure(args: argparse.Namespace) -> int:
     sys.path.insert(0, str(footage.DEFAULT_DATA.parents[1]))
     from app import post_steady
-    samples = evaluate.sample_shots(_inventory(), args.per_project, args.seed, args.max_clip_seconds)
+    samples = evaluate.sample_shots(_inventory(args.inventory), args.per_project, args.seed, args.max_clip_seconds)
     todo = sorted({s.path for s in samples if evaluate.load_measure(s.path) is None})
     footage_min = sum(s.src_duration for s in samples if s.path in set(todo)) / 60
     print(f"{len(samples)} sampled shots from {len({s.path for s in samples})} clips; {len(todo)} still to read (~{footage_min:.0f} min of footage)", flush=True)
@@ -103,7 +103,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
     sys.path.insert(0, str(footage.DEFAULT_DATA.parents[1]))
-    samples = evaluate.sample_shots(_inventory(), args.per_project, args.seed, args.max_clip_seconds)
+    samples = evaluate.sample_shots(_inventory(args.inventory), args.per_project, args.seed, args.max_clip_seconds)
     measures = {s.path: m for s in samples if (m := evaluate.load_measure(s.path))}
     samples = [s for s in samples if s.path in measures]
     print(f"{len(samples)} labelled shots with their clips read, from {len({s.project for s in samples})} projects\n")
@@ -128,6 +128,32 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rank(args: argparse.Namespace) -> int:
+    """Leave-one-project-out: train the learned ranker on every project but one, test it on the one it has never seen."""
+    sys.path.insert(0, str(footage.DEFAULT_DATA.parents[1]))
+    samples = evaluate.sample_shots(_inventory(args.inventory), args.per_project, args.seed, args.max_clip_seconds)
+    measures = {s.path: m for s in samples if (m := evaluate.load_measure(s.path))}
+    samples = [s for s in samples if s.path in measures]
+    items = rank_local.prepare(samples, measures)
+    projects = sorted({i["project"] for i in items})
+    print(f"{len(items)} labelled shots from {len(projects)} projects (each tested on a style it was NOT trained on)\n")
+    for l2 in (0.5, 5.0):
+        r = rank_local.cross_validate(items, l2=l2)
+        print(f"learned ranker (regularisation {l2}): top-1 {100 * r['hit1']:.1f}% vs random {100 * r['random_hit1']:.1f}% | top-3 {100 * r['hit3']:.1f}% vs random {100 * r['random_hit3']:.1f}% "
+              f"(95% range for top-3: {100 * r['hit3_ci'][0]:.0f}-{100 * r['hit3_ci'][1]:.0f}%) | n={r['n']}")
+    rows = {"random guess": evaluate.evaluate_rule(samples, None, measures)}
+    for name, rule in evaluate.RULES.items():
+        rows[name] = evaluate.evaluate_rule(samples, rule, measures)
+    print("\nthe simple rules on the same shots:")
+    for name, ev in rows.items():
+        s = evaluate.summarise(ev)
+        print(f"  {name:44s} top-1 {100 * s['hit1']:5.1f}%   top-3 {100 * s['hit3']:5.1f}%")
+    print("\nlearned ranker per project, top-3 (n shots): learned vs random")
+    for p, vals in sorted(r["per_project"].items()):
+        n = len(vals); print(f"  {p[:36]:36s} n={n:2d}  learned {100 * sum(v[0] for v in vals) / n:4.0f}%  random {100 * sum(v[1] for v in vals) / n:4.0f}%")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="learning")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -137,11 +163,13 @@ def main(argv: list[str] | None = None) -> int:
     inv.add_argument("--since", help="only projects last saved on or after YYYY-MM-DD")
     inv.add_argument("--limit", type=int, help="only the newest N projects")
     inv.set_defaults(func=cmd_inventory)
-    for name, fn, helptext in (("measure", cmd_measure, "read the raw clips of a seeded sample of labelled shots"), ("evaluate", cmd_evaluate, "score the rules against the editor's choices")):
+    for name, fn, helptext in (("measure", cmd_measure, "read the raw clips of a seeded sample of labelled shots"), ("evaluate", cmd_evaluate, "score the rules against the editor's choices"),
+                               ("rank", cmd_rank, "leave-one-project-out test of the learned ranker")):
         sp = sub.add_parser(name, help=helptext)
         sp.add_argument("--per-project", type=int, default=8)
         sp.add_argument("--seed", type=int, default=1)
         sp.add_argument("--max-clip-seconds", type=float, default=90.0)
+        sp.add_argument("--inventory", default="inventory.json", help="file in data/learning/ to draw the sample from")
         if name == "measure":
             sp.add_argument("--workers", type=int, default=4)
         sp.set_defaults(func=fn)
