@@ -30,6 +30,9 @@ SAMPLE_FPS = 8.0
 FRAME_W, FRAME_H = 160, 90
 MAX_ANALYSED_SECONDS = 300.0  # a longer clip is read for its first five minutes only
 READ_TIMEOUT_SECONDS = 240.0
+DECODE_THREADS = 2  # decoder threads per ffmpeg. ffmpeg's default (one per core) makes several readers spin against each other: 8 readers x 12 threads took 140 s a clip instead of 20 s (2026-10-15)
+READ_CONCURRENCY = 5  # clips read at once: DECODE_THREADS x this ~ the core count. A 4K 4:2:2 10-bit 50p clip costs ~5 CPU-seconds per second of footage whatever the settings (hardware decode can't read it), so 165 clips need ~15 minutes of a 12-core Mac
+SAVE_EVERY = 10  # the cache is saved after every this many clips, so a long first read keeps its progress if the request is cut off or the backend restarts
 
 # --- what counts as what (calibrated on the real Diplomat clips, see calibration notes in the plan's `notes`) ---
 CUT_SPIKE_MIN = 0.15          # a frame-to-frame change this big (share of full range) is a hard cut. Real cuts in Josh's Diplomat clips change >= 0.19;
@@ -70,7 +73,7 @@ async def read_clip(path: str, limiter: asyncio.Semaphore | None = None) -> np.n
     """The clip as (frames, 90, 160) uint8 grey at SAMPLE_FPS, or None when it can't be read. Never raises."""
     async def run() -> bytes:
         proc = await asyncio.create_subprocess_exec(
-            _ffmpeg(), "-nostdin", "-v", "error", "-t", str(MAX_ANALYSED_SECONDS), "-i", path,
+            _ffmpeg(), "-nostdin", "-v", "error", "-threads", str(DECODE_THREADS), "-t", str(MAX_ANALYSED_SECONDS), "-i", path,
             "-an", "-vf", f"fps={SAMPLE_FPS},scale={FRAME_W}:{FRAME_H}:flags=area,format=gray", "-f", "rawvideo", "-",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
@@ -312,14 +315,16 @@ def save_cache(job: dict[str, Any], cache: dict[str, Any]) -> None:
     p.write_text(json.dumps(cache))
 
 
-async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, concurrency: int = 3) -> dict[str, int]:
+async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, concurrency: int = READ_CONCURRENCY, only_cached: bool = False, always: set[int] | None = None) -> dict[str, int]:
     """Attaches `clip["steady"]` (the per-clip series) to each clip, reading from the job's cache when the file hasn't changed.
-    A clip that can't be read gets no `steady` and the planner falls back to its old way for it. Returns counts for the plan's notes."""
+    A clip that can't be read gets no `steady` and the planner falls back to its old way for it. `only_cached` reads nothing new except the clips in `always` (the
+    establishing clip, which opens the edit and holds the closing card): clips not in the cache simply get no analysis (a quick plan from what has been read so far). Returns counts for the plan's notes."""
     from app.ssd_guard import on_drive
     cache = await on_drive(load_cache, job)
     limiter = asyncio.Semaphore(concurrency)
-    counts = {"cached": 0, "analysed": 0, "unreadable": 0}
+    counts = {"cached": 0, "analysed": 0, "unreadable": 0, "not_read": 0}
     dirty = False
+    saving = asyncio.Lock()
 
     async def one(clip: dict[str, Any]) -> None:
         nonlocal dirty
@@ -331,6 +336,9 @@ async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, con
             clip["thumbs"] = decode_thumbs(hit["m"])
             counts["cached"] += 1
             return
+        if only_cached and clip["file_id"] not in (always or set()):
+            counts["not_read"] += 1
+            return
         frames = await read_clip(clip["path"], limiter)
         if frames is None:
             counts["unreadable"] += 1
@@ -341,6 +349,9 @@ async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, con
         cache[key] = {"fp": fp, "v": CACHE_VERSION, "m": m}
         counts["analysed"] += 1
         dirty = True
+        if counts["analysed"] % SAVE_EVERY == 0 and not saving.locked():
+            async with saving:  # a snapshot of what is done so far (a dict copy: other clips keep finishing while it writes)
+                await on_drive(save_cache, job, dict(cache), writing=True)
 
     await asyncio.gather(*(one(c) for c in clips))
     if dirty:
@@ -348,12 +359,14 @@ async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, con
     return counts
 
 
-def coverage_note(clips: list[dict[str, Any]]) -> str:
+def coverage_note(clips: list[dict[str, Any]], quick: bool = False) -> str:
     """One plain sentence on how much of the footage the planner actually looked through."""
     total = len(clips)
     read = [c for c in clips if c.get("steady")]
     long_ones = [c for c in read if c["duration"] > MAX_ANALYSED_SECONDS + 0.5]
     text = f"Looked through {len(read)} of {total} clips for the cleanest stretches"
+    if quick:
+        return text + f" -- a QUICK plan: the other {total - len(read)} clips had not been read yet, so every shot comes from those {len(read)}. Plan again once they have all been read for the full picture."
     if len(read) < total:
         text += f" ({total - len(read)} couldn't be read and were left out of the picks)"
     if long_ones:

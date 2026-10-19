@@ -2995,6 +2995,7 @@ class EditPlanRequest(BaseModel):
     pace: float | None = None  # corporate story: 1.0 = the reference's own pace, higher = calmer (default 1.3); between 0.8 and 2.0
     slow_zooms: bool = True  # corporate story / highlight: slow push-in / pull-out on shots whose footage is static
     fill_frame: bool | None = None  # corporate highlight: scale every clip in Premiere to fill the frame, centred (default on); off leaves clips at their own size
+    quick: bool = False  # corporate: plan NOW from the clips already read (cached), without reading the rest -- for a first plan on a big shoot that would take 15+ minutes
     logo_bug: bool | None = None  # the corner logo plate over the b-roll: default on for a narrated story, off for a corporate highlight (which asks only for the opening and closing cards)
 
 
@@ -3033,7 +3034,7 @@ async def post_job_edit_plan(job_id: int, body: EditPlanRequest, _: None = Depen
                 job_id, style=body.style, music_path=body.music_path, music_in_seconds=body.music_in_seconds,
                 target_seconds=body.target_seconds, bookend_file_id=body.bookend_file_id, order_names=body.order_names,
                 seed=body.seed, script=body.script, camera_file_ids=body.camera_file_ids, audio_file_id=body.audio_file_id,
-                brand_graphics=body.brand_graphics, burn_captions=body.burn_captions, card_tagline=body.card_tagline, card_contact=body.card_contact, pace=body.pace, slow_zooms=body.slow_zooms, logo_bug=body.logo_bug, fill_frame=body.fill_frame, postgres_conn=postgres_conn,
+                brand_graphics=body.brand_graphics, burn_captions=body.burn_captions, card_tagline=body.card_tagline, card_contact=body.card_contact, pace=body.pace, slow_zooms=body.slow_zooms, logo_bug=body.logo_bug, fill_frame=body.fill_frame, quick=body.quick, postgres_conn=postgres_conn,
             )
         except EditPlanError as exc:
             raise HTTPException(status_code=404 if str(exc).startswith("No POST job") else 400, detail=str(exc))

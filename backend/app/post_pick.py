@@ -25,14 +25,17 @@ import numpy as np
 
 from app import post_steady
 
-QUALITY_SCALE = 0.1        # quality = 1 / (1 + steadiness_score / QUALITY_SCALE): a clean window is ~0.9, a shaky one ~0.4, one with a cut ~0
-SIM_FLOOR, SIM_FULL = 0.30, 0.70  # thumbnail correlation where two shots start to count as "the same look" / are surely the same (same-scene pairs averaged 0.68)
+QUALITY_SCALE = 0.3        # quality = 1 / (1 + steadiness_score / QUALITY_SCALE): a clean window is ~0.95, a shaky one ~0.6, one with a cut ~0. Was 0.1; on the 165 static-heavy GWM clips that made the very stillest
+                           # footage win every slot (7 shots in a row of people standing at the booth), so how still a shot is now counts for less than whether it adds a new look
+SIM_FLOOR, SIM_FULL = 0.12, 0.45  # thumbnail correlation where two shots start to count as "the same look" / are surely the same. Was 0.30 / 0.70 (same-scene pairs averaged 0.68 on the Diplomat pool);
+                           # on the GWM expo hall, wide shots of one booth from different angles correlate only 0.15-0.4, and they read as the same kind of shot to a viewer
 SAME_SCENE_SIM = 0.85      # two clips Claude gave the same scene label count at least this alike
 DIVERSITY_WEIGHT = 1.2     # an adjacent repeat of a look costs 1.2: more than any difference in quality between clean stretches
 RECENCY = (1.0, 0.7, 0.55) # weight of the previous shot, the one before it, the one before that; everything earlier counts RECENCY_FLOOR
 RECENCY_FLOOR = 0.5       # a look already used ANYWHERE in the edit still costs this (so a third repeat is avoided, and repeats land far apart)
-REUSE_PENALTY = 0.8        # a clip that is already in the edit (only when the shoot has too few clips)
+REUSE_PENALTY = 5.0        # a clip that is already in the edit: only when the shoot has too few clips. Was 0.8, which gave 78 selects from just 58 of 165 clips; at 5 every clip is used once before any is repeated
 OVERLAP_PENALTY = 2.0      # no free stretch left in the clip: it would repeat footage already used
+CUT_PENALTY = 5.0          # a stretch with a hard cut inside it is only ever the least-bad option: no amount of variety makes up for it
 POSITION_WEIGHT = 0.4      # per unit of distance (0..1) between a clip's place in the shoot and where this shot falls in the edit
 EVENT_QUALITY = 0.2        # added for a stretch that covers a described event, times punch / 10
 ALIKE = 0.5                # for the plan's repetition report: two shots at or above this correlation are "alike"
@@ -97,6 +100,7 @@ class Picker:
             looks, previous = self._looks_like(clip, sig)
             reuse = REUSE_PENALTY if clip["file_id"] in self.used else 0.0
             overlap = OVERLAP_PENALTY if window.get("overlaps_earlier_use") else 0.0
+            overlap += CUT_PENALTY if window["steady"]["cuts"] else 0.0
             position = POSITION_WEIGHT * abs(self.order[clip["file_id"]] / self.denominator - target_position)
             event = EVENT_QUALITY * (window.get("event_punch") or 0) / 10.0
             score = quality - DIVERSITY_WEIGHT * looks - reuse - overlap - position + event

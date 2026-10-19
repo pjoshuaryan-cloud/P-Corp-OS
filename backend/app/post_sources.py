@@ -26,7 +26,13 @@ import os
 import plistlib
 from pathlib import Path
 
-_SKIP_ENTRIES = {".DS_Store", ".Trashes", ".fseventsd", ".Spotlight-V100", ".TemporaryItems"}
+_SKIP_ENTRIES = {".DS_Store", ".Trashes", ".fseventsd", ".Spotlight-V100", ".TemporaryItems", ".AppleDouble"}
+
+
+def _is_junk(name: str) -> bool:
+    """OS/filesystem leftovers that are not footage. Includes macOS "AppleDouble" shadow files: on an exFAT/FAT drive macOS keeps a hidden 4 KB `._<name>` next to every
+    file that carries Finder metadata, so a card of 165 clips scanned as 330 files (2026-10-15) and every shadow file showed up as a corrupt clip."""
+    return name in _SKIP_ENTRIES or name.startswith("._")
 
 
 async def _diskutil_info_plist(path: str) -> dict | None:
@@ -79,7 +85,7 @@ async def list_source_volumes() -> list[dict]:
 
 def scan_source_tree(source_path: str) -> tuple[int, int, list[tuple[str, str, int]]]:
     """Recursively walks source_path, skipping OS/filesystem junk
-    entries. Returns (total_files, total_bytes, [(relative_path,
+    entries (.DS_Store, macOS ._ shadow files, ...). Returns (total_files, total_bytes, [(relative_path,
     absolute_source_path, size_bytes), ...]) -- the caller is
     responsible for computing each file's destination path from its
     relative_path. Synchronous (a plain os.walk, no I/O heavy enough to
@@ -91,9 +97,9 @@ def scan_source_tree(source_path: str) -> tuple[int, int, list[tuple[str, str, i
     files: list[tuple[str, str, int]] = []
     source_root = Path(source_path)
     for dirpath, dirnames, filenames in os.walk(source_root):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_ENTRIES]
+        dirnames[:] = [d for d in dirnames if not _is_junk(d)]
         for filename in filenames:
-            if filename in _SKIP_ENTRIES:
+            if _is_junk(filename):
                 continue
             absolute_path = Path(dirpath) / filename
             try:

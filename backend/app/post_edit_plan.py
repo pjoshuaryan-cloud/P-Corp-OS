@@ -407,7 +407,7 @@ async def plan_for_job(
     seed: int = 7, use_moments: bool = True, label: str | None = None, script: str | None = None,
     camera_file_ids: list[int] | None = None, audio_file_id: int | None = None,
     brand_graphics: bool = True, burn_captions: bool = True, card_tagline: str | None = None, card_contact: list[str] | None = None,
-    pace: float | None = None, slow_zooms: bool = True, logo_bug: bool | None = None, fill_frame: bool | None = None, postgres_conn: Any = None,
+    pace: float | None = None, slow_zooms: bool = True, logo_bug: bool | None = None, fill_frame: bool | None = None, quick: bool = False, postgres_conn: Any = None,
 ) -> dict[str, Any]:
     """The whole thing for one job: style -> clips -> song analysis -> plan -> music cut written next to the
     project, plan saved as edit_plan_latest.json. Raises EditPlanError with a plain message when something's missing."""
@@ -460,18 +460,18 @@ async def plan_for_job(
     if profile.highlight:  # a calm highlight cut to the music's hits: steadiest windows, slow zooms on static shots, hard cuts only
         from app.post_edit_highlight import build_highlight_plan
         from app.post_steady import CALM_PACE as _CALM, analyse_clips, coverage_note
-        steady_counts = await analyse_clips(clips, job)
+        steady_counts = await analyse_clips(clips, job, only_cached=quick, always={bookend_file_id} if bookend_file_id is not None else None)
         plan = build_highlight_plan(profile=profile, hits=analysis["hits"], music_in=music_in, duration=duration, fps=fps, clips=clips, bookend_file_id=bookend_file_id,
                                     seed=seed, pace=_CALM if pace is None else pace, slow_zooms=slow_zooms, with_opener=bookend_file_id is not None or bool(graphics_logo and graphics_size),
                                     fill_frame=True if fill_frame is None else fill_frame)
         plan["notes"].append(f"Steadiness: {steady_counts['analysed']} clip(s) analysed now, {steady_counts['cached']} from this job's cache" + (f", {steady_counts['unreadable']} unreadable (those were planned the old way, from the middle of the clip)." if steady_counts["unreadable"] else "."))
-        plan["notes"].append(coverage_note(clips))
+        plan["notes"].append(coverage_note(clips, quick))
     elif timeline is not None:
         from app.post_steady import analyse_clips, coverage_note  # reads each clip at low resolution to find its steadiest window and whether it's static (cached per job)
-        steady_counts = await analyse_clips(clips, job)
+        steady_counts = await analyse_clips(clips, job, only_cached=quick, always={bookend_file_id} if bookend_file_id is not None else None)
         plan = build_story_plan(profile=profile, timeline=timeline, music_in=music_in, fps=fps, clips=clips, bookend_file_id=bookend_file_id, seed=seed, slow_zooms=slow_zooms)
         plan["notes"].append(f"Steadiness: {steady_counts['analysed']} clip(s) analysed now, {steady_counts['cached']} from this job's cache" + (f", {steady_counts['unreadable']} unreadable (those were planned the old way, from the middle of the clip)." if steady_counts["unreadable"] else "."))
-        plan["notes"].append(coverage_note(clips))
+        plan["notes"].append(coverage_note(clips, quick))
     else:
         plan = build_plan(profile=profile, hits=analysis["hits"], music_in=music_in, duration=duration, fps=fps,
                           clips=clips, bookend_file_id=bookend_file_id, seed=seed)
