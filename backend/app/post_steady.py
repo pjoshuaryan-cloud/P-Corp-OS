@@ -205,6 +205,42 @@ def steadiest_window(m: dict[str, Any], duration: float, length: float, taken: l
     return {"start": round(best[1], 3), "duration": round(length, 3), "overlaps_earlier_use": False, **best[2]}
 
 
+def _event_windows(clip: dict[str, Any], length: float, taken: list[tuple[float, float]], limit: int) -> list[dict[str, Any]]:
+    """Up to `limit` windows of `clip`, each centred on one of Claude's described events, best event first: the stretch has no hard cut, is not black and is clear of
+    windows already used from the clip. Same shape as window_for_slot's result. [] when the clip has no described events or none of them gives a usable stretch."""
+    from app.post_media import COMPOSE_MIN_START
+    m = clip.get("steady")
+    events = [e for e in (clip.get("events") or []) if e.get("t") is not None]
+    if not m or not events:
+        return []
+    dur = min(clip["duration"], m["seconds"])
+    length = min(length, dur)
+    lo = min(COMPOSE_MIN_START, max(dur - length, 0.0))
+    hi = max(dur - length - 0.04, 0.0)
+    out: list[dict[str, Any]] = []
+    used = list(taken)
+    for e in sorted(events, key=lambda e: -float(e.get("punch", 0))):
+        start = min(max(float(e["t"]) - length / 2.0, lo), hi)
+        if any(start < b and start + length > a for a, b in used):
+            continue
+        rec = score_window(m, start, length)
+        if rec["cuts"] or rec["dark"]:
+            continue
+        out.append({"start": round(start, 3), "duration": round(length, 3), "overlaps_earlier_use": False, "event_punch": e.get("punch"),
+                    "source": f"event pick ({e.get('kind', 'moment')}): {e.get('what', '')} -- Claude's judgment from the pictures, not checked against your taste",
+                    "steady": {"score": round(rec["score"], 4), "cuts": rec["cuts"], "mean_motion": round(rec["mean_motion"], 4), "peak_motion": round(rec["peak_motion"], 4),
+                               "jerk": round(rec["jerk"], 4), "blur": round(rec["blur"], 3), "static": rec["static"], "exposure": round(rec["exposure"], 3), "luma": round(rec["luma"], 3)}})
+        used.append((start, start + length))   # the next candidate must be a different moment, not a quarter second along the same one
+        if len(out) == limit:
+            break
+    return out
+
+
+def event_windows(clip: dict[str, Any], length: float, taken: list[tuple[float, float]], limit: int = 3) -> list[dict[str, Any]]:
+    """The picker's candidates for a clip: its best `limit` described moments (see _event_windows). Empty when EVENT_FIRST is off."""
+    return _event_windows(clip, length, taken, limit) if EVENT_FIRST else []
+
+
 def window_for_slot(clip: dict[str, Any], length: float, taken: list[tuple[float, float]]) -> dict[str, Any]:
     """The best window of `clip` for a slot of `length` seconds, shaped like the planner's other window choices ({start, duration, source, steady}).
     If Claude has described the clip (`events`, from Describe clips) and EVENT_FIRST is on, the window is centred on its best event whose stretch is usable
@@ -225,14 +261,9 @@ def window_for_slot(clip: dict[str, Any], length: float, taken: list[tuple[float
                            "jerk": round(rec["jerk"], 4), "blur": round(rec["blur"], 3), "static": rec["static"], "exposure": round(rec["exposure"], 3), "luma": round(rec["luma"], 3)}}
 
     if EVENT_FIRST:
-        for e in sorted(events, key=lambda e: -float(e.get("punch", 0))):   # Claude's best first
-            start = min(max(float(e["t"]) - length / 2.0, lo), hi)
-            if any(start < b and start + length > a for a, b in taken):
-                continue
-            rec = score_window(m, start, length)
-            if rec["cuts"] or rec["dark"]:
-                continue
-            return shaped(start, length, f"event pick ({e.get('kind', 'moment')}): {e.get('what', '')} -- Claude's judgment from the pictures, not checked against your taste", e, rec, False)
+        first = _event_windows(clip, length, taken, 1)
+        if first:
+            return first[0]
 
     def covered(start: float) -> dict[str, Any] | None:
         inside = [e for e in events if start + 0.15 <= e["t"] <= start + length - 0.15]

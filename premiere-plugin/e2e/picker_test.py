@@ -125,6 +125,29 @@ off = post_steady.window_for_slot(two, 2.0, [])
 post_steady.EVENT_FIRST = True
 check("switching the rule off restores the steadiest-window behaviour", not off["source"].startswith("event pick"), off["source"][:40])
 
+# ---- a clip offers its best few moments, and the picker takes the one that adds variety ------------------------------------------------
+ew = post_steady.event_windows(two, 2.0, [])
+check("a described clip offers its moments best first, each a different stretch", [round(w["start"] + 1.0) for w in ew] == [28, 10] and ew[0]["event_punch"] == 9, [(w["start"], w["event_punch"]) for w in ew])
+check("a moment already used from the clip is not offered again", [round(w["start"] + 1.0) for w in post_steady.event_windows(two, 2.0, [(ew[0]["start"], ew[0]["start"] + 2.0)])] == [10])
+check("a clip with no description offers nothing (the picker uses its steadiest stretch)", post_steady.event_windows(clip(1, "A", dur=40), 2.0, []) == [])
+post_steady.EVENT_FIRST = False
+check("with the rule off nothing is offered", post_steady.event_windows(two, 2.0, []) == [])
+post_steady.EVENT_FIRST = True
+
+def two_look_clip(i):
+    m = steady(40, "A"); th = np.stack([LOOKS["A"]] * 15 + [LOOKS["B"]] * 25)
+    m["thumbs"], m["thumb_n"] = base64.b64encode(th.tobytes()).decode(), 40
+    c = {"file_id": i, "name": f"C{i}.MP4", "path": f"/x/C{i}.MP4", "duration": 40.0, "steady": m, "thumbs": post_steady.decode_thumbs(m), "scene": ""}
+    c["events"] = [{"t": 5.0, "kind": "hero", "punch": 9, "what": "logo, same look as the last shot"}, {"t": 25.0, "kind": "action", "punch": 7, "what": "a different scene"}]
+    return c
+prev, cand = clip(1, "A", dur=30), two_look_clip(2)
+for candidates, expect_second in ((1, False), (3, True)):
+    post_pick.EVENT_CANDIDATES = candidates
+    pk = post_pick.Picker([prev, cand]); pk.register(prev, {"start": 1.0, "duration": 2.0})
+    got = pk.pick(2.0, 0.5, exclude={1})
+    check(f"with {candidates} moment(s) offered the picker {'avoids a shot that looks like the last one' if expect_second else 'takes the clip best moment'}", (got["window"]["start"] > 15) == expect_second, got["window"]["start"])
+post_pick.EVENT_CANDIDATES = 3
+
 # ---- the old path is untouched for clips that were never analysed -------------------------------------------------------------------
 legacy = [{"file_id": i, "name": f"L{i}.MP4", "path": f"/x/L{i}.MP4", "duration": 20.0, "scene": ""} for i in range(1, 7)]
 g = run(legacy, [2.0] * 3)

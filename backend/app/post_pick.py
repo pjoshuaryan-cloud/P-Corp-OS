@@ -39,6 +39,8 @@ CUT_PENALTY = 5.0          # a stretch with a hard cut inside it is only ever th
 POSITION_WEIGHT = 0.4      # per unit of distance (0..1) between a clip's place in the shoot and where this shot falls in the edit
 EVENT_QUALITY = 0.2        # added for a stretch that covers a described event, times punch / 10
 ALIKE = 0.5                # for the plan's repetition report: two shots at or above this correlation are "alike"
+EVENT_CANDIDATES = 3       # a described clip offers its best three moments to each slot, and the one that adds the most variety wins. Measured on Josh's GWM footage: taking only each clip's
+                           # single best moment made every shot a hero/logo shot of the same showroom (27 distinct looks in 76 shots vs 41 for the old steadiest-window plan)
 
 
 def _ramp(sim: float) -> float:
@@ -71,6 +73,7 @@ class Picker:
         self.chosen: list[dict[str, Any]] = []
         self.used: dict[int, list[tuple[float, float]]] = {}
         self._windows: dict[tuple, dict[str, Any]] = {}
+        self._event_windows: dict[tuple, list[dict[str, Any]]] = {}
 
     def _window(self, clip: dict[str, Any], length: float) -> dict[str, Any]:
         taken = self.used.get(clip["file_id"], [])
@@ -78,6 +81,14 @@ class Picker:
         if key not in self._windows:
             self._windows[key] = post_steady.window_for_slot(clip, length, taken)
         return self._windows[key]
+
+    def _candidates(self, clip: dict[str, Any], length: float) -> list[dict[str, Any]]:
+        """The windows of `clip` this slot may choose between: its best few described moments, else the single best stretch (_window)."""
+        taken = self.used.get(clip["file_id"], [])
+        key = (clip["file_id"], round(length * 8), tuple((round(a, 2), round(b, 2)) for a, b in taken))
+        if key not in self._event_windows:
+            self._event_windows[key] = post_steady.event_windows(clip, length, taken, EVENT_CANDIDATES) if EVENT_CANDIDATES > 1 else []
+        return self._event_windows[key] or [self._window(clip, length)]
 
     def _signature(self, clip: dict[str, Any], window: dict[str, Any]) -> np.ndarray | None:
         return post_steady.window_signature(clip.get("thumbs"), window["start"], window["duration"])
@@ -94,19 +105,19 @@ class Picker:
         for clip in self.pool:
             if (exclude and clip["file_id"] in exclude) or clip["duration"] < length + 0.2:
                 continue
-            window = self._window(clip, length)
-            sig = self._signature(clip, window)
-            quality = 1.0 / (1.0 + window["steady"]["score"] / QUALITY_SCALE)
-            looks, previous = self._looks_like(clip, sig)
-            reuse = REUSE_PENALTY if clip["file_id"] in self.used else 0.0
-            overlap = OVERLAP_PENALTY if window.get("overlaps_earlier_use") else 0.0
-            overlap += CUT_PENALTY if window["steady"]["cuts"] else 0.0
-            position = POSITION_WEIGHT * abs(self.order[clip["file_id"]] / self.denominator - target_position)
-            event = EVENT_QUALITY * (window.get("event_punch") or 0) / 10.0
-            score = quality - DIVERSITY_WEIGHT * looks - reuse - overlap - position + event
-            if best is None or score > best["score"]:
-                best = {"clip": clip, "window": window, "sig": sig, "score": score, "similar_to_previous": previous,
-                        "parts": {"quality": round(quality, 3), "looks_like_earlier": round(looks, 3), "reused_clip": bool(reuse), "event": round(event, 3)}}
+            for window in self._candidates(clip, length):
+                sig = self._signature(clip, window)
+                quality = 1.0 / (1.0 + window["steady"]["score"] / QUALITY_SCALE)
+                looks, previous = self._looks_like(clip, sig)
+                reuse = REUSE_PENALTY if clip["file_id"] in self.used else 0.0
+                overlap = OVERLAP_PENALTY if window.get("overlaps_earlier_use") else 0.0
+                overlap += CUT_PENALTY if window["steady"]["cuts"] else 0.0
+                position = POSITION_WEIGHT * abs(self.order[clip["file_id"]] / self.denominator - target_position)
+                event = EVENT_QUALITY * (window.get("event_punch") or 0) / 10.0
+                score = quality - DIVERSITY_WEIGHT * looks - reuse - overlap - position + event
+                if best is None or score > best["score"]:
+                    best = {"clip": clip, "window": window, "sig": sig, "score": score, "similar_to_previous": previous,
+                            "parts": {"quality": round(quality, 3), "looks_like_earlier": round(looks, 3), "reused_clip": bool(reuse), "event": round(event, 3)}}
         return best
 
     def register(self, clip: dict[str, Any], window: dict[str, Any], sig: np.ndarray | None = None) -> float:
