@@ -54,6 +54,7 @@ const smartSelectsButton = document.getElementById("smartSelectsButton");
 const exposureButton = document.getElementById("exposureButton");
 const roughCutButton = document.getElementById("roughCutButton");
 const editButton = document.getElementById("editButton");
+const learnButton = document.getElementById("learnButton");
 const settingsButton = document.getElementById("settingsButton");
 const tokenRow = document.getElementById("tokenRow");
 const tokenInput = document.getElementById("tokenInput");
@@ -2343,6 +2344,65 @@ async function assembleEdit() {
 
 editButton.addEventListener("click", () => {
     assembleEdit().catch((e) => log(`Unhandled error: ${e}`));
+});
+
+/** "Learn From My Edit" (2026-10-20): saves the open project, then asks P Corp OS to read the SAVED file, find the sequence that is open, and compare it with the job's
+ * plan (kept / changed / dropped, and how its moments line up with Claude's described ones). The comparison is logged on the backend so Josh's taste accumulates as
+ * real data. Read-only: it changes nothing in the project except saving it, and nothing in the plan. */
+async function learnFromEdit() {
+    const token = ensureToken();
+    if (!token) {
+        reset();
+        log("Paste your P Corp OS auth token above and click Save first.");
+        return;
+    }
+    learnButton.disabled = true;
+    reset();
+    try {
+        log("Getting the active project…");
+        const project = await ppro.Project.getActiveProject();
+        if (!project) {
+            log("No project is currently open in Premiere.");
+            return;
+        }
+        const job = await findJobForProject(project, token);
+        if (!job) {
+            log('Couldn\'t find a P Corp OS job with a Premiere project matching this one. Run "Prepare POST Project" for this shoot first.');
+            return;
+        }
+        log(`Found #${job.id} "${job.shoot_name}".`);
+
+        let sequenceName = null;
+        try {
+            const active = await project.getActiveSequence();
+            sequenceName = active ? active.name : null;
+        } catch (e) {
+            sequenceName = null;
+        }
+        if (!sequenceName) {
+            log("No sequence is open. Open the sequence you cut (click its tab in the timeline) and try again.");
+            return;
+        }
+        log(`Learning from the sequence "${sequenceName}".`);
+
+        log("Saving the project so P Corp OS reads exactly what you see…");
+        await project.save();
+        await sleep(1500);   // let the file finish landing on the drive before the backend opens it
+
+        log("Comparing your edit with the plan…");
+        const result = await apiPost(`/post/jobs/${job.id}/learn-from-edit`, token, { sequence_name: sequenceName, project_path: project.path });
+        for (const line of result.lines || []) {
+            log(line);
+        }
+    } catch (e) {
+        log(`Failed: ${e.message || e}`);
+    } finally {
+        learnButton.disabled = false;
+    }
+}
+
+learnButton.addEventListener("click", () => {
+    learnFromEdit().catch((e) => log(`Unhandled error: ${e}`));
 });
 
 saveTokenButton.addEventListener("click", () => {

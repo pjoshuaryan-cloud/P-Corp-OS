@@ -3086,6 +3086,30 @@ async def post_job_edit_plan_latest(job_id: int, request: Request, _: None = Dep
     return plan
 
 
+class LearnFromEditRequest(BaseModel):
+    sequence_name: str | None = None  # the sequence he cut (the plugin sends the active one); default: the saved project's sequence with the most footage shots
+    project_path: str | None = None  # the saved .prproj the plugin has open; default: the job's stored Premiere project
+
+
+@app.post("/post/jobs/{job_id}/learn-from-edit")
+async def post_job_learn_from_edit(job_id: int, body: LearnFromEditRequest, _: None = Depends(verify_token)) -> dict:
+    """Reads the edit Josh finished from the SAVED Premiere project, compares it with the job's saved plan (kept / changed / dropped, and how his moments line up with
+    Claude's described ones) and logs it to backend/data/learning/feedback/. Read-only on the project and the plan. Triggered from the plugin's "Learn From My Edit"
+    button (which saves the project first); never Frank-reachable."""
+    from app.post_learn import LearnError, learn_from_edit
+    async with _pooled_postgres_conn() as postgres_conn:
+        job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    try:
+        result = await learn_from_edit(job, body.sequence_name, body.project_path)
+    except LearnError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    async with _pooled_postgres_conn() as postgres_conn:
+        await record_tool_call("post_job_learn_from_edit_ui", {"job_id": job_id, "sequence": result["sequence"], "shots": result["summary"]["his_shots"]}, "ok", postgres_conn)
+    return result
+
+
 @app.post("/post/jobs/{job_id}/edit-preview")
 async def post_job_edit_preview(job_id: int, _: None = Depends(verify_token)) -> dict:
     """Renders the saved plan to a small vertical MP4 with the music, so it can be watched before Premiere."""
