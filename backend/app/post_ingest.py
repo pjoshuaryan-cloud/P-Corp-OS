@@ -50,6 +50,7 @@ from app.post_db import (
 from app.post_media import run_highlight_detection, run_media_analysis, run_proxy_generation
 from app.post_profiles import build_project_structure, compute_destination_root
 from app.post_sources import scan_source_tree
+from app.ssd_guard import DriveNotConnected, require_connected
 
 CHUNK_SIZE = 8 * 1024 * 1024  # 8MB -- frequent enough event-loop yields without excessive syscall overhead
 POST_INGEST_POLL_INTERVAL_SECONDS = 5
@@ -85,6 +86,16 @@ def estimate_space_needed(sizes: Iterable[int], allocation_unit: int) -> int:
     whole allocation unit."""
     unit = max(allocation_unit, 1)
     return sum(-(-size // unit) * unit for size in sizes)
+
+
+def destination_drive_problem(destination_root: str) -> str | None:
+    """A plain explanation when the destination drive isn't plugged in, else None. Without this the free-space check below walks up to the nearest folder that
+    exists and measures the Mac's own disk, and the copy would try to create the missing drive's folders on it."""
+    try:
+        require_connected(destination_root)
+    except DriveNotConnected as exc:
+        return exc.message.replace("Nothing was changed.", "Nothing was copied; press Retry once it's back.")
+    return None
 
 
 def check_destination_space(destination_root: str, pending_files: list[dict]) -> str | None:
@@ -326,7 +337,7 @@ async def run_ingest_job(job: dict, postgres_conn: Any = None) -> None:
 
     if job is not None and job["status"] == "ingesting":
         pending_files = await list_pending_post_job_files(job_id, postgres_conn=postgres_conn)
-        problem = await asyncio.to_thread(check_destination_space, job["destination_root"], pending_files)
+        problem = destination_drive_problem(job["destination_root"]) or await asyncio.to_thread(check_destination_space, job["destination_root"], pending_files)
         if problem:
             await update_post_job_status(
                 job_id, "ingest_failed", from_statuses=("ingesting",), error_message=problem, postgres_conn=postgres_conn
@@ -393,6 +404,10 @@ async def _run_scan_phase(job: dict, postgres_conn: Any) -> None:
     existing_files = await list_post_job_files(job_id, postgres_conn=postgres_conn)
     if existing_files:
         await update_post_job_status(job_id, "ready", from_statuses=("scanning",), postgres_conn=postgres_conn)
+        return
+    missing_drive = destination_drive_problem(job["destination_root"])
+    if missing_drive:
+        await update_post_job_status(job_id, "ingest_failed", error_message=missing_drive, postgres_conn=postgres_conn)
         return
     try:
         destination_root = Path(job["destination_root"])

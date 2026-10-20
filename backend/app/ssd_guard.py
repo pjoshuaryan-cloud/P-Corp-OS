@@ -22,7 +22,10 @@ through here; ffmpeg runs as its own subprocess and can't block the loop in the 
 
 import asyncio
 import functools
+import os
 import time
+import unicodedata
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, TypeVar
 
@@ -43,6 +46,37 @@ class DriveNotResponding(RuntimeError):
     def __init__(self, message: str):
         super().__init__(message)
         self.message = message
+
+
+class DriveNotConnected(DriveNotResponding):
+    """The drive a path lives on isn't plugged in. A subclass, so main.py's existing handler turns it into the same plain 503."""
+
+
+VOLUMES_ROOT = "/Volumes"
+
+
+def require_connected(path: "str | os.PathLike", volumes_root: str = VOLUMES_ROOT) -> Path:
+    """Returns `path` as a Path -- or raises DriveNotConnected when it lives on an external drive that isn't mounted.
+
+    Why (2026-10-20): with the SSD unplugged, planning tried to create "/Volumes/Joshx SSD/..." (macOS refused, so it came back as a raw 500), "load the saved plan"
+    answered "no plan yet" as if the plan were gone, and the ingest free-space check quietly measured the Mac's OWN disk (it walks up to the nearest folder that
+    exists). Anywhere permitted, a missing drive's folders would have been created on the internal disk instead.
+
+    Only looks at the names in /Volumes (a listing of the Mac's own disk), never at the drive itself, so it is safe to call from the event loop even when a
+    mounted drive is stuck. Paths outside /Volumes are left alone."""
+    p = Path(path)
+    parts = p.parts
+    root = Path(volumes_root).parts
+    if len(parts) <= len(root) or parts[: len(root)] != root:
+        return p
+    name = parts[len(root)]
+    try:
+        present = {unicodedata.normalize("NFC", n) for n in os.listdir(volumes_root)}
+    except OSError:
+        return p   # can't tell: don't block on a guess
+    if unicodedata.normalize("NFC", name) in present:
+        return p
+    raise DriveNotConnected(f"The drive \"{name}\" isn't connected. Plug it in, wait for it to appear in Finder, then try again. Nothing was changed.")
 
 
 def _message(writing: bool, waited: float | None) -> str:

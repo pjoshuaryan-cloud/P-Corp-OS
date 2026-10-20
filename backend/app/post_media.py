@@ -56,6 +56,7 @@ from app.post_db import (
 )
 from app.post_profiles import POST_PROFILES
 from app.post_shot_composition import rate_frames
+from app.ssd_guard import require_connected
 
 # Demuxer names ffprobe uses for single-frame raster images -- confirmed
 # live (a real JPEG produced format_name "image2"). Kept as a set since
@@ -1208,7 +1209,7 @@ async def run_proxy_generation(job_id: int, postgres_conn: Any = None) -> None:
     job = await get_post_job(job_id, postgres_conn=postgres_conn)
     if job is None:
         return
-    proxies_folder = Path(job["destination_root"]) / _proxies_subfolder(job["profile"])
+    proxies_folder = require_connected(job["destination_root"]) / _proxies_subfolder(job["profile"])
     pending = await list_queued_post_job_file_proxies(job_id, postgres_conn=postgres_conn)
     limiter = asyncio.Semaphore(PROXY_MAX_CONCURRENT_TRANSCODES)
 

@@ -29,7 +29,7 @@ from typing import Any
 
 from app.post_media import COMPOSE_MIN_START, FFMPEG_PATH
 from app.post_style import StyleProfile
-from app.ssd_guard import DriveNotResponding, on_drive
+from app.ssd_guard import DriveNotResponding, on_drive, require_connected
 
 MIN_SHOT_FRAMES = 3
 HIT_USABLE_PERCENTILE = 55.0  # hits weaker than this are not offered as cut points
@@ -340,11 +340,11 @@ _EDIT_FOLDER = {"joshx": "09_PROJECT FILES", "alpha_mode": "10_PREMIERE"}
 
 
 def edit_dir(job: dict) -> Path:
-    return Path(job["destination_root"]) / _EDIT_FOLDER[job["profile"]] / "edit_plans"
+    return require_connected(job["destination_root"]) / _EDIT_FOLDER[job["profile"]] / "edit_plans"   # raises DriveNotConnected when the drive isn't plugged in
 
 
 def music_dir(job: dict) -> Path:
-    return Path(job["destination_root"]) / _MUSIC_FOLDER[job["profile"]]
+    return require_connected(job["destination_root"]) / _MUSIC_FOLDER[job["profile"]]
 
 
 def _fps_from_job(job: dict) -> float:
@@ -484,7 +484,7 @@ async def plan_for_job(
             plan["captions_path"] = str(out_dir / "captions.srt")
         try:
             gfx, gfx_notes = await on_drive(
-                lambda: build_graphics(plan, job=job, logo_path=graphics_logo, size=graphics_size, out_dir=Path(job["destination_root"]) / _GRAPHICS_FOLDER[job["profile"]] / GRAPHICS_SUBFOLDER,
+                lambda: build_graphics(plan, job=job, logo_path=graphics_logo, size=graphics_size, out_dir=require_connected(job["destination_root"]) / _GRAPHICS_FOLDER[job["profile"]] / GRAPHICS_SUBFOLDER,
                                        tagline=card_tagline, contact_lines=card_contact, burn_captions=burn_captions, style_slugs=style,
                                        logo_bug=(not profile.highlight) if logo_bug is None else logo_bug),
                 writing=True, timeout=240.0)
@@ -670,7 +670,7 @@ _LOGO_EXTENSIONS = (".png", ".svg", ".webp", ".jpg", ".jpeg")
 
 def find_logo(job: dict) -> str | None:
     """The newest logo-like image in the job's graphics folder (PNGs first, since they can be transparent), or None."""
-    folder = Path(job["destination_root"]) / _GRAPHICS_FOLDER[job["profile"]]
+    folder = require_connected(job["destination_root"]) / _GRAPHICS_FOLDER[job["profile"]]
     if not folder.is_dir():
         return None
     files = [p for p in folder.iterdir() if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in _LOGO_EXTENSIONS]
