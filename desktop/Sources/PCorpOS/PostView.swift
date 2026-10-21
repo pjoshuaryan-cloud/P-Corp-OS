@@ -179,11 +179,11 @@ struct PostView: View {
     @State private var draftResolution = postResolutionOptions[0]
     @State private var draftFrameRate = postFrameRateOptions[2]  // defaults to "25", easily changed per shoot
 
-    private var canCreateJob: Bool {
-        !draftShootName.trimmingCharacters(in: .whitespaces).isEmpty
-            && draftSourcePath != nil && draftDestinationPath != nil
-            && (draftProfile != "alpha_mode" || !draftClientName.trimmingCharacters(in: .whitespaces).isEmpty)
+    /// Why Create Job is greyed out (the first thing still missing), or nil when the form is complete. The rule lives in PCorpKit so it can be tested.
+    private var createJobBlocker: String? {
+        PostFormRules.createJobBlocker(shootName: draftShootName, profile: draftProfile, clientName: draftClientName, sourcePath: draftSourcePath, destinationPath: draftDestinationPath)
     }
+    private var canCreateJob: Bool { createJobBlocker == nil }
 
     @ViewBuilder
     private var newShootForm: some View {
@@ -228,6 +228,9 @@ struct PostView: View {
             }
             .buttonStyle(.actionFilled)
             .disabled(!canCreateJob)
+            if let reason = createJobBlocker {
+                Text(reason).font(PCorpFont.body(10.5)).foregroundStyle(theme.statusHot)
+            }
 
             Text("Nothing is copied until you tap Start on the created job -- original footage is never modified or deleted.")
                 .font(PCorpFont.body(10.5))
@@ -378,6 +381,11 @@ private struct PostJobRow: View {
     private var canPlanEdit: Bool {
         (job.status == "ingested" || job.status == "premiere_project_created") && job.mediaAnalyzedAt != nil
     }
+    /// The backend's reason for the shoot's state; if it sent none but the old rule says no, a general one, so a greyed button never goes unexplained.
+    private var planEditBlocker: String? {
+        if let reason = job.pipeline?.planEditBlocker { return reason }
+        return canPlanEdit ? nil : "Plan Edit unlocks once the shoot is copied and analysed."
+    }
     private var canDetectHighlights: Bool {
         (job.status == "ingested" || job.status == "premiere_project_created") && job.mediaAnalyzedAt != nil
     }
@@ -483,12 +491,15 @@ private struct PostJobRow: View {
                     Button(job.highlightsGeneratedAt == nil ? "Detect Highlights" : "Re-detect Highlights", action: onDetectHighlights)
                         .buttonStyle(.bordered)
                 }
-                if canPlanEdit {
-                    Button("Plan Edit", action: onPlanEdit)
-                        .buttonStyle(.bordered)
-                }
+                // Always shown: a button that appears and disappears leaves you guessing. When it can't be pressed yet, the line below says what it is waiting for.
+                Button("Plan Edit", action: onPlanEdit)
+                    .buttonStyle(.bordered)
+                    .disabled(planEditBlocker != nil)
                 Button("Delete", role: .destructive, action: onDelete)
                     .buttonStyle(.bordered)
+            }
+            if let reason = planEditBlocker {
+                Text(reason).font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
             }
         }
         .padding(10)

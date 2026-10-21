@@ -83,6 +83,12 @@ struct PlanEditView: View {
         return nil
     }
 
+    /// Why the Plan Edit / Plan Again button is greyed out, or nil. Shown right under the button, in colour, so it is the first thing you see.
+    private var planBlocker: String? {
+        if job.mediaAnalyzedAt == nil { return "Run Analyze Media on this job first: the plan needs to know what each clip is." }
+        return inputProblem
+    }
+
     private var replacesWorkThatTookTime: Bool {
         guard let plan = options?.savedPlan else { return false }
         return plan.reviewed > 0 || plan.accents != nil
@@ -227,6 +233,10 @@ struct PlanEditView: View {
                 Text(addSoundEffects ? "with sound effects" : "no sound effects")
                     .font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
             }
+            if selectedStyle?.hasAccents == false && plan.accents == nil {
+                Text("This style makes hard cuts only, so there are no accents to add.")
+                    .font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
+            }
             Text("Review Moments opens a page in your browser: for each shot, keep it or pick another moment. It saves as you click, and accents stay valid because the cuts don't move.")
                 .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
             Text(nextStepText)
@@ -280,9 +290,6 @@ struct PlanEditView: View {
             if !isDialogue { clipDescriptionsSection(options) }
             advancedSection(options)
 
-            if let problem = inputProblem {
-                Text(problem).font(PCorpFont.body(11)).foregroundStyle(theme.textTertiary)
-            }
             HStack(spacing: 10) {
                 Button {
                     if replacesWorkThatTookTime { confirmReplace = true } else { Task { await runPlan() } }
@@ -290,11 +297,14 @@ struct PlanEditView: View {
                     Text(options.savedPlan == nil ? "Plan Edit" : "Plan Again")
                 }
                 .buttonStyle(.actionFilled)
-                .disabled(inputProblem != nil || isPlanning || job.mediaAnalyzedAt == nil)
+                .disabled(planBlocker != nil || isPlanning)
                 if isPlanning {
                     ProgressView().controlSize(.small)
                     Text(isDialogue ? "Lining up the cameras by sound and finding the gaps in the dialogue…" : (isStory ? "Planning the story…" : (isHighlight ? "Listening to the song and choosing the shots…" : "Listening to the song and cutting on its hits…"))).font(PCorpFont.body(11)).foregroundStyle(theme.textSecondary)
                 }
+            }
+            if let blocker = planBlocker, !isPlanning {
+                Text(blocker).font(PCorpFont.body(11)).foregroundStyle(theme.statusHot)
             }
             Text("Nothing in Premiere changes until you click Assemble Edit there.")
                 .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
@@ -629,6 +639,9 @@ struct PlanEditView: View {
             Toggle("Add sound effects (stand-ins from your SFX library — swap them in Premiere)", isOn: $addSoundEffects)
                 .disabled(!addAccents || selectedStyle?.hasAccents == false)
                 .font(PCorpFont.body(12))
+            if !addAccents && selectedStyle?.hasAccents != false {
+                Text("Turn on accents to add sound effects.").font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
+            }
             if selectedStyle?.hasAccents == false {
                 Text("This style has no accents — it was hard cuts only.").font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
             } else if let logo = options.logo {

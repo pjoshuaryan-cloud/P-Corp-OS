@@ -39,11 +39,14 @@ public struct PostPipeline: Decodable, Equatable {
     public let headline: String
     public let etaSeconds: Double?
     public let needsAttention: Bool
+    /// Why Plan Edit can't be pressed yet, as a sentence saying what to do; nil when it can (or from an older backend).
+    public let planEditBlocker: String?
 
     enum CodingKeys: String, CodingKey {
         case stages, percent, headline
         case etaSeconds = "eta_seconds"
         case needsAttention = "needs_attention"
+        case planEditBlocker = "plan_edit_blocker"
     }
 }
 
