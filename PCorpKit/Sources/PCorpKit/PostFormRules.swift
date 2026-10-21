@@ -11,4 +11,18 @@ public enum PostFormRules {
         if destinationPath == nil { return "Choose the destination drive (where the copy goes)." }
         return nil
     }
+
+    /// The shoot card's secondary actions that live under "More" (2026-10-21): they are rarely wanted, and proxies in particular are not attached in Premiere by default.
+    public enum MoreAction: Equatable {
+        case generateProxies, proxyStatus, detectHighlights
+    }
+
+    /// Which "More" actions apply to a shoot, in menu order (empty = no More menu at all). The same conditions the buttons always had, moved here so they can be tested.
+    public static func moreActions(status: String, mediaAnalyzed: Bool, proxiesGenerated: Bool, recommendedProxyCount: Int?) -> [MoreAction] {
+        var actions: [MoreAction] = []
+        if status == "ingested" && mediaAnalyzed && (recommendedProxyCount ?? 0) > 0 { actions.append(.generateProxies) }
+        if proxiesGenerated { actions.append(.proxyStatus) }
+        if (status == "ingested" || status == "premiere_project_created") && mediaAnalyzed { actions.append(.detectHighlights) }
+        return actions
+    }
 }

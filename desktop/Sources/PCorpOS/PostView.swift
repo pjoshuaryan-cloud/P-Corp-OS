@@ -386,8 +386,8 @@ private struct PostJobRow: View {
         if let reason = job.pipeline?.planEditBlocker { return reason }
         return canPlanEdit ? nil : "Plan Edit unlocks once the shoot is copied and analysed."
     }
-    private var canDetectHighlights: Bool {
-        (job.status == "ingested" || job.status == "premiere_project_created") && job.mediaAnalyzedAt != nil
+    private var moreActions: [PostFormRules.MoreAction] {
+        PostFormRules.moreActions(status: job.status, mediaAnalyzed: job.mediaAnalyzedAt != nil, proxiesGenerated: job.proxiesGeneratedAt != nil, recommendedProxyCount: recommendedProxyCount)
     }
 
     var body: some View {
@@ -410,11 +410,6 @@ private struct PostJobRow: View {
                     let later = [job.proxiesGeneratedAt != nil ? "Proxies generated." : nil, job.highlightsGeneratedAt != nil ? "Highlights detected." : nil].compactMap { $0 }
                     if !later.isEmpty {
                         Text(later.joined(separator: " ")).font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
-                    }
-                    if let count = recommendedProxyCount, count > 0 {
-                        Text("\(count) file(s) would benefit from proxies.")
-                            .font(PCorpFont.body(10.5))
-                            .foregroundStyle(theme.textSecondary)
                     }
                 }
             } else if job.status == "analyzing_media" {
@@ -479,17 +474,25 @@ private struct PostJobRow: View {
                     Button("View Report", action: onViewReport)
                         .buttonStyle(.bordered)
                 }
-                if canCheckForProxies && (recommendedProxyCount ?? 0) > 0 {
-                    Button(job.proxiesGeneratedAt == nil ? "Generate Proxies" : "Regenerate Proxies", action: onGenerateProxies)
-                        .buttonStyle(.bordered)
-                }
-                if job.proxiesGeneratedAt != nil {
-                    Button("Proxy Status", action: onViewProxyStatus)
-                        .buttonStyle(.bordered)
-                }
-                if canDetectHighlights {
-                    Button(job.highlightsGeneratedAt == nil ? "Detect Highlights" : "Re-detect Highlights", action: onDetectHighlights)
-                        .buttonStyle(.bordered)
+                // Proxies and highlight detection are rarely wanted (proxies aren't attached in Premiere by default), so they live under More.
+                if !moreActions.isEmpty {
+                    Menu {
+                        ForEach(moreActions, id: \.self) { action in
+                            switch action {
+                            case .generateProxies:
+                                Button((job.proxiesGeneratedAt == nil ? "Generate Proxies" : "Regenerate Proxies") + (recommendedProxyCount.map { " (\($0) would benefit)" } ?? ""), action: onGenerateProxies)
+                            case .proxyStatus:
+                                Button("Proxy Status", action: onViewProxyStatus)
+                            case .detectHighlights:
+                                Button(job.highlightsGeneratedAt == nil ? "Detect Highlights" : "Re-detect Highlights", action: onDetectHighlights)
+                            }
+                        }
+                    } label: {
+                        Text("More")
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.bordered)
+                    .fixedSize()
                 }
                 // Always shown: a button that appears and disappears leaves you guessing. When it can't be pressed yet, the line below says what it is waiting for.
                 Button("Plan Edit", action: onPlanEdit)
