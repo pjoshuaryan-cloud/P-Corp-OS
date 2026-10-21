@@ -48,6 +48,7 @@ from app.post_db import (
     update_post_job_status,
 )
 from app.post_media import run_highlight_detection, run_media_analysis, run_proxy_generation
+from app.post_pipeline import notify
 from app.post_profiles import build_project_structure, compute_destination_root
 from app.post_sources import scan_source_tree
 from app.ssd_guard import DriveNotConnected, require_connected
@@ -63,6 +64,7 @@ FINAL_FLUSH_RETRY_SECONDS = 1.0
 # Free-space pre-flight (2026-10-06): a job that can't fit used to copy until
 # the drive filled up and then die halfway, leaving a full drive. Now it fails
 # before the first byte is copied.
+AUTO_ANALYSE_AFTER_INGEST = True  # a clean ingest goes straight on to (free, local) media analysis; False restores the old manual "Analyze Media" gate
 FREE_SPACE_RESERVE_BYTES = 1_000_000_000  # headroom that must remain free after the job (adjustable)
 MIN_ASSUMED_ALLOCATION_UNIT = 4096
 # macOS reports a 1MiB "fragment size" for exFAT, which is the preferred I/O size
@@ -323,6 +325,8 @@ async def run_ingest_job(job: dict, postgres_conn: Any = None) -> None:
     (e.g. after a crash during the verify pass) re-enters at the right
     phase rather than always redoing copy -- a job already in
     'verifying' has nothing left to copy, only to re-check."""
+    pipeline_finished = False
+    ran_pipeline = job["status"] in ("scanning", "ready", "ingesting", "verifying")   # only these are the start-to-ready flow a notification is about
     job_id = job["id"]
 
     if job["status"] in ("created", "ready", "scanning"):
@@ -352,6 +356,21 @@ async def run_ingest_job(job: dict, postgres_conn: Any = None) -> None:
 
     if job is not None and job["status"] == "verifying":
         await _run_verify_phase(job_id, postgres_conn)
+        # One shoot, one flow (2026-10-20): analysis is free and local, so a clean ingest goes straight on to it instead of waiting for a click. (Describe clips and
+        # proxies stay deliberate: Describe costs credits, and proxies are rarely wanted.) Only a job that was running THIS pipeline gets this -- a job already
+        # ingested never enters this function -- and the Analyze Media button still re-runs it.
+        job = await _reload(job_id, postgres_conn)
+        if AUTO_ANALYSE_AFTER_INGEST and job is not None and job["status"] == "ingested" and not job.get("media_analyzed_at"):
+            if await update_post_job_status(job_id, "analyzing_media", from_statuses=("ingested",), postgres_conn=postgres_conn):
+                try:
+                    await run_media_analysis(job_id, postgres_conn)
+                    pipeline_finished = True
+                except Exception as exc:   # the copy is safe and verified; only the analysis stopped, and the button still runs it again
+                    print(f"[post_ingest] automatic analysis of job {job_id} stopped: {exc!r}")
+                    notify(f"POST: {job['shoot_name']} is copied", "The files are safe, but the analysis stopped. Press Analyze Media to run it again.")
+                finally:
+                    await update_post_job_status(job_id, "ingested", from_statuses=("analyzing_media",), postgres_conn=postgres_conn)
+                job = await _reload(job_id, postgres_conn)
 
     # Phase 2 -- deliberately NOT chained onto the scan/ingest/verify
     # sequence above (confirmed with Josh: media analysis is its own
@@ -386,6 +405,13 @@ async def run_ingest_job(job: dict, postgres_conn: Any = None) -> None:
         await run_highlight_detection(job_id, postgres_conn)
         restore_status = "premiere_project_created" if job.get("premiere_project_path") else "ingested"
         await update_post_job_status(job_id, restore_status, from_statuses=("analyzing_color",), postgres_conn=postgres_conn)
+
+    if ran_pipeline:
+        final = await _reload(job_id, postgres_conn)
+        if final is not None and final["status"] == "ingest_failed":
+            notify(f"POST: {final['shoot_name']} needs attention", (final.get("error_message") or "The copy stopped.")[:200])
+        elif pipeline_finished and final is not None:
+            notify(f"POST: {final['shoot_name']} is ready", f"{final['total_files']} files copied, checked and analysed.")
 
 
 async def _reload(job_id: int, postgres_conn: Any):

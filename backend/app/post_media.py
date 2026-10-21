@@ -56,6 +56,7 @@ from app.post_db import (
 )
 from app.post_profiles import POST_PROFILES
 from app.post_shot_composition import rate_frames
+from app.post_pipeline import ANALYSIS_PROGRESS
 from app.ssd_guard import require_connected
 
 # Demuxer names ffprobe uses for single-frame raster images -- confirmed
@@ -914,16 +915,24 @@ async def run_media_analysis(job_id: int, postgres_conn: Any = None) -> None:
     # once (it used to launch one per file simultaneously).
     limiter = asyncio.Semaphore(ANALYSIS_MAX_CONCURRENT_PROCESSES)
 
+    progress = [0]
+    ANALYSIS_PROGRESS[job_id] = (0, len(files))   # the shoot screen's "40 of 342 clips"
+
     async def analyze(f: dict) -> dict:
         probe = await probe_file(f["destination_path"], limiter=limiter)
         exposure = await probe_exposure(
             f["destination_path"], probe["media_type"], probe.get("duration_seconds"), limiter=limiter
         )
+        progress[0] += 1
+        ANALYSIS_PROGRESS[job_id] = (progress[0], len(files))
         return {"file_id": f["id"], **probe, **exposure}
 
-    rows = await asyncio.gather(*(analyze(f) for f in files))
-    await create_post_job_file_metadata_batch(rows, postgres_conn=postgres_conn)
-    await update_post_job_media_analyzed(job_id, postgres_conn=postgres_conn)
+    try:
+        rows = await asyncio.gather(*(analyze(f) for f in files))
+        await create_post_job_file_metadata_batch(rows, postgres_conn=postgres_conn)
+        await update_post_job_media_analyzed(job_id, postgres_conn=postgres_conn)
+    finally:
+        ANALYSIS_PROGRESS.pop(job_id, None)
 
 
 async def compute_media_report(job_id: int, postgres_conn: Any = None) -> dict:

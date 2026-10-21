@@ -572,6 +572,11 @@ async def get_post_job_progress(job_id: int, postgres_conn: Any = None) -> dict 
     if job is None:
         return None
     job["estimated_remaining_seconds"] = _estimate_remaining_seconds(job)
+    from app.post_pipeline import ANALYSIS_PROGRESS, describe_pipeline
+    files_verified = None
+    if job["status"] == "verifying":   # the job row has no "verified" counter; the files table does
+        files_verified = sum(1 for f in await list_post_job_files(job_id, postgres_conn=postgres_conn) if f["status"] == "verified")
+    job["pipeline"] = describe_pipeline(job, files_verified=files_verified, analysis=ANALYSIS_PROGRESS.get(job_id))
     return job
 
 
