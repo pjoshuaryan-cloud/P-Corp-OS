@@ -55,6 +55,9 @@ const exposureButton = document.getElementById("exposureButton");
 const roughCutButton = document.getElementById("roughCutButton");
 const editButton = document.getElementById("editButton");
 const learnButton = document.getElementById("learnButton");
+const buildButton = document.getElementById("buildButton");
+const moreToggle = document.getElementById("moreToggle");
+const morePanel = document.getElementById("morePanel");
 const settingsButton = document.getElementById("settingsButton");
 const tokenRow = document.getElementById("tokenRow");
 const tokenInput = document.getElementById("tokenInput");
@@ -101,8 +104,11 @@ function log(line) {
     output.textContent += "\n" + line;
 }
 
+// While "Build My Edit" chains Prepare and Assemble, the second step must not wipe what the first one said.
+let keepLog = false;
+
 function reset() {
-    output.textContent = "";
+    if (!keepLog) output.textContent = "";
 }
 
 function getStoredToken() {
@@ -188,7 +194,7 @@ async function run() {
     if (!token) {
         reset();
         log("Paste your P Corp OS auth token above and click Save first.");
-        return;
+        return null;
     }
 
     runButton.disabled = true;
@@ -201,7 +207,7 @@ async function run() {
         if (readyJobs.length === 0) {
             log("No jobs are ready. A job needs to be ingested AND have media analysis run (Analyze Media in P Corp OS) first.");
             runButton.disabled = false;
-            return;
+            return null;
         }
         const job = readyJobs[0];
         log(`Found #${job.id} "${job.shoot_name}" (${job.profile}).`);
@@ -378,8 +384,10 @@ async function run() {
         await apiPost(`/post/jobs/${job.id}/premiere-project-created`, token, { project_path: projectPath });
 
         log(`Done. "${prep.shoot_name}" is ready in Premiere.`);
+        return { job, projectPath };
     } catch (e) {
         log(`Failed: ${e.message || e}`);
+        return null;
     } finally {
         runButton.disabled = false;
     }
@@ -989,14 +997,16 @@ async function findItemsByName(project, wantedNames) {
 /** Which job is this open project? Exact stored path first, then the same
  * file name, then -- if exactly one job has a Premiere project -- that one
  * (a recovered or re-saved project has a different path). */
-async function findJobForProject(project, token) {
+async function findJobForProject(project, token, { lenient = true } = {}) {
     const { jobs } = await apiGet("/post/jobs?status=premiere_project_created", token);
     let job = jobs.find((j) => j.premiere_project_path === project.path);
     if (!job) {
         const baseName = String(project.path || "").split("/").pop();
         job = jobs.find((j) => String(j.premiere_project_path || "").split("/").pop() === baseName);
     }
-    if (!job && jobs.length === 1) {
+    // The last guess ("the only prepared job must be this project") is fine for a button you pressed on purpose, but not for deciding whether the open project
+    // is a prepared one at all: another project open in Premiere would be taken for it.
+    if (!job && lenient && jobs.length === 1) {
         job = jobs[0];
         log("Note: this project's file path differs from the one P Corp OS stored (recovered or re-saved?) -- using the only job that has a Premiere project.");
     }
@@ -2403,6 +2413,73 @@ async function learnFromEdit() {
 
 learnButton.addEventListener("click", () => {
     learnFromEdit().catch((e) => log(`Unhandled error: ${e}`));
+});
+
+/** "Build My Edit" (2026-10-20): the one button for getting from a plan to a sequence. If the open project is already a P Corp project it builds the edit from the job's
+ * plan; if not, it sets up the project for the next ready shoot first (only when that shoot already has a plan, so no project is made for nothing) and then builds.
+ * Everything else the plugin can do stays under "More". It chains the same two actions the buttons below it run, so it can't do anything they can't. */
+async function buildMyEdit() {
+    const token = ensureToken();
+    if (!token) {
+        reset();
+        log("Paste your P Corp OS auth token above and click Save first.");
+        return;
+    }
+    buildButton.disabled = true;
+    reset();
+    keepLog = true;
+    try {
+        const project = await ppro.Project.getActiveProject();
+        const prepared = project ? await findJobForProject(project, token, { lenient: false }) : null;
+        if (prepared) {
+            log(`This is the Premiere project for "${prepared.shoot_name}".`);
+            await assembleEdit();
+            return;
+        }
+
+        const { jobs } = await apiGet("/post/jobs?status=ingested", token);
+        const candidate = jobs.find((j) => j.media_analyzed_at);
+        if (!candidate) {
+            log("Nothing is ready to build. A shoot needs to be copied and analysed in P Corp OS first (that now happens on its own after Start), then planned with Plan Edit.");
+            return;
+        }
+        try {
+            await apiGet(`/post/jobs/${candidate.id}/edit-plan`, token);
+        } catch (e) {
+            log(`"${candidate.shoot_name}" has no edit plan yet. In P Corp OS, open the shoot and press Plan Edit, then click Build My Edit again.`);
+            return;
+        }
+        log(`Setting up the Premiere project for "${candidate.shoot_name}" first…`);
+        const made = await run();
+        if (!made) return;   // run() has already said why
+        const active = await ppro.Project.getActiveProject();
+        if (!active || active.path !== made.projectPath) {
+            log(`The project is ready at ${made.projectPath}. Open it in Premiere (File > Open Recent) and click Build My Edit again to build the edit.`);
+            return;
+        }
+        log("Now building the edit…");
+        await assembleEdit();
+    } catch (e) {
+        log(`Failed: ${e.message || e}`);
+    } finally {
+        keepLog = false;
+        buildButton.disabled = false;
+    }
+}
+
+buildButton.addEventListener("click", () => {
+    buildMyEdit().catch((e) => log(`Unhandled error: ${e}`));
+});
+
+/** Everything except Build and Learn lives behind "More", closed by default. */
+function setMoreOpen(open) {
+    if (open) morePanel.classList.remove("hidden");
+    else morePanel.classList.add("hidden");
+    moreToggle.textContent = open ? "Less ▴" : "More ▾";
+}
+
+moreToggle.addEventListener("click", () => {
+    setMoreOpen(morePanel.classList.contains("hidden"));
 });
 
 saveTokenButton.addEventListener("click", () => {

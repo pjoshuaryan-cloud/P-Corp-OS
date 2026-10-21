@@ -64,37 +64,42 @@
         <button id="saveTokenButton">Save</button>
     </div>
 
-    <div class="label">Set up the project</div>
+    <div class="label">Your edit</div>
     <div class="group">
-        <button id="runButton">Prepare POST Project</button>
-        <button id="transcribeButton" class="secondary">Transcribe Dialogue</button>
-        <button id="smartSelectsButton" class="secondary">Suggest Smart Selects</button>
-        <button id="exposureButton" class="secondary">Apply Starting Exposure</button>
-    </div>
-
-    <div class="label">Build a cut (always a new sequence)</div>
-    <div class="group">
-        <button id="editButton">Assemble Edit</button>
-        <button id="roughCutButton" class="secondary">Assemble Rough Cut</button>
-    </div>
-
-    <div class="label">Teach it your taste</div>
-    <div class="group">
+        <button id="buildButton">Build My Edit</button>
         <button id="learnButton" class="secondary">Learn From My Edit</button>
-    </div>
-
-    <div class="label">Settings</div>
-    <div class="group">
-        <button id="settingsButton" class="secondary">Change Token</button>
     </div>
 
     <pre id="output">Ready.</pre>
 
-    <h4>What the buttons do</h4>
-    <p class="hint"><strong>Prepare POST Project</strong> prepares the next ingested-and-analyzed POST job as a real Premiere project: bins, imported media, and an empty starting sequence. <strong>Transcribe Dialogue</strong> runs Premiere's own native transcription on clips with audio. <strong>Suggest Smart Selects</strong> adds real markers at clean, complete-sentence soundbites found in an already-transcribed clip -- suggestions only, never an automated cut. <strong>Apply Starting Exposure</strong> is the one action that sets a real grading value: a mild, capped Lumetri Exposure nudge (max &plusmn;1 stop) on clips flagged over/underexposed -- a rough starting point only, always meant to be reviewed and adjusted.</p>
-    <p class="hint"><strong>Assemble Edit</strong> builds a cut to music from an edit plan. In P Corp OS, plan the edit first (pick a style from your reference edits and a music track): it chooses the cut points on the song's hits in that style's rhythm and writes a plan. This button then builds it in a NEW sequence: video-only hard cuts at exact frames, with the music cut on its own audio track. It adds no effects, flashes or sound effects. Which moment of each clip is used is a suggestion, not a validated choice -- review it, and watch the preview file first if you can. It never changes an existing sequence. Save your project first.</p>
-    <p class="hint"><strong>Assemble Rough Cut</strong> builds a real sequence -- it actually places clips on a timeline, not just markers. It reads the clip order from your own timeline (the sequence named after the shoot), takes each clip's single suggested moment from P Corp OS (a composition pick -- it has NOT been shown to match your taste, so expect to swap some) and cuts them together in that order in a new sequence with the same format as yours. The pieces it creates are filed in a "Rough Cut Pieces" bin. It is a mechanical assembly, not a finished edit: always review and re-edit it. It always creates a new, separately-named sequence and never changes an existing one. Save your project first.</p>
-    <p class="hint"><strong>Learn From My Edit</strong> saves your project, then P Corp OS reads the sequence that is open and compares it with the plan it made: which planned shots you kept, which you used at a different moment, which clips you dropped or added, and how your moments line up with Claude's described ones. It changes nothing in your project or the plan (apart from saving), and logs the result so the system can learn from it. Open the sequence you cut first; click it again whenever you finish another edit.</p>
+    <p class="hint"><strong>Build My Edit</strong> turns the plan you made in P Corp OS into a new sequence. If this project is already set up for the shoot it builds straight away; if not, it sets up the Premiere project for the next ready shoot first (only when that shoot has a plan), then builds. It always makes a new, separately named sequence and never changes one you already have. Save your project first.</p>
+    <p class="hint"><strong>Learn From My Edit</strong> saves your project, then P Corp OS reads the sequence that is open and compares it with its plan: what you kept, changed or dropped, and how your moments line up with Claude's. It changes nothing in your project or the plan (apart from saving) and logs the result so the system can learn from it. Open the sequence you cut first, and click it once for each finished edit.</p>
+
+    <div class="group">
+        <button id="moreToggle" class="secondary">More ▾</button>
+        <button id="settingsButton" class="secondary">Change Token</button>
+    </div>
+
+    <div id="morePanel" class="hidden">
+        <div class="label">Set up the project</div>
+        <div class="group">
+            <button id="runButton">Prepare POST Project</button>
+            <button id="transcribeButton" class="secondary">Transcribe Dialogue</button>
+            <button id="smartSelectsButton" class="secondary">Suggest Smart Selects</button>
+            <button id="exposureButton" class="secondary">Apply Starting Exposure</button>
+        </div>
+
+        <div class="label">Build a cut (always a new sequence)</div>
+        <div class="group">
+            <button id="editButton">Assemble Edit</button>
+            <button id="roughCutButton" class="secondary">Assemble Rough Cut</button>
+        </div>
+
+        <h4>What these buttons do</h4>
+        <p class="hint"><strong>Prepare POST Project</strong> prepares the next ingested-and-analyzed POST job as a real Premiere project: bins, imported media, and an empty starting sequence. <strong>Transcribe Dialogue</strong> runs Premiere's own native transcription on clips with audio. <strong>Suggest Smart Selects</strong> adds real markers at clean, complete-sentence soundbites found in an already-transcribed clip -- suggestions only, never an automated cut. <strong>Apply Starting Exposure</strong> is the one action that sets a real grading value: a mild, capped Lumetri Exposure nudge (max &plusmn;1 stop) on clips flagged over/underexposed -- a rough starting point only, always meant to be reviewed and adjusted.</p>
+        <p class="hint"><strong>Assemble Edit</strong> builds a cut to music from an edit plan. In P Corp OS, plan the edit first (pick a style from your reference edits and a music track): it chooses the cut points on the song's hits in that style's rhythm and writes a plan. This button then builds it in a NEW sequence: video-only hard cuts at exact frames, with the music cut on its own audio track. It adds no effects, flashes or sound effects. Which moment of each clip is used is a suggestion, not a validated choice -- review it, and watch the preview file first if you can. It never changes an existing sequence. Save your project first.</p>
+        <p class="hint"><strong>Assemble Rough Cut</strong> builds a real sequence -- it actually places clips on a timeline, not just markers. It reads the clip order from your own timeline (the sequence named after the shoot), takes each clip's single suggested moment from P Corp OS (a composition pick -- it has NOT been shown to match your taste, so expect to swap some) and cuts them together in that order in a new sequence with the same format as yours. The pieces it creates are filed in a "Rough Cut Pieces" bin. It is a mechanical assembly, not a finished edit: always review and re-edit it. It always creates a new, separately-named sequence and never changes an existing one. Save your project first.</p>
+    </div>
     <script src="./index.js"></script>
 </body>
 </html>
