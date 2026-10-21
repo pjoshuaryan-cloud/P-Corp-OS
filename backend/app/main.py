@@ -3260,7 +3260,7 @@ async def post_job_edit_review(job_id: int, request: Request, _: None = Depends(
 
 @app.get("/post/jobs/{job_id}/edit-review/clip")
 async def post_job_edit_review_clip(
-    job_id: int, file_id: int, start: float, seconds: float, request: Request, _: None = Depends(verify_token)
+    job_id: int, file_id: int, start: float, seconds: float, request: Request, speed: float = 1.0, _: None = Depends(verify_token)
 ) -> FileResponse:
     """A small silent looping preview of one candidate moment (rendered once, then cached on disk). The source
     file comes from the job's own records, never from the request."""
@@ -3274,8 +3274,10 @@ async def post_job_edit_review_clip(
     if row is None or not await on_drive(Path(row["destination_path"]).exists):
         raise HTTPException(status_code=404, detail=f"File {file_id} isn't available on job {job_id}")
     start, seconds = max(0.0, min(start, 7200.0)), max(0.1, min(seconds, 5.0))
+    if speed not in (1.0, 0.5):
+        raise HTTPException(status_code=400, detail="speed has to be 1.0 (normal) or 0.5 (half speed)")
     try:
-        out = await render_review_clip(row["destination_path"], start, seconds, clip_cache_path(edit_dir(job), file_id, start, seconds))
+        out = await render_review_clip(row["destination_path"], start, seconds, clip_cache_path(edit_dir(job), file_id, start, seconds, speed), speed)
     except ReviewError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return FileResponse(out, media_type="video/mp4")
@@ -3310,7 +3312,35 @@ async def post_job_edit_review_choice(job_id: int, body: ReviewChoiceRequest, re
         await on_drive(_save_review_choice, job, job_id, plan, body.action, outcome, writing=True)
         review = build_review(plan, clips)
     await record_tool_call("post_job_edit_review_ui", {"job_id": job_id, "slot": body.slot_index, "action": body.action}, "ok", postgres_conn)
-    return {"slot": next(s for s in review["slots"] if s["index"] == body.slot_index), "approved": review["approved"], "total": review["total"], "swapped": review["swapped"]}
+    return {"slot": next(s for s in review["slots"] if s["index"] == body.slot_index), "approved": review["approved"], "total": review["total"], "swapped": review["swapped"], "slowed": review["slowed"]}
+
+
+class ReviewSpeedRequest(BaseModel):
+    slot_index: int
+    speed: float  # 1.0 = normal, 0.5 = half speed (only for 48+ fps clips)
+
+
+def _save_review_speed(job: dict, job_id: int, plan: dict, outcome: dict) -> None:
+    from app.post_edit_plan import edit_dir, plan_to_json
+    from app.post_review import log_speed_record
+    (edit_dir(job) / "edit_plan_latest.json").write_text(plan_to_json(plan))
+    log_speed_record(edit_dir(job), job_id, plan, outcome)
+
+
+@app.post("/post/jobs/{job_id}/edit-review/speed")
+async def post_job_edit_review_speed(job_id: int, body: ReviewSpeedRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Slows one shot to half speed, or puts it back to normal (see post_review.set_speed). The shot keeps its slot; the plan is saved and the decision logged."""
+    from app.post_review import ReviewError, build_review, set_speed
+    async with _EDIT_REVIEW_LOCK:
+        job, plan, clips, postgres_conn = await _review_context(job_id, request)
+        try:
+            outcome = set_speed(plan, clips, body.slot_index, body.speed)
+        except ReviewError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await on_drive(_save_review_speed, job, job_id, plan, outcome, writing=True)
+        review = build_review(plan, clips)
+    await record_tool_call("post_job_edit_review_speed_ui", {"job_id": job_id, "slot": body.slot_index, "speed": body.speed}, "ok", postgres_conn)
+    return {"slot": next(s for s in review["slots"] if s["index"] == body.slot_index), "approved": review["approved"], "total": review["total"], "swapped": review["swapped"], "slowed": review["slowed"]}
 
 
 @app.get("/post/jobs/{job_id}/edit-preview/file")

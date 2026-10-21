@@ -159,17 +159,28 @@ def analyse(plan: dict[str, Any], shots: list[Any], moments_by_name: dict[str, d
         final_rows.append(row)
 
     slot_rows, kept, changed, dropped = [], 0, 0, 0
+    plan_slowed, plan_slowed_kept, plan_slowed_you_slowed = 0, 0, 0
     for p in plan["shots"]:
         key = _name(p.get("path") or p.get("name"))
         mine = his_by_clip.get(key, [])
+        planned_speed = float(p.get("speed") or 1.0)
+        matched = [m for m in mine if _overlap(m.src_in, m.src_out, p["source_in"], p["source_out"]) / max(m.src_out - m.src_in, 1e-6) >= SAME_MOMENT_SHARE]
         if not mine:
             state = "dropped"; dropped += 1
-        elif any(_overlap(m.src_in, m.src_out, p["source_in"], p["source_out"]) / max(m.src_out - m.src_in, 1e-6) >= SAME_MOMENT_SHARE for m in mine):
+        elif matched:
             state = "kept"; kept += 1
         else:
             state = "different_moment"; changed += 1
-        slot_rows.append({"index": p.get("index"), "name": p.get("name"), "source_in": p.get("source_in"), "source_out": p.get("source_out"), "state": state,
-                          "moment": p.get("moment_source", "")[:60]})
+        slot = {"index": p.get("index"), "name": p.get("name"), "source_in": p.get("source_in"), "source_out": p.get("source_out"), "state": state, "moment": p.get("moment_source", "")[:60]}
+        if planned_speed != 1.0:   # the plan slowed this shot (set in review): did he keep the shot, and did he slow it too?
+            slot["speed"] = planned_speed
+            plan_slowed += 1
+            if state == "kept":
+                plan_slowed_kept += 1
+                his_speed = next((m.speed for m in matched if m.speed is not None), None)
+                slot["he_slowed"] = bool(his_speed is not None and his_speed < 1.0 - RETIMED_TOLERANCE)
+                plan_slowed_you_slowed += slot["he_slowed"]
+        slot_rows.append(slot)
 
     n = len(shots)
     same = sum(1 for r in final_rows if r["status"] == "same_moment")
@@ -188,6 +199,9 @@ def analyse(plan: dict[str, Any], shots: list[Any], moments_by_name: dict[str, d
         "chance_at_a_described_moment": round(chance_event / checked, 3) if checked else None, "chance_at_the_first_choice": round(chance_best / checked, 3) if checked else None,
         "median_shot_seconds": round(statistics.median(s.length for s in shots), 3), "retimed_shots": retimed,
     }
+    if plan_slowed:   # only when the plan slowed something, so a plan without slow motion reports exactly what it did before
+        summary.update({"plan_slowed_shots": plan_slowed, "plan_slowed_shots_kept": plan_slowed_kept, "plan_slowed_shots_you_slowed": plan_slowed_you_slowed,
+                        "you_slowed_shots": sum(1 for v in speeds if v < 1.0 - RETIMED_TOLERANCE)})
     warnings = []
     if his_clips and shared / len(his_clips) < MIN_SHARED_CLIPS:
         warnings.append("Few of your clips are in the saved plan. If you planned again after building this sequence, the comparison is against the wrong plan.")
@@ -211,6 +225,9 @@ def lines(sequence: str, plan_style: str | None, result: dict[str, Any]) -> list
     else:
         out.append("None of the clips in your edit have been described (Describe clips), so there's nothing to compare your moments with yet.")
     out.append(f"Your pace: median shot {s['median_shot_seconds']:.2f} s; {s['retimed_shots']} of {s['his_shots']} shots sped up or slowed down.")
+    if s.get("plan_slowed_shots"):
+        out.append(f"Slow motion: the plan slowed {s['plan_slowed_shots']} shots; you kept {s['plan_slowed_shots_kept']} of them and slowed {s['plan_slowed_shots_you_slowed']} of those. "
+                   f"You slowed {s['you_slowed_shots']} shots in all.")
     return out[:1] + result["warnings"] + out[1:]   # what to be careful about comes before the numbers
 
 

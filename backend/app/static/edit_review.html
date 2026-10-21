@@ -48,7 +48,11 @@
   .alt .lab { font-size: 10.5px; padding: 0 5px 5px; color: var(--muted); line-height: 1.25; }
   .alt:hover { border-color: var(--accent); }
   .alt.busy { opacity: .5; pointer-events: none; }
-  .actions { display: flex; gap: 8px; align-items: center; }
+  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button.slow { color: var(--muted); }
+  button.slow.on { color: var(--accent-ink); background: var(--reveal); border-color: var(--reveal); font-weight: 650; }
+  .pill.slowpill { color: var(--reveal); }
+  .slownote { color: var(--muted); font-size: 11.5px; }
   .empty { color: var(--muted); font-size: 12.5px; }
   dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 20px; max-width: 460px; }
   dialog::backdrop { background: rgba(0,0,0,.6); }
@@ -74,7 +78,7 @@
 </header>
 <div id="banner" hidden></div>
 <main>
-  <p class="sub" style="max-width:760px;margin:0 0 16px">Each card is one shot of the plan, at a fixed point on the music. Click a smaller clip to use that moment instead, or <b>Keep this</b> if the current one is right. Hover a small clip to play it. Every choice is saved immediately, and what you pass over is recorded too, so future edits learn your taste.</p>
+  <p class="sub" style="max-width:760px;margin:0 0 16px">Each card is one shot of the plan, at a fixed point on the music. Click a smaller clip to use that moment instead, or <b>Keep this</b> if the current one is right. On high frame rate clips you can also turn on <b>Slow motion</b> (half speed): the shot keeps its place on the music and shows half as much of the clip. Hover a small clip to play it. Every choice is saved immediately, and what you pass over is recorded too, so future edits learn your taste.</p>
   <div class="grid" id="grid"></div>
 </main>
 
@@ -115,10 +119,10 @@ async function api(path, options) {
   if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch (e) {} throw new Error(d); }
   return res;
 }
-const clipKey = (c) => `${c.file_id}_${c.source_in}_${c.seconds}`;
+const clipKey = (c) => `${c.file_id}_${c.source_in}_${c.seconds}_${c.speed || 1}`;
 async function clipUrl(c) {
   const k = clipKey(c); if (blobCache.has(k)) return blobCache.get(k);
-  const res = await api(`/post/jobs/${jobId}/edit-review/clip?file_id=${c.file_id}&start=${c.source_in}&seconds=${c.seconds}`);
+  const res = await api(`/post/jobs/${jobId}/edit-review/clip?file_id=${c.file_id}&start=${c.source_in}&seconds=${c.seconds}&speed=${c.speed || 1}`);
   const url = URL.createObjectURL(await res.blob()); blobCache.set(k, url); return url;
 }
 const seen = new IntersectionObserver((entries) => { for (const e of entries) if (e.isIntersecting) { seen.unobserve(e.target); e.target._load && e.target._load(); } }, { rootMargin: "300px" });
@@ -141,6 +145,7 @@ function cardFor(slot) {
   const head = document.createElement("div"); head.className = "head";
   head.innerHTML = `<span class="n">Shot ${slot.index}</span><span class="meta">${slot.seconds.toFixed(2)} s · cut at ${slot.cut_at_seconds.toFixed(2)} s</span>`;
   if (slot.role !== "body") { const p = document.createElement("span"); p.className = "pill role"; p.textContent = slot.role === "opener" ? "opener" : "closing card"; head.appendChild(p); }
+  if (slot.speed && slot.speed < 1) { const p = document.createElement("span"); p.className = "pill slowpill"; p.textContent = "slow motion"; head.appendChild(p); }
   if (slot.approved) { const p = document.createElement("span"); p.className = "pill ok"; p.textContent = "reviewed"; head.appendChild(p); }
   card.appendChild(head);
   const main = document.createElement("div"); main.className = "main"; main.appendChild(video(slot.current, true));
@@ -152,6 +157,15 @@ function cardFor(slot) {
   const actions = document.createElement("div"); actions.className = "actions";
   const keep = document.createElement("button"); keep.className = slot.approved ? "" : "primary"; keep.textContent = slot.approved ? "Keep this (again)" : "Keep this";
   keep.onclick = () => choose(slot, slot.current, "approve", card); actions.appendChild(keep); info.appendChild(actions);
+  const slowed = slot.speed && slot.speed < 1;
+  if (slot.can_slow) {
+    const slow = document.createElement("button"); slow.className = "slow" + (slowed ? " on" : ""); slow.dataset.role = "slow";
+    slow.textContent = slowed ? "Slow motion: half speed" : "Slow motion: off";
+    slow.title = slowed ? "Click to play this shot at normal speed again" : "Play this shot at half speed. The clip is high frame rate, so it stays smooth. The shot keeps its place on the music; it shows half as much of the clip.";
+    slow.onclick = () => setSpeed(slot, slowed ? 1 : 0.5, card, slow); actions.appendChild(slow);
+  } else if (slot.slow_note) {
+    const n = document.createElement("div"); n.className = "slownote"; n.textContent = "No slow motion: " + slot.slow_note.replace(/^This clip is /, "this clip is ").replace(/^Slow motion needs /, "needs "); info.appendChild(n);
+  }
   main.appendChild(info); card.appendChild(main);
   const t = document.createElement("div"); t.className = "alts-title"; t.textContent = slot.alternatives.length ? "Or use one of these" : ""; card.appendChild(t);
   const alts = document.createElement("div"); alts.className = "alts";
@@ -168,7 +182,7 @@ function render() {
   const grid = $("grid"); const only = $("onlyOpen").checked; grid.textContent = "";
   for (const slot of review.slots) if (!only || !slot.approved) grid.appendChild(cardFor(slot));
   $("title").textContent = `Edit review — ${review.job.shoot_name}`;
-  $("sub").textContent = `${review.slots.length} shots · ${review.duration_seconds} s · style: ${review.style} · ${review.swapped} swapped`;
+  $("sub").textContent = `${review.slots.length} shots · ${review.duration_seconds} s · style: ${review.style} · ${review.swapped} swapped${review.slowed ? ` · ${review.slowed} slowed` : ""}`;
   $("progressText").textContent = `${review.approved} of ${review.total} shots reviewed`;
   $("fill").style.width = `${Math.round((review.approved / review.total) * 100)}%`;
 }
@@ -176,13 +190,25 @@ async function choose(slot, cand, action, card, btn) {
   if (btn) btn.classList.add("busy");
   try {
     const res = await (await api(`/post/jobs/${jobId}/edit-review/choice`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slot_index: slot.index, file_id: cand.file_id, source_in: cand.source_in, action }) })).json();
-    const i = review.slots.findIndex((s) => s.index === slot.index); review.slots[i] = res.slot; review.approved = res.approved; review.swapped = res.swapped;
+    const i = review.slots.findIndex((s) => s.index === slot.index); review.slots[i] = res.slot; review.approved = res.approved; review.swapped = res.swapped; review.slowed = res.slowed;
     const fresh = cardFor(res.slot); card.replaceWith(fresh); $("progressText").textContent = `${review.approved} of ${review.total} shots reviewed`; $("fill").style.width = `${Math.round((review.approved / review.total) * 100)}%`;
-    $("sub").textContent = `${review.slots.length} shots · ${review.duration_seconds} s · style: ${review.style} · ${review.swapped} swapped`;
+    $("sub").textContent = `${review.slots.length} shots · ${review.duration_seconds} s · style: ${review.style} · ${review.swapped} swapped${review.slowed ? ` · ${review.slowed} slowed` : ""}`;
     if ($("onlyOpen").checked) fresh.remove();
     banner("ok", `Saved -- shot ${slot.index} ${action === "swap" ? "swapped" : "kept"}. ${review.approved} of ${review.total} reviewed, ${review.swapped} swapped. (Connected to ${location.host})`);
     toast(action === "swap" ? `Shot ${slot.index}: moment swapped` : `Shot ${slot.index}: kept`);
   } catch (e) { toast(e.message, true); if (btn) btn.classList.remove("busy"); }
+}
+async function setSpeed(slot, speed, card, btn) {
+  btn.disabled = true;
+  try {
+    const res = await (await api(`/post/jobs/${jobId}/edit-review/speed`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slot_index: slot.index, speed }) })).json();
+    const i = review.slots.findIndex((s) => s.index === slot.index); review.slots[i] = res.slot; review.approved = res.approved; review.swapped = res.swapped; review.slowed = res.slowed;
+    const fresh = cardFor(res.slot); card.replaceWith(fresh); $("progressText").textContent = `${review.approved} of ${review.total} shots reviewed`; $("fill").style.width = `${Math.round((review.approved / review.total) * 100)}%`;
+    $("sub").textContent = `${review.slots.length} shots · ${review.duration_seconds} s · style: ${review.style} · ${review.swapped} swapped${review.slowed ? ` · ${review.slowed} slowed` : ""}`;
+    if ($("onlyOpen").checked) fresh.remove();
+    banner("ok", `Saved -- shot ${slot.index} ${speed < 1 ? "slowed to half speed" : "back to normal speed"}. ${review.slowed} slowed, ${review.approved} of ${review.total} reviewed. Rebuild the Premiere edit to see it. (Connected to ${location.host})`);
+    toast(speed < 1 ? `Shot ${slot.index}: slow motion on` : `Shot ${slot.index}: normal speed`);
+  } catch (e) { toast(e.message, true); btn.disabled = false; }
 }
 $("onlyOpen").onchange = () => review && render();
 $("tokenBtn").onclick = () => askToken().then(load);

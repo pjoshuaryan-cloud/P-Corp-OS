@@ -297,11 +297,13 @@ async def render_preview(plan: dict[str, Any], music_wav: str, out_path: str, wo
 
     async def one(shot: dict) -> Path:
         out = work / f"shot_{shot['index']:03d}.mp4"
+        speed = float(shot.get("speed") or 1.0)
+        slow = f"setpts={1.0 / speed:.4f}*PTS," if speed != 1.0 else ""   # a slowed shot has a half-length source window: stretch it back to the slot, then resample to the edit's rate
         async with sem:
             proc = await asyncio.create_subprocess_exec(
                 FFMPEG_PATH, "-hide_banner", "-v", "error", "-y", "-ss", f"{shot['source_in']:.3f}", "-i", shot["path"],
                 "-frames:v", str(shot["duration_frames"]), "-an",
-                "-vf", f"scale={PREVIEW_WIDTH}:{PREVIEW_HEIGHT}:force_original_aspect_ratio=decrease,pad={PREVIEW_WIDTH}:{PREVIEW_HEIGHT}:(ow-iw)/2:(oh-ih)/2,fps={fps},format=yuv420p",
+                "-vf", f"{slow}scale={PREVIEW_WIDTH}:{PREVIEW_HEIGHT}:force_original_aspect_ratio=decrease,pad={PREVIEW_WIDTH}:{PREVIEW_HEIGHT}:(ow-iw)/2:(oh-ih)/2,fps={fps},format=yuv420p",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-g", str(int(fps)), str(out),
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
             )
@@ -369,7 +371,8 @@ async def load_job_clips(job_id: int, postgres_conn: Any = None, order_names: li
         h = highlights.get(f["id"])
         picks = json.loads(h["candidates_json"] or "[]") if h and h["status"] == "complete" else []
         clips.append({"file_id": f["id"], "name": f["relative_path"].split("/")[-1], "path": f["destination_path"],
-                      "duration": float(m["duration_seconds"]), "created": m.get("creation_time") or "", "picks": picks})
+                      "duration": float(m["duration_seconds"]), "created": m.get("creation_time") or "", "picks": picks,
+                      "fps": float(m["frame_rate"]) if m.get("frame_rate") else None})   # slow motion is only offered on 48+ fps clips
     if order_names:
         rank = {n: i for i, n in enumerate(order_names)}
         clips = sorted((c for c in clips if c["name"] in rank), key=lambda c: rank[c["name"]])
@@ -565,7 +568,7 @@ def bring_song_into_project(song: str, music_folder: Path) -> str:
 def _shots_fingerprint(plan: dict[str, Any]) -> str:
     """Identifies what a preview shows (which moments, where, with which music). Accents don't change it: the preview
     doesn't render them."""
-    key = [[s["file_id"], s["source_in"], s["start_frame"], s["duration_frames"]] for s in plan["shots"]] + [plan["music"].get("cut_path"), plan["music"].get("in_seconds")]
+    key = [[s["file_id"], s["source_in"], s["start_frame"], s["duration_frames"]] + ([s["speed"]] if s.get("speed") else []) for s in plan["shots"]] + [plan["music"].get("cut_path"), plan["music"].get("in_seconds")]   # speed only when set, so a plan without any keeps its old fingerprint
     return hashlib.sha1(json.dumps(key).encode()).hexdigest()[:16]
 
 

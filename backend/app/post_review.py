@@ -31,6 +31,13 @@ SAME_CLIP_MIN_GAP_SECONDS = 2.0  # another event from the SAME clip must be a cl
 OTHER_CLIP_ALTERNATIVES = 2
 _CLIP_RENDER_LIMIT = asyncio.Semaphore(3)
 
+# Slow motion (2026-10-21). A slowed shot keeps its slot on the timeline (cut timing never changes), so at speed 0.5 it shows HALF as much source: the window
+# [source_in, source_out) is duration * speed long, centred where the real-time window was. The real-time window is kept in `speed_original` so the toggle can be undone exactly.
+# Only 48+ fps clips qualify (he slows 41% of those and 1.5% of 24-31 fps clips: half-speed footage needs twice the frames to stay smooth).
+SLOW_SPEED = 0.5
+SLOW_SPEEDS = (1.0, SLOW_SPEED)
+SLOW_MIN_CLIP_SLACK_SECONDS = 0.05
+
 
 class ReviewError(RuntimeError):
     pass
@@ -51,6 +58,28 @@ def _picker_alternatives(plan: dict[str, Any], clips: list[dict]) -> dict[int, l
             _ALTERNATIVES_CACHE.pop(next(iter(_ALTERNATIVES_CACHE)))
         _ALTERNATIVES_CACHE[key] = post_pick.alternatives(plan, clips)
     return _ALTERNATIVES_CACHE[key]
+
+
+def shot_speed(shot: dict[str, Any]) -> float:
+    """1.0 = real time. Plans made before this existed have no `speed`."""
+    return float(shot.get("speed") or 1.0)
+
+
+def slow_check(plan: dict[str, Any], clip: dict | None, shot: dict[str, Any]) -> tuple[bool, str | None]:
+    """(can this shot be slowed to half speed, why not in plain words -- None when the shot isn't one that is ever offered slow motion)."""
+    if plan.get("mode") == "multicam":
+        return False, None   # an interview's timing is set by the dialogue
+    if shot.get("role") != "body":
+        return False, None   # opening and closing cards
+    fps = (clip or {}).get("fps")
+    if not fps:
+        return False, "Slow motion needs the clip's frame rate: run Analyze Media again."
+    if fps * SLOW_SPEED < plan["fps"] - 0.5:
+        return False, f"This clip is {fps:g} fps; at half speed it would play at {fps * SLOW_SPEED:g} fps in a {plan['fps']:g} fps edit and stutter."
+    window = shot["duration_frames"] / plan["fps"]
+    if window * SLOW_SPEED > clip["duration"] - SLOW_MIN_CLIP_SLACK_SECONDS:
+        return False, "This clip is too short to cut a slow-motion shot from."
+    return True, None
 
 
 def candidate_id(file_id: int, start: float) -> str:
@@ -108,9 +137,10 @@ def _build_multicam_review(plan: dict[str, Any], clips: list[dict]) -> dict[str,
         slots.append({
             "index": shot["index"], "role": shot["role"], "seconds": round(length, 2), "duration_frames": shot["duration_frames"],
             "cut_at_seconds": round(shot["start_frame"] / fps, 2), "approved": shot["index"] in approved, "current": current, "alternatives": alts,
+            "speed": 1.0, "can_slow": False, "slow_note": None,
         })
     return {"fps": fps, "style": plan.get("style"), "duration_seconds": plan["duration_seconds"], "slots": slots,
-            "approved": len(approved), "total": len(slots), "swapped": sum(1 for s in slots if str(s["index"]) in originals)}
+            "approved": len(approved), "total": len(slots), "swapped": sum(1 for s in slots if str(s["index"]) in originals), "slowed": 0}
 
 
 def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
@@ -131,7 +161,11 @@ def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
     for shot in plan["shots"]:
         length = shot["duration_frames"] / fps
         clip = by_id.get(shot["file_id"])
-        current = _describe(clip, shot["file_id"], shot["name"], shot["source_in"], length, "current")
+        speed = shot_speed(shot)
+        current = _describe(clip, shot["file_id"], shot["name"], shot["source_in"], length * speed, "current")   # a slowed shot shows less source: window = slot length * speed
+        if speed != 1.0:
+            current["speed"] = speed
+        can_slow, slow_note = slow_check(plan, clip, shot)
         if steady_plan:
             current["what"] = shot["moment_source"]
             current["tag"] = "picked in review" if shot["moment_source"].startswith("picked in review") else ("static" if (shot.get("steady") or {}).get("static") else "steady")
@@ -177,9 +211,11 @@ def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
             "index": shot["index"], "role": shot["role"], "seconds": round(length, 2), "duration_frames": shot["duration_frames"],
             "cut_at_seconds": round(shot["start_frame"] / fps, 2), "approved": shot["index"] in approved,
             "current": current, "alternatives": alts,
+            "speed": speed, "can_slow": can_slow or speed != 1.0, "slow_note": slow_note,
         })
     return {"fps": fps, "style": plan.get("style"), "duration_seconds": plan["duration_seconds"], "slots": slots,
-            "approved": len(approved), "total": len(slots), "swapped": sum(1 for s in slots if str(s["index"]) in originals)}
+            "approved": len(approved), "total": len(slots), "swapped": sum(1 for s in slots if str(s["index"]) in originals),
+            "slowed": sum(1 for s in slots if s["speed"] != 1.0)}
 
 
 def apply_choice(plan: dict[str, Any], clips: list[dict], slot_index: int, file_id: int, source_in: float, action: str) -> dict[str, Any]:
@@ -206,13 +242,27 @@ def apply_choice(plan: dict[str, Any], clips: list[dict], slot_index: int, file_
     review = plan.setdefault("review", {"approved": [], "original": {}})
     if action == "swap" and chosen["id"] != slot["current"]["id"]:
         clip = next(c for c in clips if c["file_id"] == chosen["file_id"])
-        review["original"].setdefault(str(slot_index), {"file_id": shot["file_id"], "name": shot["name"], "path": shot["path"], "source_in": shot["source_in"], "moment_source": shot["moment_source"]})
+        slowed = shot_speed(shot) != 1.0
+        real_time_in = (shot.get("speed_original") or {}).get("source_in", shot["source_in"])   # "the original" alternative is the real-time window, not the slowed one
+        review["original"].setdefault(str(slot_index), {"file_id": shot["file_id"], "name": shot["name"], "path": shot["path"], "source_in": real_time_in, "moment_source": shot["moment_source"]})
         fps = plan["fps"]
+        window = shot["duration_frames"] / fps
+        speed = shot_speed(shot)
+        if slowed and not slow_check(plan, clip, shot)[0]:   # the new clip can't be slowed (25 fps, too short): the shot goes back to real time
+            speed = 1.0
+        src_len = window * speed
+        new_in = round(min(max(chosen["source_in"] + (window - src_len) / 2.0, 0.0), max(clip["duration"] - src_len - 0.04, 0.0)), 3) if speed != 1.0 else chosen["source_in"]
         shot.update({
-            "file_id": clip["file_id"], "name": clip["name"], "path": clip["path"], "source_in": chosen["source_in"],
-            "source_out": round(chosen["source_in"] + shot["duration_frames"] / fps, 3),
+            "file_id": clip["file_id"], "name": clip["name"], "path": clip["path"], "source_in": new_in,
+            "source_out": round(new_in + src_len, 3),
             "moment_source": f"picked in review" + (f" -- event ({chosen['kind']}): {chosen['what']}" if chosen["kind"] else ""),
         })
+        if speed != 1.0:
+            shot["speed"] = speed
+            shot["speed_original"] = {"source_in": chosen["source_in"], "source_out": round(chosen["source_in"] + window, 3)}
+        else:
+            shot.pop("speed", None)
+            shot.pop("speed_original", None)
         # A story plan's steadiness / slow zoom were measured on the OLD moment. The new one hasn't been measured, so it gets no zoom
         # (a moving shot with a zoom on top is exactly what the zoom rule exists to prevent).
         shot.pop("steady", None)
@@ -226,6 +276,55 @@ def apply_choice(plan: dict[str, Any], clips: list[dict], slot_index: int, file_
     if slot_index not in review["approved"]:
         review["approved"].append(slot_index)  # choosing a moment also counts as having reviewed the slot
     return {"chosen": chosen, "shown": [slot["current"], *slot["alternatives"]], "slot": {k: slot[k] for k in ("index", "role", "seconds", "cut_at_seconds")}}
+
+
+def set_speed(plan: dict[str, Any], clips: list[dict], slot_index: int, speed: float) -> dict[str, Any]:
+    """Slows a shot to half speed (`speed` 0.5) or puts it back to real time (1.0). The shot keeps its slot, so the cut timing is untouched; at half speed it shows half as much
+    source, centred where the real-time window was, and the real-time window is remembered so going back is exact. Slow zooms on that shot are dropped (their timing assumed real time).
+    Counts as having reviewed the slot. Mutates `plan`; returns what the log wants."""
+    if speed not in SLOW_SPEEDS:
+        raise ReviewError(f"Speed has to be 1.0 (normal) or {SLOW_SPEED} (half speed); got {speed!r}.")
+    shot = next((s for s in plan["shots"] if s["index"] == slot_index), None)
+    if shot is None:
+        raise ReviewError(f"The plan has no shot {slot_index}.")
+    clip = next((c for c in clips if c["file_id"] == shot["file_id"]), None)
+    was = shot_speed(shot)
+    window = shot["duration_frames"] / plan["fps"]
+    if speed != was:
+        if speed != 1.0:
+            ok, why = slow_check(plan, clip, shot)
+            if not ok:
+                raise ReviewError(why or "That shot can't be slowed down.")
+            real_in = shot["source_in"]
+            src_len = window * speed
+            new_in = round(min(max(real_in + (window - src_len) / 2.0, 0.0), max(clip["duration"] - src_len - 0.04, 0.0)), 3)
+            shot["speed_original"] = {"source_in": real_in, "source_out": round(real_in + window, 3)}
+            shot.update({"source_in": new_in, "source_out": round(new_in + src_len, 3), "speed": speed})
+            zooms = (plan.get("zooms") or {}).get("items")
+            if zooms:
+                plan["zooms"]["items"] = [z for z in zooms if z["shot_index"] != slot_index]
+        else:
+            original = shot.pop("speed_original", None)
+            real_in = original["source_in"] if original else shot["source_in"]
+            shot.update({"source_in": real_in, "source_out": round(real_in + window, 3)})
+            shot.pop("speed", None)
+    review = plan.setdefault("review", {"approved": [], "original": {}})
+    if slot_index not in review["approved"]:
+        review["approved"].append(slot_index)   # deciding about a shot's speed also counts as having reviewed it
+    event = next((e for e in (clip or {}).get("events") or [] if abs((e["t"] - EVENT_LEAD_SECONDS) - shot["source_in"]) <= 0.75), None)
+    return {"slot": {"index": slot_index, "role": shot["role"], "seconds": round(window, 3), "cut_at_seconds": round(shot["start_frame"] / plan["fps"], 2)}, "speed": speed, "was": was,
+            "clip": {"name": shot["name"], "fps": (clip or {}).get("fps"), "seconds": (clip or {}).get("duration")},
+            "moment": {"kind": event["kind"] if event else None, "punch": event["punch"] if event else None, "what": event["what"] if event else None},
+            "clip_position": round(shot["source_in"] / clip["duration"], 2) if clip and clip.get("duration") else None}
+
+
+def log_speed_record(edit_dir: Path, job_id: int, plan: dict[str, Any], outcome: dict[str, Any]) -> None:
+    """One JSON line per slow-motion decision, in its own file (review_speed_log.jsonl): which shot, how long its slot is, the clip's frame rate, and what the moment is.
+    Separate from review_log.jsonl on purpose: that one holds moment swaps and the taste tools read it expecting a pick and what it passed over."""
+    edit_dir.mkdir(parents=True, exist_ok=True)
+    record = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "job_id": job_id, "style": plan.get("style"), "action": "slow" if outcome["speed"] != 1.0 else "normal", **outcome}
+    with open(edit_dir / "review_speed_log.jsonl", "a") as fh:
+        fh.write(json.dumps(record) + "\n")
 
 
 def log_record(edit_dir: Path, job_id: int, plan: dict[str, Any], action: str, outcome: dict[str, Any]) -> None:
@@ -242,12 +341,13 @@ def log_record(edit_dir: Path, job_id: int, plan: dict[str, Any], action: str, o
         fh.write(json.dumps(record) + "\n")
 
 
-def clip_cache_path(edit_dir: Path, file_id: int, start: float, seconds: float) -> Path:
-    return edit_dir / "review_clips" / f"{file_id}_{int(round(start * 1000))}_{int(round(seconds * 1000))}.mp4"
+def clip_cache_path(edit_dir: Path, file_id: int, start: float, seconds: float, speed: float = 1.0) -> Path:
+    tag = "" if speed == 1.0 else f"_s{int(round(speed * 100))}"
+    return edit_dir / "review_clips" / f"{file_id}_{int(round(start * 1000))}_{int(round(seconds * 1000))}{tag}.mp4"
 
 
-async def render_review_clip(src: str, start: float, seconds: float, out: Path) -> Path:
-    """A small silent looping preview of one candidate (at least MIN_PREVIEW_SECONDS long). Cached on disk."""
+async def render_review_clip(src: str, start: float, seconds: float, out: Path, speed: float = 1.0) -> Path:
+    """A small silent looping preview of one candidate (at least MIN_PREVIEW_SECONDS long). Cached on disk. `seconds` is SOURCE time; at speed 0.5 it plays twice as long."""
     if await on_drive(out.exists):
         return out
     await on_drive(_make_parent, out, writing=True)
@@ -255,9 +355,11 @@ async def render_review_clip(src: str, start: float, seconds: float, out: Path) 
     async with _CLIP_RENDER_LIMIT:
         if await on_drive(out.exists):
             return out
+        slow = f"setpts={1.0 / speed:.4f}*PTS," if speed != 1.0 else ""   # stretch the timestamps first, then resample to 25 fps: a 50 fps source keeps every frame
+        # -t here is an OUTPUT limit (it comes after -i), i.e. measured AFTER the slowdown: `seconds` of source is seconds / speed long on screen
         proc = await asyncio.create_subprocess_exec(
-            FFMPEG_PATH, "-hide_banner", "-v", "error", "-y", "-ss", f"{max(start, 0):.3f}", "-i", src, "-t", f"{max(seconds, MIN_PREVIEW_SECONDS):.3f}", "-an",
-            "-vf", "scale=-2:360,fps=25,format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-movflags", "+faststart", str(tmp),
+            FFMPEG_PATH, "-hide_banner", "-v", "error", "-y", "-ss", f"{max(start, 0):.3f}", "-i", src, "-t", f"{max(seconds / speed, MIN_PREVIEW_SECONDS):.3f}", "-an",
+            "-vf", f"{slow}scale=-2:360,fps=25,format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-movflags", "+faststart", str(tmp),
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
         )
         _, err = await proc.communicate()
