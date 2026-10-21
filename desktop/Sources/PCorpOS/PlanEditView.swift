@@ -41,6 +41,11 @@ struct PlanEditView: View {
     @State private var cardContact = ""
     @State private var cameraIds: [Int] = []
     @State private var dialogueFileId: Int?
+    @State private var showAdvanced = false
+    @State private var showHistory = false
+    @State private var restoreCandidate: PlanHistoryEntry?
+    @State private var renameCandidate: PlanHistoryEntry?
+    @State private var renameText = ""
 
     init(job: PostJob, onBack: @escaping () -> Void) {
         self.job = job
@@ -70,7 +75,7 @@ struct PlanEditView: View {
     }
 
     private var inputProblem: String? {
-        if styleSlug == nil { return "Choose a style." }
+        if styleSlug == nil { return "Choose the kind of edit." }
         if isDialogue && cameraIds.count < 2 { return "Pick at least two clips that filmed the same interview." }
         if !isDialogue && songPath == nil { return "Choose a song." }
         if !startAutomatic && (parsedStart == nil || (parsedStart ?? 0) < 0) { return "The song start must be a number of seconds (0 or more)." }
@@ -110,6 +115,7 @@ struct PlanEditView: View {
                             }
                             if let plan = options.savedPlan {
                                 currentPlanCard(plan, options: options).id("current-plan")
+                                if client.planHistory.count > 1 { planHistorySection }
                                 Divider().overlay(theme.divider)
                             }
                             planForm(options)
@@ -132,8 +138,33 @@ struct PlanEditView: View {
             Button("Plan Again", role: .destructive) { Task { await runPlan() } }
         } message: {
             if let plan = options?.savedPlan {
-                Text("The current plan has \(plan.reviewed) reviewed moment(s)\(plan.accents != nil ? " and accents" : ""). Planning again starts a fresh plan, and Premiere will build from that one. The current plan is kept as a backup file in the job's edit_plans folder.")
+                Text("The current plan has \(plan.reviewed) reviewed moment(s)\(plan.accents != nil ? " and accents" : ""). Planning again starts a fresh plan, and Premiere will build from that one. The current plan is kept under Earlier plans, so you can bring it back with one click.")
             }
+        }
+        .alert("Bring this plan back?", isPresented: Binding(get: { restoreCandidate != nil }, set: { if !$0 { restoreCandidate = nil } })) {
+            Button("Cancel", role: .cancel) { restoreCandidate = nil }
+            Button("Restore") {
+                guard let entry = restoreCandidate else { return }
+                restoreCandidate = nil
+                Task {
+                    if let message = await client.restorePlan(file: entry.file) { toastCenter.show(message, style: .success) }
+                }
+            }
+        } message: {
+            if let entry = restoreCandidate {
+                Text("\(entry.title): \(entry.subtitle). It becomes the plan Premiere builds from. The plan it replaces is kept under Earlier plans, and nothing is deleted.")
+            }
+        }
+        .alert("Name this plan", isPresented: Binding(get: { renameCandidate != nil }, set: { if !$0 { renameCandidate = nil } })) {
+            TextField("A name you will recognise", text: $renameText)
+            Button("Cancel", role: .cancel) { renameCandidate = nil }
+            Button("Save") {
+                guard let entry = renameCandidate else { return }
+                renameCandidate = nil
+                Task { await client.renamePlan(file: entry.file, label: renameText) }
+            }
+        } message: {
+            Text("Leave it empty to go back to the automatic description.")
         }
     }
 
@@ -163,7 +194,7 @@ struct PlanEditView: View {
                 Spacer()
                 Text("planned \(Self.friendlyTime(plan.plannedAt))").font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
             }
-            Text("\(plan.shots) shots · \(String(format: "%.1f", plan.seconds)) s · \(options.styles.first { $0.slug == plan.style }?.title ?? plan.style ?? "style")")
+            Text("\(plan.shots) shots · \(String(format: "%.1f", plan.seconds)) s · \(options.styles.first { $0.slug == plan.style }?.displayTitle ?? plan.style ?? "style")")
                 .font(PCorpFont.body(13)).foregroundStyle(theme.textPrimary)
             planLine("Song", "\(plan.musicName)" + (plan.tempoBpm.map { " · \(String(format: "%.0f", $0)) bpm" } ?? "") + (plan.musicInSeconds.map { " · starts at \(String(format: "%.1f", $0)) s" } ?? ""))
             planLine("Opening clip", plan.openingClip?.name ?? "none")
@@ -238,14 +269,16 @@ struct PlanEditView: View {
     @ViewBuilder
     private func planForm(_ options: EditOptions) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            sectionLabel(options.savedPlan == nil ? "PLAN AN EDIT" : "PLAN AGAIN")
+            sectionLabel(options.savedPlan == nil ? "MAKE MY EDIT" : "MAKE A NEW PLAN")
 
+            // The three questions: what kind of edit, which song, how long. A narrated story also needs its script and a talking head its cameras,
+            // because those cannot be planned without. Everything else is under Advanced, with sensible defaults.
             styleSection(options)
-            if isStory { scriptSection; brandSection(options) } else if isHighlight { brandSection(options) }
-            songSection(options)
+            if isStory { scriptSection }
+            if isDialogue { camerasSection(options) } else { songPickerSection(options) }
             lengthSection
-            if isDialogue { camerasSection(options) } else { openingSection(options) }
-            accentsSection(options)
+            if !isDialogue { clipDescriptionsSection(options) }
+            advancedSection(options)
 
             if let problem = inputProblem {
                 Text(problem).font(PCorpFont.body(11)).foregroundStyle(theme.textTertiary)
@@ -260,11 +293,73 @@ struct PlanEditView: View {
                 .disabled(inputProblem != nil || isPlanning || job.mediaAnalyzedAt == nil)
                 if isPlanning {
                     ProgressView().controlSize(.small)
-                    Text(isDialogue ? "Lining up the cameras by sound and finding the gaps in the dialogue…" : (isStory ? "Planning the story…" : (isHighlight ? "Listening to the song and finding the steadiest shots…" : "Listening to the song and cutting on its hits…"))).font(PCorpFont.body(11)).foregroundStyle(theme.textSecondary)
+                    Text(isDialogue ? "Lining up the cameras by sound and finding the gaps in the dialogue…" : (isStory ? "Planning the story…" : (isHighlight ? "Listening to the song and choosing the shots…" : "Listening to the song and cutting on its hits…"))).font(PCorpFont.body(11)).foregroundStyle(theme.textSecondary)
                 }
             }
             Text("Nothing in Premiere changes until you click Assemble Edit there.")
                 .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+        }
+    }
+
+    /// Everything that has a sensible default: where in the song to start, the brand cards, the opening clip, accents and sound effects. Closed until you want it.
+    @ViewBuilder
+    private func advancedSection(_ options: EditOptions) -> some View {
+        DisclosureGroup(isExpanded: $showAdvanced) {
+            VStack(alignment: .leading, spacing: 14) {
+                startSection(options)
+                if isStory || isHighlight { brandSection(options) }
+                if !isDialogue { openingSection(options) }
+                accentsSection(options)
+            }
+            .padding(.top, 10)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Advanced options").font(PCorpFont.body(12.5)).fontWeight(.semibold).foregroundStyle(theme.textPrimary)
+                Text(isDialogue ? "Where to start, accents" : "Where to start in the song, an opening clip, brand cards, accents and sound effects")
+                    .font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
+            }
+        }
+    }
+
+    // MARK: - Plan history
+
+    /// The job's earlier plans in plain words, each one click from coming back. Nothing is ever deleted: restoring keeps the plan it replaces.
+    @ViewBuilder
+    private var planHistorySection: some View {
+        DisclosureGroup(isExpanded: $showHistory) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(client.planHistory.filter { !$0.current }) { entry in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(entry.title).font(PCorpFont.body(12.5)).fontWeight(.semibold).foregroundStyle(theme.textPrimary)
+                            Spacer()
+                            Text(Self.friendlyTime(entry.savedAt)).font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
+                        }
+                        Text(entry.subtitle).font(PCorpFont.body(11)).foregroundStyle(theme.textSecondary)
+                        if entry.label != nil {
+                            Text(entry.reviewed > 0 || entry.accents ? "\(entry.reviewed > 0 ? "Reviewed" : "Fresh")\(entry.swapped > 0 ? " (\(entry.swapped) swapped)" : "")\(entry.accents ? " + accents" : "")" : "Fresh plan")
+                                .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                        }
+                        if let savedAs = entry.savedAs {
+                            Text("Saved as \(savedAs)").font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                        }
+                        HStack(spacing: 8) {
+                            Button("Restore") { restoreCandidate = entry }.buttonStyle(.bordered)
+                            Button("Name it") { renameText = entry.label ?? ""; renameCandidate = entry }.buttonStyle(.borderless).font(PCorpFont.body(10.5))
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .cardSurface(radius: 8)
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Earlier plans (\(client.planHistory.count - 1))").font(PCorpFont.body(12.5)).fontWeight(.semibold).foregroundStyle(theme.textPrimary)
+                Text("Planning again never loses a plan: bring any earlier one back with one click.")
+                    .font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
+            }
         }
     }
 
@@ -333,7 +428,7 @@ struct PlanEditView: View {
     @ViewBuilder
     private func styleSection(_ options: EditOptions) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            fieldLabel("Style")
+            fieldLabel("What kind of edit?")
             if options.styles.isEmpty {
                 Text("No saved styles yet. A style comes from a finished edit saved as a reference.")
                     .font(PCorpFont.body(11)).foregroundStyle(theme.textTertiary)
@@ -344,11 +439,10 @@ struct PlanEditView: View {
                         Image(systemName: styleSlug == style.slug ? "largecircle.fill.circle" : "circle")
                             .foregroundStyle(styleSlug == style.slug ? theme.accent : theme.textTertiary)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(style.title).font(PCorpFont.body(12.5)).foregroundStyle(theme.textPrimary)
-                            if !style.description.isEmpty {
-                                Text(style.description).font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
+                            Text(style.displayTitle).font(PCorpFont.body(12.5)).foregroundStyle(theme.textPrimary)
+                            if !style.displayBlurb.isEmpty {
+                                Text(style.displayBlurb).font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
                             }
-                            Text(styleFacts(style)).font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
                         }
                         Spacer(minLength: 0)
                     }
@@ -362,11 +456,12 @@ struct PlanEditView: View {
 
     }
 
+    /// The song itself (not for a talking head, which has no song).
     @ViewBuilder
-    private func songSection(_ options: EditOptions) -> some View {
+    private func songPickerSection(_ options: EditOptions) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            fieldLabel(isDialogue ? "Start" : "Song")
-            if !isDialogue { HStack(spacing: 8) {
+            fieldLabel("Which song?")
+            HStack(spacing: 8) {
                 Menu {
                     ForEach(options.music.files) { file in
                         Button("\(file.name) (\(String(format: "%.1f", file.megabytes)) MB)") { songPath = file.path }
@@ -383,8 +478,16 @@ struct PlanEditView: View {
                 }
             }
             if options.music.files.isEmpty && songPath == nil {
-                Text("This job's music folder has no songs yet.").font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
-            } }
+                Text("Plan Edit needs a song. This job's music folder has none yet: choose one above.").font(PCorpFont.body(10.5)).foregroundStyle(theme.statusHot)
+            }
+        }
+    }
+
+    /// Where in the song (or in the dialogue camera's clip) the edit starts. Automatic is right for almost everything.
+    @ViewBuilder
+    private func startSection(_ options: EditOptions) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            fieldLabel(isDialogue ? "Start" : "Where to start in the song")
             HStack(spacing: 8) {
                 Picker("Start", selection: $startAutomatic) {
                     Text("Automatic").tag(true)
@@ -399,13 +502,12 @@ struct PlanEditView: View {
                     .font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
             }
         }
-
     }
 
     @ViewBuilder
     private var lengthSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            fieldLabel("Length")
+            fieldLabel("How long?")
             HStack(spacing: 8) {
                 Picker("Length", selection: $lengthAutomatic) {
                     Text("Style's own").tag(true)
@@ -441,7 +543,6 @@ struct PlanEditView: View {
             }
             Text("Opens the edit and comes back as the closing card, where the logo goes. Optional.")
                 .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
-            describeClipsBlock(options)
             TextField("Search by file name or what the clip shows", text: $clipFilter)
                 .textFieldStyle(.plain)
                 .font(PCorpFont.body(12))
@@ -542,6 +643,16 @@ struct PlanEditView: View {
 
     // MARK: - Describing clips (costs real credits)
 
+    /// In the main form (it used to sit under the opening-clip grid): describing every clip once is what lets the plan cut on each clip's best moment, and it is the one
+    /// step in planning that spends credits, so it stays an explicit, confirmed click with the cost shown.
+    @ViewBuilder
+    private func clipDescriptionsSection(_ options: EditOptions) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            fieldLabel("Clip descriptions")
+            describeClipsBlock(options)
+        }
+    }
+
     private var describeIsRunning: Bool { client.momentsStatus?.run?.isRunning == true }
 
     @ViewBuilder
@@ -560,8 +671,8 @@ struct PlanEditView: View {
                         .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
                 } else if status.missing > 0 {
                     HStack(spacing: 8) {
-                        Text("\(status.missing) of \(status.total) clips have no description, so they show by file name only and the planner can't use what they show.")
-                            .font(PCorpFont.body(10)).foregroundStyle(theme.textTertiary)
+                        Text("\(status.missing) of \(status.total) clips haven't been described. Describing them lets the plan cut on each clip's best moment instead of its steadiest stretch (up to about $\(String(format: "%.2f", status.estimate.usdAtMost)) in credits).")
+                            .font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
                         Spacer(minLength: 0)
                         Button("Describe \(status.missing)…") { confirmDescribe = true }
                             .buttonStyle(.bordered)

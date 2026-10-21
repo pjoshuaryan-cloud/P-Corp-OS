@@ -368,6 +368,9 @@ private struct PostJobRow: View {
         }
     }
 
+    /// The statuses the start-to-ready picture covers; later steps (proxies, highlights, the Premiere project) keep their own lines.
+    private static let pipelineStatuses: Set<String> = ["created", "scanning", "ready", "ingesting", "verifying", "analyzing_media", "ingested", "ingest_failed", "cancelled"]
+
     private var canStart: Bool { ["created", "ingest_failed", "cancelled"].contains(job.status) }
     private var canCancel: Bool { job.isActive }
     private var canAnalyzeMedia: Bool { job.status == "ingested" }
@@ -392,7 +395,21 @@ private struct PostJobRow: View {
                     .foregroundStyle(statusColor)
             }
 
-            if job.status == "analyzing_media" {
+            if let pipeline = job.pipeline, Self.pipelineStatuses.contains(job.status) {
+                // One picture of the whole start-to-ready run (read the drive, copy, check, analyse), computed by the backend so every screen says the same thing.
+                PostPipelineView(pipeline: pipeline)
+                if job.status == "ingested" {
+                    let later = [job.proxiesGeneratedAt != nil ? "Proxies generated." : nil, job.highlightsGeneratedAt != nil ? "Highlights detected." : nil].compactMap { $0 }
+                    if !later.isEmpty {
+                        Text(later.joined(separator: " ")).font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
+                    }
+                    if let count = recommendedProxyCount, count > 0 {
+                        Text("\(count) file(s) would benefit from proxies.")
+                            .font(PCorpFont.body(10.5))
+                            .foregroundStyle(theme.textSecondary)
+                    }
+                }
+            } else if job.status == "analyzing_media" {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text("Analyzing media…").font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
@@ -952,5 +969,49 @@ private struct VisualAnalysisView: View {
             analysis = result
         }
         isAnalyzing = false
+    }
+}
+
+
+/// The shoot's whole run in one place (2026-10-20): four stages, one bar, one plain sentence. Replaces the separate status lines for copy, check and analyse, so
+/// "is it done yet?" has one answer on the card.
+private struct PostPipelineView: View {
+    let pipeline: PostPipeline
+    @Environment(\.appTheme) private var theme
+
+    private var barColor: Color {
+        if pipeline.needsAttention { return theme.statusRisk }
+        return pipeline.percent >= 100 ? theme.statusGood : theme.statusHot
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                ForEach(pipeline.stages) { stage in
+                    HStack(spacing: 4) {
+                        icon(for: stage)
+                        Text(stage.label)
+                            .font(PCorpFont.body(10, weight: stage.state == "active" ? .semibold : .regular))
+                            .foregroundStyle(stage.state == "pending" ? theme.textTertiary : (stage.state == "failed" ? theme.statusRisk : theme.textSecondary))
+                    }
+                }
+            }
+            ProgressView(value: Double(max(0, min(pipeline.percent, 100))), total: 100).tint(barColor)
+            Text(pipeline.headline)
+                .font(PCorpFont.body(10.5))
+                .foregroundStyle(pipeline.needsAttention ? theme.statusRisk : theme.textSecondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(pipeline.percent) percent. \(pipeline.headline)")
+    }
+
+    @ViewBuilder
+    private func icon(for stage: PostPipelineStage) -> some View {
+        switch stage.state {
+        case "done": Image(systemName: "checkmark.circle.fill").font(.system(size: 10)).foregroundStyle(theme.statusGood)
+        case "active": ProgressView().controlSize(.mini)
+        case "failed": Image(systemName: "xmark.circle.fill").font(.system(size: 10)).foregroundStyle(theme.statusRisk)
+        default: Image(systemName: "circle").font(.system(size: 10)).foregroundStyle(theme.textTertiary)
+        }
     }
 }

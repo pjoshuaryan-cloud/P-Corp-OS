@@ -14,6 +14,8 @@ public final class EditPlanClient: ObservableObject {
     @Published public private(set) var errorMessage: String?
     /// Something worked but not everything (e.g. the plan was saved but the accents step failed).
     @Published public private(set) var warningMessage: String?
+    /// Every saved plan of this job in plain words, current one first (2026-10-20).
+    @Published public private(set) var planHistory: [PlanHistoryEntry] = []
 
     public let jobId: Int
 
@@ -47,7 +49,50 @@ public final class EditPlanClient: ObservableObject {
         isLoading = true
         errorMessage = nil
         await reloadOptions()
+        await loadPlanHistory()
         isLoading = false
+    }
+
+    // MARK: Plan history
+
+    /// Re-reads the saved plans. A failure keeps the last list: the history is a convenience, never a reason to block planning.
+    public func loadPlanHistory() async {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: BackendHost.url(path: "/post/jobs/\(jobId)/edit-plans"))
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
+            struct Listed: Decodable { let plans: [PlanHistoryEntry] }
+            let fetched = try JSONDecoder().decode(Listed.self, from: data).plans
+            if fetched != planHistory { planHistory = fetched }
+        } catch {
+            // keep what we have
+        }
+    }
+
+    /// Makes an earlier saved plan the current one (nothing is deleted: the plan it replaces is kept). Returns the backend's plain message, or nil if it failed.
+    public func restorePlan(file: String) async -> String? {
+        errorMessage = nil
+        warningMessage = nil
+        struct Body: Encodable { let file: String }
+        guard let encoded = try? JSONEncoder().encode(Body(file: file)) else { errorMessage = "Couldn't build the request."; return nil }
+        let result = await send("/post/jobs/\(jobId)/edit-plans/restore", body: encoded, timeout: 60)
+        if let error = result.error {
+            errorMessage = error
+            return nil
+        }
+        struct Restored: Decodable { let message: String }
+        let message = result.data.flatMap { try? JSONDecoder().decode(Restored.self, from: $0) }?.message ?? "Restored."
+        await reloadOptions()
+        await loadPlanHistory()
+        return message
+    }
+
+    /// Gives a saved plan a name of your own (an empty name clears it).
+    public func renamePlan(file: String, label: String) async {
+        errorMessage = nil
+        struct Body: Encodable { let file: String; let label: String }
+        guard let encoded = try? JSONEncoder().encode(Body(file: file, label: label)) else { errorMessage = "Couldn't build the request."; return }
+        if let error = await send("/post/jobs/\(jobId)/edit-plans/rename", body: encoded, timeout: 60).error { errorMessage = error }
+        await loadPlanHistory()
     }
 
     /// Re-reads what can be chosen (e.g. after clips were described and now have labels).
@@ -148,6 +193,7 @@ public final class EditPlanClient: ObservableObject {
             if let accentError { warningMessage = "The plan is saved, but the accents weren't added: \(accentError)" }
         }
         await reloadOptions()
+        await loadPlanHistory()
         return true
     }
 

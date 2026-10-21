@@ -20,6 +20,33 @@ public struct PostProfile: Decodable {
     public let folders: [String]
 }
 
+/// One stage of a shoot's start-to-ready run (2026-10-20): read the drive, copy, check the copies, analyse. Built on the server (backend/app/post_pipeline.py)
+/// so the desktop and the phone always say the same thing.
+public struct PostPipelineStage: Decodable, Equatable, Identifiable {
+    public let key: String
+    public let label: String
+    /// "done", "active", "pending" or "failed".
+    public let state: String
+    public let detail: String
+    public var id: String { key }
+}
+
+public struct PostPipeline: Decodable, Equatable {
+    public let stages: [PostPipelineStage]
+    /// 0-100: finished stages plus real progress inside the active one (never a guess); 100 only when the shoot is ready.
+    public let percent: Int
+    /// One plain sentence: "Copying the files: 118 of 342, about 1 h 35 min left".
+    public let headline: String
+    public let etaSeconds: Double?
+    public let needsAttention: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case stages, percent, headline
+        case etaSeconds = "eta_seconds"
+        case needsAttention = "needs_attention"
+    }
+}
+
 public struct PostJob: Identifiable, Decodable, Equatable {
     public let id: Int
     public let profile: String
@@ -50,9 +77,11 @@ public struct PostJob: Identifiable, Decodable, Equatable {
     public let premiereProjectPath: String?
     public let proxiesGeneratedAt: String?
     public let highlightsGeneratedAt: String?
+    /// The one-picture description of where the shoot is (nil from an older backend).
+    public let pipeline: PostPipeline?
 
     enum CodingKeys: String, CodingKey {
-        case id, profile, status, resolution
+        case id, profile, status, resolution, pipeline
         case shootName = "shoot_name"
         case clientName = "client_name"
         case sourcePath = "source_path"
@@ -427,6 +456,9 @@ public struct VisualAnalysis: Decodable {
 public struct EditStyleOption: Decodable, Identifiable, Equatable {
     public let slug: String
     public let title: String
+    /// A plain name for the kind of edit ("Calm corporate highlight") and one line on what it makes; nil from an older backend.
+    public let friendlyTitle: String?
+    public let blurb: String?
     public let description: String
     public let format: String
     public let seconds: Double?
@@ -438,13 +470,18 @@ public struct EditStyleOption: Decodable, Identifiable, Equatable {
 
     public var id: String { slug }
 
+    /// What the planning screen calls this style.
+    public var displayTitle: String { friendlyTitle ?? title }
+    public var displayBlurb: String { (blurb?.isEmpty == false ? blurb : nil) ?? description }
+
     public var isNarratedStory: Bool { editType == "narrated_broll" }
     /// A calm corporate highlight cut to the music's hits (opening and closing brand cards, no narration, no accents).
     public var isCorporateHighlight: Bool { editType == "corporate_highlight" }
     public var isDialogueLed: Bool { editType == "dialogue_led" }
 
     enum CodingKeys: String, CodingKey {
-        case slug, title, description, format, seconds, shots
+        case slug, title, description, format, seconds, shots, blurb
+        case friendlyTitle = "friendly_title"
         case medianShotSeconds = "median_shot_seconds"
         case hasAccents = "has_accents"
         case editType = "edit_type"
@@ -704,5 +741,30 @@ public struct MomentsStatus: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case total, described, missing, estimate, run
         case apiKeySet = "api_key_set"
+    }
+}
+
+
+/// One saved plan of a job (2026-10-20), as GET /post/jobs/{id}/edit-plans lists it: what it is in words, so an earlier one can be brought back.
+public struct PlanHistoryEntry: Decodable, Identifiable, Equatable {
+    public let file: String
+    public let current: Bool
+    /// A name you gave it (nil if none).
+    public let label: String?
+    public let title: String
+    public let subtitle: String
+    public let savedAt: String
+    /// The file name it was saved under, in words ("YOURS reviewed 20261009"), when it was saved under one.
+    public let savedAs: String?
+    public let reviewed: Int
+    public let swapped: Int
+    public let accents: Bool
+
+    public var id: String { file }
+
+    enum CodingKeys: String, CodingKey {
+        case file, current, label, title, subtitle, reviewed, swapped, accents
+        case savedAt = "saved_at"
+        case savedAs = "saved_as"
     }
 }
