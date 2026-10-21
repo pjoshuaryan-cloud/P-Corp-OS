@@ -147,6 +147,10 @@ def analyse(plan: dict[str, Any], shots: list[Any], moments_by_name: dict[str, d
                 best_zone = max(events, key=lambda e: float(e.get("punch", 0)))
                 chance_event += _union_length(zones, 0.0, dur) / dur
                 chance_best += _union_length([(float(best_zone["t"]) - EVENT_NEAR_SECONDS, float(best_zone["t"]) + EVENT_NEAR_SECONDS)], 0.0, dur) / dur
+            # The clip's whole candidate set goes in the log (not just the one he sat on): a taste model needs the moments he did NOT pick as much as the one he did.
+            row["candidates"] = [{"rank": r, "t": e.get("t"), "kind": e.get("kind"), "punch": e.get("punch")} for r, e in enumerate(sorted(events, key=lambda e: -float(e.get("punch", 0))), start=1)]
+            row["clip_seconds"] = dur
+            row["people"] = bool((rec or {}).get("people"))
             if near:
                 _, rank, e = min(near)
                 at_event += 1

@@ -45,6 +45,10 @@ check("the summary counts add up", (s["plan_shots_kept"], s["plan_shots_differen
 check("his clips that are in the plan are counted", s["his_clips_in_plan"] == 3, s["his_clips_in_plan"])
 check("a shot on Claude's first-choice moment is found, with its rank", r["his_shots"][0]["event"] and r["his_shots"][0]["event"]["rank"] == 1 and r["his_shots"][0]["event"]["kind"] == "hero", r["his_shots"][0]["event"])
 check("a shot away from every described moment has no event", r["his_shots"][1]["event"] is None)
+cands = r["his_shots"][0]["candidates"]
+check("each shot on a described clip logs the clip's WHOLE candidate set, best punch first (a taste model needs the moments he did not pick too)", [c["rank"] for c in cands] == [1, 2] and [c["t"] for c in cands] == [2.0, 12.0] and cands[0]["kind"] == "hero", cands)
+check("it also logs the clip's length and whether people are in it", r["his_shots"][0]["clip_seconds"] == 20.0 and r["his_shots"][0]["people"] is False)
+check("a shot on a clip that was never described logs no candidates", "candidates" not in r["his_shots"][2])
 check("only shots on described clips are checked", s["described_shots_checked"] == 2 and s["at_a_described_moment"] == 1 and s["at_the_first_choice_moment"] == 1, s)
 check("the chance of sitting on a described moment is reported next to it", 0.0 < s["chance_at_a_described_moment"] < 0.5 and 0.0 < s["chance_at_the_first_choice"] <= s["chance_at_a_described_moment"], (s["chance_at_a_described_moment"], s["chance_at_the_first_choice"]))
 check("a retimed shot is counted", s["retimed_shots"] == 1, s["retimed_shots"])
