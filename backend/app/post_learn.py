@@ -214,10 +214,10 @@ def lines(sequence: str, plan_style: str | None, result: dict[str, Any]) -> list
     return out[:1] + result["warnings"] + out[1:]   # what to be careful about comes before the numbers
 
 
-def _write_log(job: dict[str, Any], sequence: str, plan_style: str | None, result: dict[str, Any]) -> tuple[Path, int]:
+def _write_log(job: dict[str, Any], sequence: str, plan_style: str | None, result: dict[str, Any], source: str = "button") -> tuple[Path, int]:
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    record = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "job_id": job["id"], "shoot": job.get("shoot_name"), "sequence": sequence, "plan_style": plan_style, **result}
+    record = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "job_id": job["id"], "shoot": job.get("shoot_name"), "sequence": sequence, "plan_style": plan_style, "source": source, **result}
     path = FEEDBACK_DIR / f"job{job['id']}_{stamp}.json"
     n = 1
     while path.exists():   # two clicks in the same second must not overwrite each other
@@ -227,7 +227,7 @@ def _write_log(job: dict[str, Any], sequence: str, plan_style: str | None, resul
     tmp.write_text(json.dumps(record, indent=1))
     os.replace(tmp, path)
     with open(FEEDBACK_DIR / "index.jsonl", "a") as fh:
-        fh.write(json.dumps({"ts": record["ts"], "job_id": job["id"], "sequence": sequence, "file": path.name, "stale_plan": bool(result.get("stale_plan")), "summary": result["summary"]}) + "\n")
+        fh.write(json.dumps({"ts": record["ts"], "job_id": job["id"], "sequence": sequence, "file": path.name, "source": source, "stale_plan": bool(result.get("stale_plan")), "summary": result["summary"]}) + "\n")
     return path, aggregate()["edits"]
 
 
@@ -259,25 +259,37 @@ def moments_by_clip_name(moments: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(v.get("name", "")).lower(): v for v in moments.values() if v.get("name")}
 
 
+def compare_with_plan(sequence: str, shots: list[Any], plan: dict[str, Any], basis: str, made_at: float | None, moments: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """analyse() plus what the plan basis means for how far to trust the comparison. `basis` is plan_history.plan_for_build_time's: "matched" = the plan the sequence was
+    built from; anything else is only indicative, is flagged (stale_plan) and left out of the plan-agreement totals."""
+    result = analyse(plan, shots, moments)
+    result["plan_basis"] = basis
+    result["plan_made_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(made_at)) if made_at else None
+    if basis == "matched":
+        result["stale_plan"] = False
+    elif basis == "latest":
+        result["stale_plan"] = True
+        result["warnings"].insert(0, "This sequence has no build time in its name (it wasn't made by Assemble Edit), so it is compared with the current plan: indicative only.")
+    else:
+        warning = stale_plan_warning(sequence, made_at) if made_at else None
+        result["stale_plan"] = True
+        result["warnings"].insert(0, warning or "Every saved plan is newer than this sequence, so the plan it was built from is gone: indicative only.")
+    return result
+
+
 async def learn_from_edit(job: dict[str, Any], sequence_name: str | None = None, project_path: str | None = None) -> dict[str, Any]:
-    """Reads his saved edit, compares it with the job's saved plan, logs the result, and returns {summary, lines, ...} for the plugin to print."""
-    from app.post_edit_plan import edit_dir, load_saved_plan
+    """Reads his saved edit, compares it with the plan it was built from, logs the result, and returns {summary, lines, ...} for the plugin to print."""
+    from app.post_edit_plan import edit_dir
     from app.post_moments import load_moments
+    from app.post_plan_history import plan_for_build_time
     from app.ssd_guard import on_drive
     path = project_path or job.get("premiere_project_path")
-    plan = await on_drive(load_saved_plan, job)
+    sequence, shots = await on_drive(read_final_edit, path, sequence_name, timeout=120.0)
+    plan, _file, basis, made_at = await on_drive(plan_for_build_time, edit_dir(job), built_at(sequence))
     if plan is None:
         raise LearnError("This job has no saved edit plan to compare against. Plan the edit in P Corp OS first.")
-    sequence, shots = await on_drive(read_final_edit, path, sequence_name, timeout=120.0)
     moments = moments_by_clip_name(await on_drive(load_moments, edit_dir(job)))
-    result = analyse(plan, shots, moments)
-    plan_file = edit_dir(job) / "edit_plan_latest.json"
-    plan_saved_at = (await on_drive(plan_file.stat)).st_mtime
-    stale = stale_plan_warning(sequence, plan_saved_at)
-    if stale:
-        result["warnings"].insert(0, stale)
-    result["stale_plan"] = bool(stale)
-    result["plan_saved_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(plan_saved_at))
+    result = compare_with_plan(sequence, shots, plan, basis, made_at, moments)
     log_path, edits = _write_log(job, sequence, plan.get("style"), result)
     report = lines(sequence, plan.get("style"), result)
     totals = aggregate()

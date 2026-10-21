@@ -192,6 +192,7 @@ from app.post_transcripts import summarize_transcript, generate_srt, format_read
 from app.post_sources import list_source_volumes
 from app.post_profiles import POST_PROFILES, compute_destination_root
 from app.post_ingest import _post_ingest_loop
+from app.post_autosave import autosave_watch_loop
 from app.post_tools import POST_TOOLS, POST_TOOL_NAMES, execute_post_tool_call
 from app.ventures_db import (
     AUTOMATION_SUGGESTION_STATUSES,
@@ -1093,6 +1094,10 @@ async def lifespan(app: FastAPI):
         # exactly like the calendar-sync loop just above.
         if not hasattr(app.state, "post_ingest_task"):
             app.state.post_ingest_task = asyncio.create_task(_post_ingest_loop(app))
+        # Reads the auto-save copies Premiere writes for POST shoots' projects (2026-10-21) so Josh's edits are learned from while he makes them: read-only, one small
+        # file at a time through the drive guard, local only, switchable off (see post_autosave.py). Ungated for the same reason as the ingest worker above.
+        if not hasattr(app.state, "autosave_watch_task"):
+            app.state.autosave_watch_task = asyncio.create_task(autosave_watch_loop(app))
         # HF Markets' live bridge (2026-09-12) -- Mac-only for the same
         # reason as the two loops above, plus there's simply nothing to
         # push in SQLite mode (no shared cloud DB for Render to read from).
@@ -1124,6 +1129,9 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, "post_ingest_task"):
         app.state.post_ingest_task.cancel()
         del app.state.post_ingest_task
+    if hasattr(app.state, "autosave_watch_task"):
+        app.state.autosave_watch_task.cancel()
+        del app.state.autosave_watch_task
     if hasattr(app.state, "hf_markets_live_push_task"):
         app.state.hf_markets_live_push_task.cancel()
         del app.state.hf_markets_live_push_task
@@ -3090,6 +3098,37 @@ async def post_job_edit_plan_latest(job_id: int, request: Request, _: None = Dep
     if plan is None:
         raise HTTPException(status_code=404, detail=f"Job #{job_id} has no edit plan yet -- plan one first.")
     return plan
+
+
+class AutosaveWatchRequest(BaseModel):
+    enabled: bool | None = None     # switch the watch on or off
+    scan_now: bool = False          # run one pass now with a bigger budget (reads the backlog of old auto-saves faster)
+    job_id: int | None = None       # with scan_now: only this shoot
+
+
+@app.get("/post/autosave-watch")
+async def post_autosave_watch_status(request: Request, _: None = Depends(verify_token)) -> dict:
+    """Whether the auto-save watch is on, when it last looked, and per shoot which sequences it has seen (how many states, how many shots now, whether the finished edit was logged)."""
+    from app.post_autosave import Store, status
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    return status(Store(), await list_post_jobs(None, postgres_conn))
+
+
+@app.post("/post/autosave-watch")
+async def post_autosave_watch_set(body: AutosaveWatchRequest, _: None = Depends(verify_token)) -> dict:
+    """Turns the watch on or off (`enabled`), and/or runs one pass now (`scan_now`, optionally for one shoot)."""
+    from app.post_autosave import Store, scan_and_settle, status
+    store = Store()
+    if body.enabled is not None:
+        store.set_enabled(body.enabled)
+    ran = []
+    if body.scan_now:
+        async with _pooled_postgres_conn() as postgres_conn:
+            jobs = await list_post_jobs(None, postgres_conn)
+        for job in jobs:
+            if job.get("premiere_project_path") and (body.job_id is None or job["id"] == body.job_id):
+                ran.append({"job_id": job["id"], **await on_drive(scan_and_settle, store, job, 40, timeout=300.0)})
+    return {**status(store, []), "scan": ran}
 
 
 class PlanFileRequest(BaseModel):

@@ -122,9 +122,10 @@ def list_plans(folder: Path, style_name=lambda slug: slug) -> list[dict[str, Any
         if not isinstance(plan, dict) or not isinstance(plan.get("shots"), list):
             continue
         info = describe_plan(plan, style_name)
+        made = min(_made_at(f) for f in files)   # a restored or copied file carries the time it was copied; an archive's name keeps when the plan was really made
         label = next((names[f.name] for f in files if f.name in names), None)   # a name YOU gave it
         entries.append({"file": shown.name, "current": h == latest_hash, "label": label, "title": label or info["title"], "kind_title": info["title"],
-                        "saved_as": _pretty_name(files), "saved_at": _iso(_made_at(shown)), **{k: v for k, v in info.items() if k not in ("title",)},
+                        "saved_as": _pretty_name(files), "saved_at": _iso(made), **{k: v for k, v in info.items() if k not in ("title",)},
                         "also_saved_as": [f.name for f in files[1:]]})
     cur = [e for e in entries if e["current"]]
     rest = sorted((e for e in entries if not e["current"]), key=lambda e: e["saved_at"], reverse=True)
@@ -180,3 +181,41 @@ def rename_plan(folder: Path, file_name: str, label: str) -> dict[str, Any]:
     tmp.write_text(json.dumps(names, indent=1))
     os.replace(tmp, folder / NAMES_FILE)
     return {"file": file_name, "label": label or None}
+
+
+BUILD_GRACE_SECONDS = 120.0   # a plan saved this soon after the sequence's build time still counts as the one it was built from (clock and rounding)
+
+
+def plan_for_build_time(folder: Path, built_at: float | None) -> tuple[dict[str, Any] | None, str | None, str, float | None]:
+    """The plan a sequence was built from: the newest plan that already existed when it was built (Assemble Edit puts the build time in the sequence's name).
+    Returns (plan, file name, basis, when it was made): basis is "matched" when found that way; "latest" when the sequence has no build time (built by hand), so the current plan is used
+    and the comparison is only indicative; "newer" when every saved plan is newer than the sequence (the plan it came from is gone), so the oldest is used. (None, None, "none", None)
+    when the job has no saved plan."""
+    if not folder.is_dir():
+        return None, None, "none", None
+    groups: dict[str, list[Path]] = {}
+    for p in _plan_files(folder):
+        try:
+            groups.setdefault(_sha(p), []).append(p)
+        except OSError:
+            continue
+    plans = []
+    for files in groups.values():
+        try:
+            data = json.loads(files[0].read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("shots"), list) and data["shots"]:
+            current = any(f.name == LATEST for f in files)
+            plans.append((min(_made_at(f) for f in files), current, sorted(files, key=lambda p: (p.name != LATEST, p.name.startswith("edit_plan_prev_")))[0].name, data))
+    if not plans:
+        return None, None, "none", None
+    if built_at is None:
+        cur = next((p for p in plans if p[1]), max(plans, key=lambda p: p[0]))
+        return cur[3], cur[2], "latest", cur[0]
+    before = [p for p in plans if p[0] <= built_at + BUILD_GRACE_SECONDS]
+    if before:
+        best = max(before, key=lambda p: p[0])
+        return best[3], best[2], "matched", best[0]
+    oldest = min(plans, key=lambda p: p[0])
+    return oldest[3], oldest[2], "newer", oldest[0]
