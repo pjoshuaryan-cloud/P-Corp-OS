@@ -35,7 +35,7 @@ EDIT_TYPES: dict[str, dict[str, Any]] = {
     "corporate_highlight": {
         "label": "Corporate highlight cut to music",
         "buildable": True,
-        "how": "A calm highlight for corporate work: cuts on the music's hits at a slower pace than a reel (about 2 s a shot), every shot from the steadiest stretch of its clip, a slow zoom (in or out) only on shots whose footage is static, hard cuts only. With the job's logo it adds the opening and closing brand cards.",
+        "how": "A highlight cut on the music's hits, hard cuts only: every shot from the best moment of its clip, a slow zoom (in or out) only on shots whose footage is static. With the job's logo it adds the opening and closing brand cards. The pace comes from the style: \"Your usual pace\" cuts at the rhythm measured across your own edits (about 0.6 s a shot), the calm corporate style at about 2 s a shot.",
         "missing": [
             "story order: clips go in shoot order, or in an order you give; the planner can't reorder footage into a story",
             "captions: a highlight to music has no narration, so none are made",
@@ -63,6 +63,15 @@ EDIT_TYPES: dict[str, dict[str, Any]] = {
 
 # Edit types that no reference covers yet, built by pooling the ones that are measured. Honest about being a guess.
 INFERRED_STYLES: dict[str, dict[str, Any]] = {
+    "your-usual-pace": {   # NOT pooled from references: written from backend/app/post_usual_pace.json (see post_style.usual_pace_profile)
+        "learned_pace": True,
+        "edit_type": "corporate_highlight",
+        "genre": "your usual pace",
+        "client": "Your usual pace",
+        "event": "cut on the music at the pace of your own edits",
+        "format": "any shape (vertical, horizontal or square)",
+        "style": "Hard cuts on the music's hits at the rhythm measured across your own saved edits: best moment of each clip, a slow zoom only on static footage, optional opening and closing brand cards.",
+    },
     "food-promo-inferred": {
         "composite_of": ["energy-drink-powerade", "furniture-expo-decorex", "fashion-event-converse-kenzo"],
         "edit_type": "music_montage",
@@ -179,6 +188,10 @@ def write_inferred_styles(only: list[str] | None = None) -> list[str]:
     for slug, spec in INFERRED_STYLES.items():
         if only is not None and slug not in only:
             continue
+        if spec.get("learned_pace"):
+            if _write_usual_pace_record(slug, spec):
+                written.append(slug)
+            continue
         parts = [pr.load_reference(x) for x in spec["composite_of"]]
         scale = CALM_PACE if spec.get("pace_note") else 1.0  # a calm style's card shows its CALM shot lengths, not the reference's
         lengths = sorted((sh["end"] - sh["start"]) * scale for r in parts for sh in r["edit"]["shots"])
@@ -195,11 +208,52 @@ def write_inferred_styles(only: list[str] | None = None) -> list[str]:
     return written
 
 
+def _write_usual_pace_record(slug: str, spec: dict[str, Any]) -> bool:
+    """The style card's record for "Your usual pace", written from the measured rhythm file. False (and the style simply isn't offered) when that file
+    is missing: a card must never be able to break the whole list of styles."""
+    import json
+    import logging
+    from app import post_reference as pr
+    from app.post_style import load_usual_pace
+    try:
+        data = load_usual_pace()
+    except ValueError as exc:
+        logging.getLogger(__name__).warning("%s", exc)
+        return False
+    lengths = sorted(data["body_lengths"])
+    n = len(lengths)
+    q = lambda p: round(lengths[min(n - 1, int(p * n))], 2)
+    duration = float(round(data["typical_seconds"]))
+    summary = {"shot_count": max(1, round(duration / max(q(0.5), 0.1))), "duration_seconds": duration,
+               "shot_length_seconds": {"mean": round(sum(lengths) / n, 2), "median": q(0.5), "p10": q(0.1), "p90": q(0.9), "min": round(lengths[0], 2), "max": round(lengths[-1], 2)}}
+    tags = {"genre": spec["genre"], "client": spec["client"], "event": spec["event"], "format": spec["format"], "style": spec["style"], "edit_type": spec["edit_type"],
+            "inferred": False, "learned_pace": True, "learned_from": data["made"],
+            "added_by": f"measured from {data['from_edits']} of your edits in {data['from_projects']} projects ({data['made'][:10]})"}
+    record = {"slug": slug, "tags": tags, "summary": summary, "music_sync": None, "learned_pace": True}
+    pr.REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
+    (pr.REFERENCE_DIR / f"{slug}.json").write_text(json.dumps(record, indent=1))
+    return True
+
+
+def _usual_pace_record_is_current(path) -> bool:
+    import json
+    from app.post_style import load_usual_pace
+    try:
+        return json.loads(path.read_text())["tags"].get("learned_from") == load_usual_pace()["made"]
+    except (OSError, ValueError, KeyError):
+        return False
+
+
 def ensure_inferred_styles(slugs: list[str] | None = None) -> None:
     """Makes sure the code-defined styles exist as records (backend/data is not in git, so a fresh checkout or a wiped folder heals itself).
-    With `slugs`, only those that are asked for are checked."""
+    With `slugs`, only those that are asked for are checked. "Your usual pace" is also rewritten when its measured file has been re-exported."""
     from app import post_reference as pr
-    missing = [s for s in INFERRED_STYLES if (slugs is None or s in slugs) and not (pr.REFERENCE_DIR / f"{s}.json").exists()]
+    def needs_writing(s: str) -> bool:
+        path = pr.REFERENCE_DIR / f"{s}.json"
+        if not path.exists():
+            return True
+        return bool(INFERRED_STYLES[s].get("learned_pace")) and not _usual_pace_record_is_current(path)
+    missing = [s for s in INFERRED_STYLES if (slugs is None or s in slugs) and needs_writing(s)]
     if missing:
         write_inferred_styles(only=missing)
 

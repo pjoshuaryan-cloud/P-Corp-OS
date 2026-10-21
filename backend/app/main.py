@@ -3009,7 +3009,7 @@ class EditPlanRequest(BaseModel):
     burn_captions: bool = True  # ... and burn the narration captions in as images (off: only the .srt)
     card_tagline: str | None = None  # the opening card's tagline
     card_contact: list[str] | None = None  # the closing card's contact lines (up to four)
-    pace: float | None = None  # corporate story: 1.0 = the reference's own pace, higher = calmer (default 1.3); between 0.8 and 2.0
+    pace: float | None = None  # corporate story / highlight: 1.0 = the style's own pace, higher = calmer; between 0.8 and 2.0. Default: the style's own (1.0 for "Your usual pace"), else 1.3
     slow_zooms: bool = True  # corporate story / highlight: slow push-in / pull-out on shots whose footage is static
     fill_frame: bool | None = None  # corporate highlight: scale every clip in Premiere to fill the frame, centred (default on); off leaves clips at their own size
     quick: bool = False  # corporate: plan NOW from the clips already read (cached), without reading the rest -- for a first plan on a big shoot that would take 15+ minutes
@@ -3034,7 +3034,7 @@ async def post_edit_types_route(_: None = Depends(verify_token)) -> dict:
         rec = pr.load_reference(path.stem)
         kind = (rec["tags"].get("edit_type") or "music_montage")
         refs.append({"slug": rec["slug"], "title": " -- ".join(x for x in (rec["tags"].get("client"), rec["tags"].get("event")) if x) or rec["slug"], "edit_type": kind,
-                     "buildable": type_info(kind)["buildable"], "inferred": bool(rec["tags"].get("inferred")), "recipe": [] if rec.get("composite_of") else recipe_lines(rec)})
+                     "buildable": type_info(kind)["buildable"], "inferred": bool(rec["tags"].get("inferred")), "recipe": [] if (rec.get("composite_of") or rec.get("learned_pace")) else recipe_lines(rec)})
     return {"types": EDIT_TYPES, "references": refs}
 
 

@@ -35,6 +35,7 @@ class Shot:
     track: int                # 1 = V1
     src_duration: float | None  # the source file's full length, seconds, as the project recorded it
     nested: str | None = None   # set when the source is another sequence, not a file
+    src_fps: float | None = None  # the source file's frame rate as the project recorded it (50.0 for 50 fps footage), None when not found
 
     @property
     def length(self) -> float:
@@ -116,8 +117,12 @@ def read_sequences(path: str) -> list[Sequence]:
         if media is None:
             return {}
         original = source.findtext("OriginalDuration")
+        stream_ref = media.find("VideoStream")
+        stream = by_id.get(stream_ref.get("ObjectRef")) if stream_ref is not None else None
+        rate = stream.findtext("FrameRate") if stream is not None else None
         return {"path": media.findtext("ActualMediaFilePath") or media.findtext("FilePath"),
-                "duration": float(original) / TICKS_PER_SECOND if original else None}
+                "duration": float(original) / TICKS_PER_SECOND if original else None,
+                "fps": round(TICKS_PER_SECOND / int(rate), 3) if rate and rate.isdigit() and int(rate) > 0 else None}
 
     sequences: list[Sequence] = []
     for seq in (el for el in root if el.tag == "Sequence"):
@@ -159,7 +164,7 @@ def read_sequences(path: str) -> list[Sequence]:
                             t0=int(item.findtext("ClipTrackItem/TrackItem/Start") or 0) / TICKS_PER_SECOND,
                             t1=int(end) / TICKS_PER_SECOND,
                             src_in=int(c_in or 0) / TICKS_PER_SECOND if c_out else None, src_out=int(c_out) / TICKS_PER_SECOND if c_out else None,
-                            path=media.get("path"), name=sub.findtext("Name"), track=index, src_duration=media.get("duration"), nested=media.get("nested")))
+                            path=media.get("path"), name=sub.findtext("Name"), track=index, src_duration=media.get("duration"), nested=media.get("nested"), src_fps=media.get("fps")))
                 result.tracks.append(shots)
         sequences.append(result)
     return sequences

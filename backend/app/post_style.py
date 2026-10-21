@@ -8,7 +8,9 @@ preset, and a different kind of edit (slower, cinematic, product-led) gets its o
 own profile. Several references can be pooled.
 """
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from statistics import mean, median
 
 from app.post_reference import list_references, load_reference
@@ -173,6 +175,9 @@ class StyleProfile:
     dialogue: DialogueStyle | None = None  # set for a multicam interview: cameras switched at quiet gaps over continuous dialogue
     highlight: bool = False  # a corporate highlight cut to the music's hits at a calm pace (post_edit_highlight.py); `story` then only carries the reference's shot rhythm
     notes: list[str] = field(default_factory=list)
+    default_pace: float | None = None  # a highlight's pace multiplier when the caller gives none (1.0 = the style's own rhythm); None = the planner's calm default
+    rhythm_note: str | None = None  # a highlight style's own account of where its shot rhythm comes from; the plan's notes say it instead of the calm style's wording
+    highlight_min_shot_seconds: float | None = None  # the shortest shot a highlight in this style may have; None = the calm highlight's 1 s
 
     @property
     def mean_shot_seconds(self) -> float:
@@ -296,12 +301,44 @@ def _expand(slugs: list[str]) -> tuple[list[dict], bool]:
     return recs, inferred
 
 
+# --- "Your usual pace" (2026-10-21): the default style. Not a reference edit but the shot rhythm measured across his own saved Premiere projects
+# (backend/learning/rhythm.py --export-usual-pace writes app/post_usual_pace.json, which is in git because backend/data is not). It runs through the highlight
+# planner (hard cuts on the music's hits, best moment of each clip, optional brand cards), only with HIS shot lengths instead of the calm corporate ones.
+USUAL_PACE_SLUG = "your-usual-pace"
+USUAL_PACE_FILE = Path(__file__).with_name("post_usual_pace.json")
+
+
+def load_usual_pace() -> dict:
+    try:
+        return json.loads(USUAL_PACE_FILE.read_text())
+    except (OSError, ValueError) as exc:
+        raise ValueError("Your usual pace hasn't been measured yet: run `.venv/bin/python -m learning.rhythm --export-usual-pace` from the backend folder.") from exc
+
+
+def usual_pace_profile() -> StyleProfile:
+    data = load_usual_pace()
+    lengths = [float(x) for x in data["body_lengths"]]
+    story = StoryStyle(body_lengths=lengths, opener_seconds=float(data["opener_seconds"]), closing_hold_seconds=float(data["closing_hold_seconds"]),
+                       words_per_second=0.0, words_per_phrase_median=0.0, max_phrase_words=0)   # no narration: a highlight is cut to music
+    return StyleProfile(
+        name=USUAL_PACE_SLUG, source_slugs=[USUAL_PACE_SLUG], target_duration_seconds=float(round(data["typical_seconds"])), shot_lengths=lengths,
+        pacing_curve=[round(mean(lengths), 3)] * PACING_BINS, end_card_seconds=min(4.5, float(data["closing_hold_seconds"])), hit_snap_rate=0.8,
+        min_shot_seconds=float(data["min_shot_seconds"]), max_shot_seconds=float(data["max_shot_seconds"]), accents=None, edit_type="corporate_highlight",
+        story=story, highlight=True, default_pace=1.0, highlight_min_shot_seconds=float(data["min_shot_seconds"]),
+        rhythm_note=f"your usual pace: shot lengths are drawn from the real shots of {data['from_edits']} of your edits (median {data['median_shot']:.2f} s, middle 80% {data['p10']:.2f}-{data['p90']:.2f} s)",
+    )
+
+
 def profile_from_references(slugs: list[str], name: str | None = None) -> StyleProfile:
     """Pools the saved references named in `slugs` into one profile. Raises ValueError for a reference the planner can't
     build from (a talking head or a narrated b-roll story), saying so plainly."""
     from app.post_edit_types import ensure_inferred_styles, type_info
     if not slugs:
         raise ValueError("Pick at least one reference edit for the style.")
+    if USUAL_PACE_SLUG in slugs:
+        if len(slugs) > 1:
+            raise ValueError("Your usual pace is a complete style of its own: it can't be pooled with other references.")
+        return usual_pace_profile()
     ensure_inferred_styles(slugs)
     highlight = any((load_reference(sl).get("tags") or {}).get("edit_type") == "corporate_highlight" for sl in slugs)
     if highlight and len(slugs) > 1:
@@ -365,6 +402,7 @@ def available_styles(buildable_only: bool = True, **tag_filters) -> list[dict]:
     from app.post_edit_types import ensure_inferred_styles, type_info
     ensure_inferred_styles()
     records = list_references(**tag_filters)
+    records.sort(key=lambda r: r["slug"] != USUAL_PACE_SLUG)   # your usual pace first: the planning screen preselects the first style
     if not buildable_only:
         return records
     return [r for r in records if type_info(edit_type_of(r))["buildable"]]
@@ -373,7 +411,8 @@ def available_styles(buildable_only: bool = True, **tag_filters) -> list[dict]:
 # Plain names for the planning screen (2026-10-20): a saved reference is called "jd-sports-moa-draft-01" in the files and "JD Sports -- Mall of Africa store opening" in the
 # list, neither of which says what KIND of edit it makes. Keyed by slug; a reference not listed here falls back to its own title and description.
 FRIENDLY_STYLES: dict[str, tuple[str, str]] = {
-    "corporate-highlight-calm": ("Calm corporate highlight", "Cuts to the music at an easy pace on the steadiest shots, with opening and closing brand cards."),
+    USUAL_PACE_SLUG: ("Your usual pace", "Cuts to the music at the pace of your own edits, on the best moment of each clip, with optional opening and closing brand cards."),
+    "corporate-highlight-calm": ("Calm corporate highlight", "Cuts to the music at an easy pace (about two seconds a shot), with opening and closing brand cards."),
     "jd-sports-moa-draft-01": ("Fast streetwear reel", "Quick cuts on the beat with flash and zoom accents (your JD Sports draft)."),
     "energy-drink-powerade": ("Energy-drink reel", "A fast vertical highlight, cut on the music."),
     "fashion-event-converse-kenzo": ("Fashion event highlight", "A music-driven launch-event highlight."),

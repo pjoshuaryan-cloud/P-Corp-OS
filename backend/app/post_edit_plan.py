@@ -401,6 +401,12 @@ def apply_music_lead(plan: dict[str, Any], profile: StyleProfile, music_in: floa
     return music_in
 
 
+def default_pace(profile: StyleProfile) -> float:
+    """The pace a highlight is cut at when the caller doesn't give one: the style's own (1.0 for "Your usual pace") or the calm default (1.3)."""
+    from app.post_steady import CALM_PACE
+    return profile.default_pace if profile.default_pace is not None else CALM_PACE
+
+
 async def plan_for_job(
     job_id: int, *, style: list[str], music_path: str | None = None, music_in_seconds: float | None = None,
     target_seconds: float | None = None, bookend_file_id: int | None = None, order_names: list[str] | None = None,
@@ -459,10 +465,10 @@ async def plan_for_job(
     steady_counts = None
     if profile.highlight:  # a calm highlight cut to the music's hits: steadiest windows, slow zooms on static shots, hard cuts only
         from app.post_edit_highlight import build_highlight_plan
-        from app.post_steady import CALM_PACE as _CALM, analyse_clips, coverage_note
+        from app.post_steady import analyse_clips, coverage_note
         steady_counts = await analyse_clips(clips, job, only_cached=quick, always={bookend_file_id} if bookend_file_id is not None else None)
         plan = build_highlight_plan(profile=profile, hits=analysis["hits"], music_in=music_in, duration=duration, fps=fps, clips=clips, bookend_file_id=bookend_file_id,
-                                    seed=seed, pace=_CALM if pace is None else pace, slow_zooms=slow_zooms, with_opener=bookend_file_id is not None or bool(graphics_logo and graphics_size),
+                                    seed=seed, pace=default_pace(profile) if pace is None else pace, slow_zooms=slow_zooms, with_opener=bookend_file_id is not None or bool(graphics_logo and graphics_size),
                                     fill_frame=True if fill_frame is None else fill_frame)
         plan["notes"].append(f"Steadiness: {steady_counts['analysed']} clip(s) analysed now, {steady_counts['cached']} from this job's cache" + (f", {steady_counts['unreadable']} unreadable (those were planned the old way, from the middle of the clip)." if steady_counts["unreadable"] else "."))
         plan["notes"].append(coverage_note(clips, quick))

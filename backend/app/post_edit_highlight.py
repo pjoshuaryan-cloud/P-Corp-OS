@@ -35,11 +35,12 @@ def cut_profile(profile: StyleProfile, duration: float, pace: float) -> StylePro
     story = profile.story
     if story is None:
         raise EditPlanError(f"'{profile.name}' has no shot rhythm to build a highlight from.")
-    lengths = [max(MIN_SHOT_SECONDS, l * pace) for l in story.body_lengths]
+    floor = profile.highlight_min_shot_seconds or MIN_SHOT_SECONDS   # the calm style never goes under a second; "your usual pace" goes as short as his own cuts do
+    lengths = [max(floor, l * pace) for l in story.body_lengths]
     hold = min(CLOSING_MAX_SECONDS, max(CLOSING_MIN_SECONDS, CLOSING_SHARE * duration), story.closing_hold_seconds)
     return dataclasses.replace(
         profile, shot_lengths=lengths, pacing_curve=[round(statistics.mean(lengths), 3)] * 10, end_card_seconds=round(hold, 2),
-        min_shot_seconds=MIN_SHOT_SECONDS, max_shot_seconds=MAX_SHOT_SECONDS, cut_lead_seconds=0.0, accents=None,
+        min_shot_seconds=floor, max_shot_seconds=MAX_SHOT_SECONDS, cut_lead_seconds=0.0, accents=None,
     )
 
 
@@ -83,6 +84,7 @@ def build_highlight_plan(
     body = [s for s in shots if s["role"] == "body"]
     lengths = [s["duration_frames"] / fps for s in body] or [s["duration_frames"] / fps for s in shots]
     hold = shots[-1]["duration_frames"] / fps
+    own_rhythm = profile.rhythm_note is not None
     plan: dict[str, Any] = {
         "mode": "highlight", "style": profile.name, "style_sources": profile.source_slugs, "fps": fps, "duration_frames": total_frames, "duration_seconds": round(total_frames / fps, 2),
         "music": {"in_seconds": round(music_in, 3), "fade_out_seconds": round(min(4.0, max(1.5, 0.6 * hold)), 2)},
@@ -100,9 +102,11 @@ def build_highlight_plan(
             "repetition": repetition,
         },
         "notes": [
-            "Cuts land on the music's hits (the share on a hit is in the checks) at a calm pace: shot lengths follow the corporate reference's rhythm times the pace. There is no measured corporate highlight to music, so the rhythm is the narrated reference's, adapted.",
+            (f"Cuts land on the music's hits (the share on a hit is in the checks), cut at {profile.rhythm_note}." if own_rhythm else
+             "Cuts land on the music's hits (the share on a hit is in the checks) at a calm pace: shot lengths follow the corporate reference's rhythm times the pace. There is no measured corporate highlight to music, so the rhythm is the narrated reference's, adapted."),
             "Hard cuts only: no dissolves, flashes, dips or other accents. " + post_steady.moment_note(shots),
-            f"Pace is {pace:g}x the reference's (1.0 = its own, higher = calmer). The song starts on a strong hit and fades out over the closing hold.",
+            (f"Pace is {pace:g}x your usual (1.0 = your own, higher = calmer). The song starts on a strong hit and fades out over the closing hold." if own_rhythm else
+             f"Pace is {pace:g}x the reference's (1.0 = its own, higher = calmer). The song starts on a strong hit and fades out over the closing hold."),
             "Every analysed clip is a candidate for every shot. Each shot is the cleanest stretch of its clip (no cut, smooth, sharp, well exposed) that does not look like a shot already in the edit, and the edit broadly follows the shoot's order. "
             "It does not reorder footage into a story.",
             *(["Repetition: " + (f"{repetition['distinct_looks']} distinct looks in {repetition['shots']} shots; {repetition['alike_neighbours']} neighbouring pair(s) look alike"
