@@ -126,7 +126,30 @@ def describe_pipeline(job: dict[str, Any], files_verified: int | None = None, an
         headline = "Stopped: " + (job.get("error_message") or "something went wrong. Press Retry.")
     else:
         headline = status.replace("_", " ").capitalize()
-    return {"stages": stages, "percent": percent, "headline": headline, "eta_seconds": eta, "needs_attention": needs_attention}
+    return {"stages": stages, "percent": percent, "headline": headline, "eta_seconds": eta, "needs_attention": needs_attention,
+            "plan_edit_blocker": plan_edit_blocker(status, analysed_done)}
+
+
+def plan_edit_blocker(status: str, analysed: bool) -> str | None:
+    """Why Plan Edit can't be pressed yet, in a sentence that says what to do (None = it can). The shoot card greys the button and shows this under it instead of
+    hiding the button and leaving you to guess."""
+    if status in _AFTER_INGEST and analysed:
+        if status == "generating_proxies":
+            return "Plan Edit unlocks when the proxies finish."
+        if status == "analyzing_color":
+            return "Plan Edit unlocks when highlight detection finishes."
+        return None
+    if status == "created":
+        return "Press Start first. Plan Edit unlocks once the shoot is copied, checked and analysed."
+    if status in ("scanning", "ready", "ingesting", "verifying", "analyzing_media"):
+        return "Plan Edit unlocks once the shoot has been copied, checked and analysed."
+    if status == "ingest_failed":
+        return "The copy stopped (see above). Press Retry; Plan Edit unlocks once the shoot is copied and analysed."
+    if status == "cancelled":
+        return "This shoot was cancelled. Press Retry to carry on with it."
+    if status in _AFTER_INGEST:   # copied and checked, never analysed
+        return "Press Analyze Media first: the plan needs to know what each clip is."
+    return "Plan Edit isn't available for this shoot yet."
 
 
 def notify(title: str, body: str) -> None:

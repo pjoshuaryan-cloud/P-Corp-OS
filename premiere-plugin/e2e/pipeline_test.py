@@ -64,6 +64,17 @@ pct = [x["percent"] for x in order]
 check("the percentage only ever goes up through the run, and reaches 100 only at the end", pct == sorted(pct) and pct[-1] == 100 and all(x < 100 for x in pct[:-1]), pct)
 check("times read plainly", (_minutes(40), _minutes(600), _minutes(5400), _minutes(5820), _minutes(7200)) == ("about a minute", "about 10 min", "about 1 h 30 min", "about 1 h 35 min", "about 2 h"), (_minutes(40), _minutes(600), _minutes(5400), _minutes(5820), _minutes(7200)))
 
+# ---- why Plan Edit is greyed out --------------------------------------------------------------------------------------------------------------
+blocker = lambda status, analysed=False: describe_pipeline(job(status, media_analyzed_at="x" if analysed else None))["plan_edit_blocker"]
+check("Plan Edit is open on a copied and analysed shoot", blocker("ingested", True) is None and blocker("premiere_project_created", True) is None and blocker("complete", True) is None)
+check("before Start it says to press Start", "Press Start" in blocker("created"), blocker("created"))
+check("while the shoot is running it says it unlocks when copy, check and analysis are done", all("copied, checked and analysed" in blocker(st) for st in ("scanning", "ready", "ingesting", "verifying", "analyzing_media")))
+check("a copied shoot that was never analysed says to press Analyze Media", "Analyze Media" in blocker("ingested", False), blocker("ingested", False))
+check("a failed copy says to press Retry", "Retry" in blocker("ingest_failed") and "stopped" in blocker("ingest_failed"))
+check("a cancelled shoot says to press Retry", "cancelled" in blocker("cancelled") and "Retry" in blocker("cancelled"))
+check("while proxies or highlights are being made it says what it is waiting for", "proxies" in blocker("generating_proxies", True) and "highlight" in blocker("analyzing_color", True))
+check("every blocker is a sentence that says what to do or wait for (never empty)", all(blocker(st, a) for st in ("created", "scanning", "ready", "ingesting", "verifying", "analyzing_media", "ingest_failed", "cancelled") for a in (True, False)))
+
 # ---- the automatic flow in the ingest worker (everything below it replaced by fakes) ------------------------------------------------------
 notes: list[tuple[str, str]] = []
 log: list[str] = []
