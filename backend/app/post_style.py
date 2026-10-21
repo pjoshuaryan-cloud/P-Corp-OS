@@ -368,3 +368,25 @@ def available_styles(buildable_only: bool = True, **tag_filters) -> list[dict]:
     if not buildable_only:
         return records
     return [r for r in records if type_info(edit_type_of(r))["buildable"]]
+
+
+# Plain names for the planning screen (2026-10-20): a saved reference is called "jd-sports-moa-draft-01" in the files and "JD Sports -- Mall of Africa store opening" in the
+# list, neither of which says what KIND of edit it makes. Keyed by slug; a reference not listed here falls back to its own title and description.
+FRIENDLY_STYLES: dict[str, tuple[str, str]] = {
+    "corporate-highlight-calm": ("Calm corporate highlight", "Cuts to the music at an easy pace on the steadiest shots, with opening and closing brand cards."),
+    "jd-sports-moa-draft-01": ("Fast streetwear reel", "Quick cuts on the beat with flash and zoom accents (your JD Sports draft)."),
+    "energy-drink-powerade": ("Energy-drink reel", "A fast vertical highlight, cut on the music."),
+    "fashion-event-converse-kenzo": ("Fashion event highlight", "A music-driven launch-event highlight."),
+    "furniture-expo-decorex": ("Expo and product highlight", "A music-driven vertical reel for an expo or showroom."),
+    "food-promo-inferred": ("Food and drink promo (estimated)", "Rhythm blended from your drink, furniture and fashion edits."),
+    "corporate-distribution-company": ("Corporate story with narration", "Calm b-roll paced by a voice-over script."),
+    "talking-head-beancounter": ("Talking head, several cameras", "Switches camera angle at the pauses in the dialogue."),
+}
+
+
+def friendly_style(slug: str, fallback_title: str = "", fallback_description: str = "") -> tuple[str, str]:
+    """(plain name, one-line description) for a style slug."""
+    if slug in FRIENDLY_STYLES:
+        return FRIENDLY_STYLES[slug]
+    first = (fallback_description or "").split(". ")[0].strip()
+    return fallback_title or slug, (first[:140] + ("…" if len(first) > 140 else ""))

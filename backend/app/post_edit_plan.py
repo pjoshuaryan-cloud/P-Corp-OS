@@ -619,8 +619,11 @@ def _style_card(record: dict[str, Any]) -> dict[str, Any]:
     tags, summary = record.get("tags") or {}, record.get("summary") or {}
     title = " -- ".join(x for x in (tags.get("client"), tags.get("event")) if x) or record["slug"]
     lengths = summary.get("shot_length_seconds") or {}
+    from app.post_style import friendly_style
+    friendly_title, blurb = friendly_style(record["slug"], title, tags.get("style") or tags.get("genre") or "")
     return {
-        "slug": record["slug"], "title": title, "description": tags.get("style") or tags.get("genre") or "", "format": tags.get("format") or "",
+        "slug": record["slug"], "title": title, "friendly_title": friendly_title, "blurb": blurb,
+        "description": tags.get("style") or tags.get("genre") or "", "format": tags.get("format") or "",
         "seconds": summary.get("duration_seconds"), "median_shot_seconds": lengths.get("median"), "shots": summary.get("shot_count"),
         # overlay_layers is always a dict ({"flash": 0, ...}), so test its COUNTS, not the dict itself
         "has_accents": any((summary.get("overlay_layers") or {}).values()) or bool(summary.get("effects_on_shots")),

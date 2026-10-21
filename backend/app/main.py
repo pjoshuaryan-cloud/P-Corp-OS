@@ -2667,8 +2667,14 @@ async def post_jobs_sources(_: None = Depends(verify_token)) -> dict:
 
 @app.get("/post/jobs")
 async def post_jobs_list(request: Request, status: str | None = None, _: None = Depends(verify_token)) -> dict:
+    from app.post_db import _estimate_remaining_seconds
+    from app.post_pipeline import ANALYSIS_PROGRESS, describe_pipeline
     postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
-    return {"jobs": await list_post_jobs(status, postgres_conn)}
+    jobs = await list_post_jobs(status, postgres_conn)
+    for job in jobs:   # the one-sentence "where is this shoot" (the per-job poll adds the live verify count)
+        job["estimated_remaining_seconds"] = _estimate_remaining_seconds(job)
+        job["pipeline"] = describe_pipeline(job, analysis=ANALYSIS_PROGRESS.get(job["id"]))
+    return {"jobs": jobs}
 
 
 class PostJobCreateRequest(BaseModel):
@@ -3084,6 +3090,58 @@ async def post_job_edit_plan_latest(job_id: int, request: Request, _: None = Dep
     if plan is None:
         raise HTTPException(status_code=404, detail=f"Job #{job_id} has no edit plan yet -- plan one first.")
     return plan
+
+
+class PlanFileRequest(BaseModel):
+    file: str            # one of the file names GET /post/jobs/{id}/edit-plans listed
+    label: str | None = None   # rename only: the name to give it (empty removes the name)
+
+
+@app.get("/post/jobs/{job_id}/edit-plans")
+async def post_job_edit_plans(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """The job's saved plans in plain words (current one first, then newest first): what each is (fresh or reviewed, with accents), its length, shots and style.
+    Backed by the edit_plan_*.json files the planner already keeps; see app/post_plan_history.py."""
+    from app.post_edit_plan import edit_dir
+    from app.post_plan_history import list_plans
+    from app.post_style import friendly_style
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    return {"plans": await on_drive(list_plans, edit_dir(job), lambda slug: friendly_style(slug)[0])}
+
+
+@app.post("/post/jobs/{job_id}/edit-plans/restore")
+async def post_job_edit_plans_restore(job_id: int, body: PlanFileRequest, _: None = Depends(verify_token)) -> dict:
+    """Makes one of the job's saved plans the current one (what the Premiere plugin builds from). Nothing is deleted: the plan it replaces is kept first."""
+    from app.post_edit_plan import edit_dir
+    from app.post_plan_history import PlanHistoryError, restore_plan
+    async with _pooled_postgres_conn() as postgres_conn:
+        job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    try:
+        result = await on_drive(restore_plan, edit_dir(job), body.file, timeout=30.0, writing=True)
+    except PlanHistoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    async with _pooled_postgres_conn() as postgres_conn:
+        await record_tool_call("post_job_plan_restore_ui", {"job_id": job_id, "file": body.file}, "restored" if result["restored"] else "unchanged", postgres_conn)
+    return result
+
+
+@app.post("/post/jobs/{job_id}/edit-plans/rename")
+async def post_job_edit_plans_rename(job_id: int, body: PlanFileRequest, _: None = Depends(verify_token)) -> dict:
+    """Gives a saved plan a name of your own (an empty name removes it). The plan file itself is untouched."""
+    from app.post_edit_plan import edit_dir
+    from app.post_plan_history import PlanHistoryError, rename_plan
+    async with _pooled_postgres_conn() as postgres_conn:
+        job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    try:
+        return await on_drive(rename_plan, edit_dir(job), body.file, body.label or "", timeout=30.0, writing=True)
+    except PlanHistoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 class LearnFromEditRequest(BaseModel):
