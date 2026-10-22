@@ -61,7 +61,7 @@ def build_groups(inventory_name: str = "inventory_before_zero_fix.json") -> list
     from app import post_moments, post_steady
     vision_eval.MODEL = FIRST_PASS_MODEL
     inv = json.loads((footage.DEFAULT_DATA / inventory_name).read_text())
-    measures = {s.path: evaluate.load_measure(s.path) for s in evaluate.sample_shots(inv) if os.path.exists(s.path)}
+    measures = {s.path: m for s in evaluate.sample_shots(inv) if (m := evaluate.load_measure(s.path))}
     groups = []
     for s in evaluate.sample_shots(inv):
         m = measures.get(s.path)

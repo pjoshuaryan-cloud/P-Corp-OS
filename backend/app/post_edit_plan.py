@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app import post_candidate_moments
 from app.post_media import COMPOSE_MIN_START, FFMPEG_PATH
 from app.post_style import StyleProfile
 from app.ssd_guard import DriveNotResponding, on_drive, require_connected
@@ -157,6 +158,7 @@ def select_clips(ordered: list[dict], n: int, exclude_ids: set[int]) -> list[dic
 
 
 EVENT_LEAD_SECONDS = 0.12  # a shot starts just before its event so the action begins inside it
+DESCRIBE_MODEL_FOR_ESTIMATES = "claude-sonnet-5-5"   # the model main.DESCRIBE_MODEL names (kept here to avoid importing main); only used to price estimates
 SAME_SCENE_PENALTY = 1.5  # punch points knocked off a clip that shows the same scene as the previous shot's clip
 
 
@@ -252,6 +254,7 @@ def build_plan(
             "start_frame": f0, "duration_frames": f1 - f0,
             "source_in": w["start"], "source_out": round(w["start"] + (f1 - f0) / fps, 3),
             "moment_source": w["source"], "cut_hit_percentile": cut["hit_pct"], "cut_on_hit": cut["on_hit"],
+            "candidate": post_candidate_moments.compact(post_candidate_moments.describe(clip, w, describe_provenance=clip.get("moments_provenance"), length=(f1 - f0) / fps)),
         })
     lengths = [s["duration_frames"] / fps for s in shots]
     plan = {
@@ -389,6 +392,8 @@ def attach_moments(clips: list[dict], job: dict) -> list[dict]:
         m = known.get(str(c["file_id"]))
         if m and abs(m.get("duration", 0) - c["duration"]) <= 0.05:
             c["events"], c["scene"], c["people"] = m["events"], m.get("scene", ""), m.get("people", False)
+            if m.get("provenance"):
+                c["moments_provenance"] = m["provenance"]
     return clips
 
 
@@ -470,9 +475,13 @@ async def plan_for_job(
         from app.post_edit_highlight import build_highlight_plan
         from app.post_steady import analyse_clips, coverage_note
         steady_counts = await analyse_clips(clips, job, only_cached=quick, always={bookend_file_id} if bookend_file_id is not None else None)
+        from app.post_learning_events import adopted_preferences
+        learned = adopted_preferences()   # None unless learning/adopt_preferences.py's held-out gate passed: then the plan is exactly what it always was
         plan = build_highlight_plan(profile=profile, hits=analysis["hits"], music_in=music_in, duration=duration, fps=fps, clips=clips, bookend_file_id=bookend_file_id,
                                     seed=seed, pace=default_pace(profile) if pace is None else pace, slow_zooms=slow_zooms, with_opener=bookend_file_id is not None or bool(graphics_logo and graphics_size),
-                                    fill_frame=True if fill_frame is None else fill_frame)
+                                    fill_frame=True if fill_frame is None else fill_frame, picker_options={"preferences": learned} if learned else None)
+        if learned:
+            plan["notes"].append(learned_note(learned))
         plan["notes"].append(f"Steadiness: {steady_counts['analysed']} clip(s) analysed now, {steady_counts['cached']} from this job's cache" + (f", {steady_counts['unreadable']} unreadable (those were planned the old way, from the middle of the clip)." if steady_counts["unreadable"] else "."))
         plan["notes"].append(coverage_note(clips, quick))
     elif timeline is not None:
@@ -513,6 +522,13 @@ async def plan_for_job(
     await on_drive(_save_plan_files, plan, out_dir, label, timeout=30.0, writing=True)
     plan["plan_path"] = str(out_dir / "edit_plan_latest.json")
     return plan
+
+
+def learned_note(learned: dict[str, float]) -> str:
+    """What the plan says when learned preferences shaped it."""
+    parts = ", ".join(f"{k.replace('_', ' ')} {v:+.2f}" for k, v in sorted(learned.items(), key=lambda kv: -kv[1]) if v)
+    return ("Learned from your own review decisions and edits (it passed the held-out test on your finished edits): moments are nudged by kind -- "
+            f"{parts or 'no kind moved'}. Each shot's score breakdown shows its nudge.")
 
 
 def _save_plan_files(plan: dict[str, Any], out_dir: Path, label: str | None) -> None:
@@ -614,12 +630,12 @@ def saved_plan_summary(job: dict) -> dict[str, Any] | None:
 
 
 def list_music_files(job: dict) -> list[dict[str, Any]]:
-    """Songs in the job's music folder, newest first (the reel cuts this system writes itself are left out)."""
-    from app.post_music import AUDIO_EXTENSIONS
+    """Songs in the job's music folder, newest first (the music cuts this system writes itself are left out)."""
+    from app.post_music import AUDIO_EXTENSIONS, is_own_cut
     folder = music_dir(job)
     if not folder.is_dir():
         return []
-    files = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS and not p.name.startswith(".") and "_reelcut" not in p.stem]
+    files = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS and not p.name.startswith(".") and not is_own_cut(p)]
     files.sort(key=lambda p: -p.stat().st_mtime)
     return [{"path": str(p), "name": p.name, "megabytes": round(p.stat().st_size / 1_000_000, 1)} for p in files]
 
@@ -645,9 +661,11 @@ def describe_status(job: dict, clips: list[dict]) -> dict[str, Any]:
     """How many of the clips have a description (what they show + their best moments), what describing the rest would
     cost at most, and the state of a describe run in this process. No Claude call, no database."""
     import os
-    from app.post_moments import estimate_cost, load_moments, missing_clips, run_state
-    missing = missing_clips(clips, load_moments(edit_dir(job)))
-    return {"total": len(clips), "described": len(clips) - len(missing), "missing": len(missing), "estimate": estimate_cost(len(missing)),
+    from app.post_moments import estimate_cost, freshness, load_moments, missing_clips, run_state, usage_summary
+    moments = load_moments(edit_dir(job))
+    missing = missing_clips(clips, moments)
+    return {"total": len(clips), "described": len(clips) - len(missing), "missing": len(missing), "estimate": estimate_cost(len(missing), DESCRIBE_MODEL_FOR_ESTIMATES),
+            "freshness": freshness(moments, DESCRIBE_MODEL_FOR_ESTIMATES), "spent": usage_summary(edit_dir(job)),
             "run": run_state(job["id"]), "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY"))}
 
 

@@ -385,7 +385,7 @@ CLOUD_POSTGRES_DSN = os.environ.get("CLOUD_POSTGRES_DSN")
 MODEL = "claude-sonnet-5"
 # Describe clips (app/post_moments.py) looks at pictures to find each clip's best moments. Tested 2026-10-19 on 168 of Josh's real shots (learning/vision_eval.py):
 # claude-sonnet-5-5 scored 8.9% first try / 25.6% top-3, claude-sonnet-5 8.3% / 20.2% (random 6.5% / 18.1%) -- a gap inside the noise, so this is a recommendation, not a proof.
-DESCRIBE_MODEL = "claude-sonnet-5-5"
+DESCRIBE_MODEL = "claude-sonnet-5-5"   # post_edit_plan.DESCRIBE_MODEL_FOR_ESTIMATES must name the same model (premiere-plugin/e2e/cost_cache_test.py checks)
 # Real bug found 2026-07-31: 1024 was cutting off longer replies mid-
 # generation (confirmed directly -- a multi-phase SOP relayed from the
 # Operations Agent got truncated, twice, in real use). Raising the
@@ -1200,7 +1200,7 @@ _SLOW_VENTURE_ROUTE_RE = re.compile(
 _SLOW_POST_VISION_ROUTE_RE = re.compile(r"^/post/jobs/\d+/files/\d+/visual-analysis$")
 # Edit plan + preview routes (2026-10-07): song analysis and video rendering take seconds to a minute, so
 # they manage their own short-lived connection like the other slow routes (no pooled one held across ffmpeg).
-_SLOW_POST_EDIT_ROUTE_RE = re.compile(r"^/post/jobs/\d+/(edit-plan|edit-preview|find-moments)$")
+_SLOW_POST_EDIT_ROUTE_RE = re.compile(r"^/post/jobs/\d+/(edit-plan|edit-preview|find-moments|edit-variants)$")
 
 
 def _is_slow_route(method: str, path: str) -> bool:
@@ -3290,11 +3290,11 @@ class ReviewChoiceRequest(BaseModel):
     action: str  # "swap" (use this moment) or "approve" (keep the current one)
 
 
-def _save_review_choice(job: dict, job_id: int, plan: dict, action: str, outcome: dict) -> None:
+def _save_review_choice(job: dict, job_id: int, plan: dict, action: str, outcome: dict) -> str | None:
     from app.post_edit_plan import edit_dir, plan_to_json
     from app.post_review import log_record
     (edit_dir(job) / "edit_plan_latest.json").write_text(plan_to_json(plan))
-    log_record(edit_dir(job), job_id, plan, action, outcome)
+    return log_record(edit_dir(job), job_id, plan, action, outcome)   # the learning event's id, for a reason given afterwards
 
 
 @app.post("/post/jobs/{job_id}/edit-review/choice")
@@ -3309,10 +3309,11 @@ async def post_job_edit_review_choice(job_id: int, body: ReviewChoiceRequest, re
             outcome = apply_choice(plan, clips, body.slot_index, body.file_id, body.source_in, body.action)
         except ReviewError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        await on_drive(_save_review_choice, job, job_id, plan, body.action, outcome, writing=True)
+        event_id = await on_drive(_save_review_choice, job, job_id, plan, body.action, outcome, writing=True)
         review = build_review(plan, clips)
     await record_tool_call("post_job_edit_review_ui", {"job_id": job_id, "slot": body.slot_index, "action": body.action}, "ok", postgres_conn)
-    return {"slot": next(s for s in review["slots"] if s["index"] == body.slot_index), "approved": review["approved"], "total": review["total"], "swapped": review["swapped"], "slowed": review["slowed"]}
+    return {"slot": next(s for s in review["slots"] if s["index"] == body.slot_index), "approved": review["approved"], "total": review["total"], "swapped": review["swapped"],
+            "slowed": review["slowed"], "event_id": event_id}
 
 
 class ReviewSpeedRequest(BaseModel):
@@ -3341,6 +3342,236 @@ async def post_job_edit_review_speed(job_id: int, body: ReviewSpeedRequest, requ
         review = build_review(plan, clips)
     await record_tool_call("post_job_edit_review_speed_ui", {"job_id": job_id, "slot": body.slot_index, "speed": body.speed}, "ok", postgres_conn)
     return {"slot": next(s for s in review["slots"] if s["index"] == body.slot_index), "approved": review["approved"], "total": review["total"], "swapped": review["swapped"], "slowed": review["slowed"]}
+
+
+def _save_review_change(job: dict, plan: dict, events: list[dict], archive: bool = False) -> int:
+    """Writes the plan (archiving the one it replaces first when `archive`: a regeneration changes many shots at once, so Plan history can bring them back) and the
+    change's learning events. Returns how many events were written (-1 = not recorded)."""
+    from app import post_learning_events as le
+    from app.post_edit_plan import archive_previous_plan, edit_dir, plan_to_json
+    if archive:
+        archive_previous_plan(edit_dir(job))
+    (edit_dir(job) / "edit_plan_latest.json").write_text(plan_to_json(plan))
+    return le.record_for_job(edit_dir(job), events)
+
+
+class ReviewLockRequest(BaseModel):
+    slot_index: int
+    locked: bool = True
+
+
+@app.post("/post/jobs/{job_id}/edit-review/lock")
+async def post_job_edit_review_lock(job_id: int, body: ReviewLockRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Locks a shot so Regenerate leaves it alone (it also counts as reviewed), or unlocks it. Saved in the plan; logged as a learning event."""
+    from app.post_review import ReviewError, build_review, review_events, set_lock
+    async with _EDIT_REVIEW_LOCK:
+        job, plan, clips, postgres_conn = await _review_context(job_id, request)
+        try:
+            outcome = set_lock(plan, body.slot_index, body.locked)
+        except ReviewError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await on_drive(_save_review_change, job, plan, review_events(job_id, plan, "locked" if body.locked else "unlocked", outcome), writing=True)
+        review = build_review(plan, clips)
+    await record_tool_call("post_job_edit_review_lock_ui", {"job_id": job_id, "slot": body.slot_index, "locked": body.locked}, "ok", postgres_conn)
+    return {"slot": next(s for s in review["slots"] if s["index"] == body.slot_index), "approved": review["approved"], "total": review["total"], "locked": review["locked"]}
+
+
+class ReviewRegenerateRequest(BaseModel):
+    from_index: int
+    to_index: int
+
+
+@app.post("/post/jobs/{job_id}/edit-review/regenerate")
+async def post_job_edit_review_regenerate(job_id: int, body: ReviewRegenerateRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Re-picks the shots from `from_index` to `to_index` that Josh hasn't decided on (locked, kept, picked and slowed shots stay) with the planner's own picker
+    (post_review.regenerate_section); shots outside the range and cut timing never change. Each changed shot offers back the moment it had just before. The plan it
+    replaces is archived first (Plan history can restore it). Saved in the plan; logged as learning events."""
+    from app.post_review import ReviewError, build_review, regenerate_section, review_events
+    async with _EDIT_REVIEW_LOCK:
+        job, plan, clips, postgres_conn = await _review_context(job_id, request)
+        try:
+            outcome = await asyncio.to_thread(regenerate_section, plan, clips, body.from_index, body.to_index)   # a picker pass: off the event loop, so chat stays responsive
+        except ReviewError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        events = review_events(job_id, plan, "regenerated", outcome)
+        written = await on_drive(_save_review_change, job, plan, events, bool(outcome["regenerated"]), writing=True)   # archive only when something changed
+        review = build_review(plan, clips)
+    await record_tool_call("post_job_edit_review_regenerate_ui", {"job_id": job_id, "from": body.from_index, "to": body.to_index, "changed": len(outcome["regenerated"])}, "ok", postgres_conn)
+    changed = {c["index"] for c in outcome["regenerated"]}
+    return {"regenerated": sorted(changed), "unchanged": outcome["unchanged"], "locked_kept": outcome["locked_kept"], "kept_yours": outcome["kept_yours"],
+            "slots": [s for s in review["slots"] if s["index"] in changed], "approved": review["approved"], "total": review["total"], "swapped": review["swapped"],
+            "event_ids": {str(e["slot"]["index"]): e["id"] for e in events} if written >= 0 else {}}
+
+
+class ReviewReasonRequest(BaseModel):
+    slot_index: int
+    reasons: list[str]          # codes from GET /post/learning/reason-codes
+    note: str | None = None     # optional, at most 280 characters
+    explains: str | None = None  # the change's event id (event_id from the choice route, event_ids from regenerate); default: the shot's latest change
+
+
+@app.post("/post/jobs/{job_id}/edit-review/reason")
+async def post_job_edit_review_reason(job_id: int, body: ReviewReasonRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Why Josh changed a shot (optional chips after a swap, nudge or regeneration). Logged as a learning event that names the change; "Client asked for it" takes
+    that change out of his taste evidence. The plan itself is not changed."""
+    from app import post_learning_events as le
+    from app.post_edit_plan import edit_dir
+    from app.post_review import ReviewError, reason_event
+    async with _EDIT_REVIEW_LOCK:
+        job, plan, _clips, postgres_conn = await _review_context(job_id, request)
+        try:
+            event = await on_drive(reason_event, edit_dir(job), job_id, plan, body.slot_index, body.reasons, body.note, body.explains)
+        except ReviewError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        written = await on_drive(le.record_for_job, edit_dir(job), [event], writing=True)
+    await record_tool_call("post_job_edit_review_reason_ui", {"job_id": job_id, "slot": body.slot_index, "reasons": body.reasons}, "ok" if written >= 0 else "not recorded", postgres_conn)
+    if written < 0:
+        raise HTTPException(status_code=500, detail="The reason couldn't be saved (the job's drive may be unavailable).")
+    return {"recorded": True, "taste_signal": event["taste_signal"], "explains": event["context"]["explains_outcome"]}
+
+
+@app.get("/post/learning/reason-codes")
+async def post_learning_reason_codes(_: None = Depends(verify_token)) -> dict:
+    """The reasons the review page offers after a change, with their labels. 'client_request' never counts as Josh's taste."""
+    from app import post_learning_events as le
+    return {"reasons": [{"code": k, "label": v, "taste": k not in le.NOT_TASTE_REASONS} for k, v in le.REASON_CODES.items()]}
+
+
+@app.get("/post/jobs/{job_id}/learning-events")
+async def post_job_learning_events(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """What the job's learning file holds: counts by category, confidence, outcome and reason, and per kind of moment how often the planned one was kept.
+    Read-only; nothing here changes a plan (a learned ordering must pass the adoption gate first)."""
+    from app import post_learning_events as le
+    from app.post_edit_plan import edit_dir
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    events = await on_drive(le.load_events, edit_dir(job) / le.EVENTS_FILE)
+    return {"summary": le.summarize(events), "reasons": le.reason_counts(events), "kind_evidence": le.kind_evidence(events),
+            "proposed_adjustments": le.ranking_adjustments(events), "note": "Counting only. Nothing here changes a plan until it passes the held-out adoption gate."}
+
+
+# ---------------------------------------------------------------------------------------------------- variants (post_variants.py)
+@app.get("/post/style-library")
+async def post_style_library_route(_: None = Depends(verify_token)) -> dict:
+    """The Editing Style Library: every direction, what is measured and what is guidance, whether it can be built as a variant, and what it executes versus only proposes."""
+    from app import post_style_library as lib
+    from app.post_variants import DEFAULT_DIRECTIONS, MAX_VARIANTS, MIN_VARIANTS
+    return {"styles": lib.list_styles(), "default_directions": list(DEFAULT_DIRECTIONS), "min_variants": MIN_VARIANTS, "max_variants": MAX_VARIANTS}
+
+
+class EditVariantsRequest(BaseModel):
+    count: int = 3                         # 2 to 4
+    styles: list[str] | None = None        # library slugs (or 'hybrid:a+b:NN'); default: the first `count` default directions
+    target_seconds: float | None = None    # default: your usual length
+    music_path: str | None = None          # default: the newest track in the job's music folder
+    music_in_seconds: float | None = None  # default: the stretch of the song with the most strong hits
+    seed: int = 7
+    quick: bool = True                     # plan from the clips already read (cached); false reads any clip not read yet first
+
+
+@app.post("/post/jobs/{job_id}/edit-variants")
+async def post_job_edit_variants(job_id: int, body: EditVariantsRequest, _: None = Depends(verify_token)) -> dict:
+    """Plans 2-4 genuinely different edits of the job from ONE analysis (same song window, length and clips; no Claude API call) and saves them beside the plan with
+    a comparison. The job's current plan is not touched until one is chosen (POST .../edit-variants/use). A slow route (song analysis) -- manages its own connection."""
+    from app.post_variants import VariantError, plan_variants_for_job
+    async with _pooled_postgres_conn() as postgres_conn:
+        try:
+            summary = await plan_variants_for_job(job_id, count=body.count, styles=body.styles, target_seconds=body.target_seconds, music_path=body.music_path,
+                                                  music_in_seconds=body.music_in_seconds, seed=body.seed, quick=body.quick, postgres_conn=postgres_conn)
+        except VariantError as exc:
+            raise HTTPException(status_code=404 if str(exc).startswith("No POST job") else 400, detail=str(exc))
+        await record_tool_call("post_job_edit_variants_ui", {"job_id": job_id, "set_id": summary["set_id"], "styles": [v["style"] for v in summary["variants"]]}, "ok", postgres_conn)
+    return summary
+
+
+@app.get("/post/jobs/{job_id}/edit-variants")
+async def post_job_edit_variants_list(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """The job's saved variant sets, newest first, with the newest set's full comparison."""
+    from app.post_edit_plan import edit_dir
+    from app.post_variants import list_sets, load_set
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    sets = await on_drive(list_sets, edit_dir(job))
+    latest = await on_drive(load_set, edit_dir(job), sets[0]["set_id"]) if sets else None
+    return {"job": {"id": job["id"], "shoot_name": job["shoot_name"]}, "sets": sets, "latest": latest}
+
+
+@app.get("/post/jobs/{job_id}/edit-variants/{set_id}")
+async def post_job_edit_variants_set(job_id: int, set_id: str, request: Request, _: None = Depends(verify_token)) -> dict:
+    """One saved variant set: every variant's direction, measured shape, what it executes and only proposes, and how alike the variants are."""
+    from app.post_edit_plan import edit_dir
+    from app.post_variants import VariantError, load_set
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    try:
+        return await on_drive(load_set, edit_dir(job), set_id)
+    except VariantError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/post/jobs/{job_id}/edit-variants/{set_id}/{index}")
+async def post_job_edit_variants_one(job_id: int, set_id: str, index: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """One variant as a complete plan (the same shape the plugin builds from)."""
+    from app.post_edit_plan import edit_dir
+    from app.post_variants import VariantError, load_variant
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    try:
+        return await on_drive(load_variant, edit_dir(job), set_id, index)
+    except VariantError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+class UseVariantRequest(BaseModel):
+    set_id: str
+    index: int
+
+
+def _use_variant_and_log(edit_dir_: Path, job_id: int, set_id: str, index: int) -> dict:
+    from app import post_learning_events as le
+    from app.post_variants import load_set, use_variant
+    summary = load_set(edit_dir_, set_id)
+    plan = use_variant(edit_dir_, set_id, index)
+    offered = [v["style"] for v in summary.get("variants", [])]
+    le.record_for_job(edit_dir_, [le.make_event(category="explicit_feedback", confidence="confirmed", outcome="chosen", source="variants_page", job_id=job_id,
+                                                ts=le.now_precise(), context={"set_id": set_id, "index": index, "chosen": plan["variant"]["style"], "offered": offered})])
+    return plan
+
+
+@app.post("/post/jobs/{job_id}/edit-variants/use")
+async def post_job_edit_variants_use(job_id: int, body: UseVariantRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Makes one variant the job's plan (what Build My Edit builds). The plan it replaces is archived first (Plan history lists it; Restore brings it back).
+    Logged as a learning event (which direction he chose, from which)."""
+    from app.post_edit_plan import edit_dir, load_job_clips
+    from app.post_variants import VariantError, load_variant, validate_plan
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None   # a fast route: the request's own connection
+    job = await get_post_job(job_id, postgres_conn)
+    clips = await load_job_clips(job_id, postgres_conn) if job is not None else []
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    try:   # checked before it replaces the plan: its clips must still be the job's, inside their length, and on the drive
+        candidate = await on_drive(load_variant, edit_dir(job), body.set_id, body.index)
+    except VariantError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    existing = await on_drive(lambda: {c["path"] for c in clips if c.get("path") and Path(c["path"]).exists()}, timeout=60.0)
+    problems = validate_plan(candidate, clips, existing)
+    if problems:
+        raise HTTPException(status_code=400, detail="This variant can't be used as it stands, so your current plan was left alone: " + " ".join(problems[:3]))
+    async with _EDIT_REVIEW_LOCK:
+        try:
+            plan = await on_drive(_use_variant_and_log, edit_dir(job), job_id, body.set_id, body.index, timeout=30.0, writing=True)
+        except VariantError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+    await record_tool_call("post_job_edit_variants_use_ui", {"job_id": job_id, "set_id": body.set_id, "index": body.index}, "ok", postgres_conn)
+    return {"chosen": plan["variant"]["name"], "style": plan["style"], "shots": len(plan["shots"]), "seconds": plan.get("duration_seconds")}
 
 
 @app.get("/post/jobs/{job_id}/edit-preview/file")
@@ -3469,7 +3700,7 @@ async def post_job_find_moments(job_id: int, body: FindMomentsRequest, _: None =
         raise HTTPException(status_code=409, detail=str(exc))
     async with _pooled_postgres_conn() as postgres_conn:
         await record_tool_call("post_job_find_moments_ui", {"job_id": job_id, "clips": count}, "started", postgres_conn)
-    return {"started": True, "run": run, "estimate": estimate_cost(count)}
+    return {"started": True, "run": run, "estimate": estimate_cost(count, DESCRIBE_MODEL)}
 
 
 @app.post("/post/jobs/{job_id}/find-moments/cancel")

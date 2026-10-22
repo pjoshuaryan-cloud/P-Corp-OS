@@ -64,6 +64,18 @@
   #banner.ok { background: #16342f; color: #bff0e6; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); padding: 10px 16px; border-radius: 8px; z-index: 20; max-width: 90vw; }
   .toast.bad { border-color: var(--bad); color: #ffd7d2; }
+  .why { color: var(--muted); font-size: 12px; border-left: 2px solid var(--line); padding-left: 8px; }
+  button.lock.on { color: var(--accent-ink); background: var(--warn); border-color: var(--warn); font-weight: 650; }
+  .pill.lockpill { color: var(--warn); }
+  .card.locked { border-color: #6b5326; }
+  .reasons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding-top: 4px; border-top: 1px dashed var(--line); }
+  .reasons .q { color: var(--muted); font-size: 12px; margin-right: 2px; }
+  .reasons button { font-size: 12px; padding: 3px 9px; border-radius: 999px; }
+  .reasons button.client { border-style: dashed; }
+  a.navlink { color: var(--text); text-decoration: none; border: 1px solid var(--line); padding: 7px 12px; border-radius: 6px; background: var(--panel-2); }
+  a.navlink:hover { border-color: #46505f; }
+  .regen-row { display: flex; gap: 10px; align-items: center; margin: 10px 0 14px; }
+  .regen-row input { width: 80px; margin: 0; }
   @media (prefers-reduced-motion: reduce) { .progress .fill { transition: none; } }
 </style>
 </head>
@@ -73,12 +85,14 @@
   <div class="progress"><div class="sub" id="progressText">&nbsp;</div><div class="track"><div class="fill" id="fill"></div></div></div>
   <label class="toggle"><input type="checkbox" id="onlyOpen"> Show only shots I haven't reviewed</label>
   <div class="spacer"></div>
+  <a class="navlink" id="variantsLink" href="#">Variants</a>
+  <button id="regenBtn" hidden title="Re-pick a run of shots you don't like. Locked shots stay.">Regenerate shots…</button>
   <button id="previewBtn">Rebuild preview video</button>
   <button id="tokenBtn" title="Change the saved token">Token</button>
 </header>
 <div id="banner" hidden></div>
 <main>
-  <p class="sub" style="max-width:760px;margin:0 0 16px">Each card is one shot of the plan, at a fixed point on the music. Click a smaller clip to use that moment instead, or <b>Keep this</b> if the current one is right. On high frame rate clips you can also turn on <b>Slow motion</b> (half speed): the shot keeps its place on the music and shows half as much of the clip. Hover a small clip to play it. Every choice is saved immediately, and what you pass over is recorded too, so future edits learn your taste.</p>
+  <p class="sub" style="max-width:760px;margin:0 0 16px">Each card is one shot of the plan, at a fixed point on the music. Click a smaller clip to use that moment instead (<b>← earlier</b> and <b>later →</b> are the same moment, re-timed), or <b>Keep this</b> if the current one is right. <b>Lock</b> a shot you want to keep no matter what, then <b>Regenerate shots…</b> re-picks a run of the others. On high frame rate clips you can also turn on <b>Slow motion</b> (half speed): the shot keeps its place on the music and shows half as much of the clip. Hover a small clip to play it. Every choice is saved immediately, and what you pass over is recorded too. After a swap you can say why; "Client asked for it" is kept out of what the system learns about your taste.</p>
   <div class="grid" id="grid"></div>
 </main>
 
@@ -89,6 +103,12 @@
   <div style="display:flex;gap:8px;justify-content:flex-end"><button id="tokenSave" class="primary">Save</button></div>
 </dialog>
 <dialog id="player"><video id="playerVideo" controls playsinline></video><div style="margin-top:12px;text-align:right"><button id="playerClose">Close</button></div></dialog>
+<dialog id="regenDialog">
+  <h2>Regenerate shots</h2>
+  <div class="sub">Re-picks the shots in this range you haven't decided on, with fresh footage. Shots you locked, kept, picked or slowed, opening and closing shots, and the cut timing stay exactly as they are. Each new shot offers back what it showed before ("before regenerate"), and the whole previous plan is kept in Plan history.</div>
+  <div class="regen-row"><label>From shot <input id="regenFrom" type="number" min="1"></label><label>to <input id="regenTo" type="number" min="1"></label></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end"><button id="regenCancel">Cancel</button><button id="regenGo" class="primary">Regenerate</button></div>
+</dialog>
 <div class="toast" id="toast" hidden></div>
 
 <script>
@@ -139,13 +159,16 @@ function video(c, autoplay) {
   seen.observe(holder); return holder;
 }
 function kindPill(c) { const k = c.kind; const s = document.createElement("span"); s.className = "pill kind"; s.textContent = k ? k.replace("_", " ") : (c.tag || "no event known"); s.style.color = k ? `var(--${k})` : "var(--muted)"; return s; }
-const originLabel = { same_clip: "same clip", other_clip: "other clip", original: "original" };
+const originLabel = { same_clip: "same clip", other_clip: "other clip", original: "original", previous: "before regenerate", earlier: "← earlier", later: "later →" };
+const askReason = new Map();           // shot just swapped -> the id of that change's learning event: offer the optional "why" chips once
+let reasonCodes = null;
 function cardFor(slot) {
-  const card = document.createElement("section"); card.className = "card" + (slot.approved ? " approved" : ""); card.dataset.index = slot.index;
+  const card = document.createElement("section"); card.className = "card" + (slot.approved ? " approved" : "") + (slot.locked ? " locked" : ""); card.dataset.index = slot.index;
   const head = document.createElement("div"); head.className = "head";
   head.innerHTML = `<span class="n">Shot ${slot.index}</span><span class="meta">${slot.seconds.toFixed(2)} s · cut at ${slot.cut_at_seconds.toFixed(2)} s</span>`;
   if (slot.role !== "body") { const p = document.createElement("span"); p.className = "pill role"; p.textContent = slot.role === "opener" ? "opener" : "closing card"; head.appendChild(p); }
   if (slot.speed && slot.speed < 1) { const p = document.createElement("span"); p.className = "pill slowpill"; p.textContent = "slow motion"; head.appendChild(p); }
+  if (slot.locked) { const p = document.createElement("span"); p.className = "pill lockpill"; p.textContent = "locked"; head.appendChild(p); }
   if (slot.approved) { const p = document.createElement("span"); p.className = "pill ok"; p.textContent = "reviewed"; head.appendChild(p); }
   card.appendChild(head);
   const main = document.createElement("div"); main.className = "main"; main.appendChild(video(slot.current, true));
@@ -154,9 +177,15 @@ function cardFor(slot) {
   const small = document.createElement("div"); small.className = "small";
   small.textContent = [slot.current.scene, slot.current.name.replace(".MP4", ""), slot.current.clip_position != null ? `${Math.round(slot.current.clip_position * 100)}% into the clip` : null, slot.current.punch != null ? `punch ${slot.current.punch}` : null].filter(Boolean).join(" · ");
   info.appendChild(small);
+  if (slot.why) { const w = document.createElement("div"); w.className = "why"; w.textContent = "Why this shot: " + slot.why; info.appendChild(w); }
   const actions = document.createElement("div"); actions.className = "actions";
   const keep = document.createElement("button"); keep.className = slot.approved ? "" : "primary"; keep.textContent = slot.approved ? "Keep this (again)" : "Keep this";
   keep.onclick = () => choose(slot, slot.current, "approve", card); actions.appendChild(keep); info.appendChild(actions);
+  if (slot.role === "body" && review && review.can_regenerate) {
+    const lock = document.createElement("button"); lock.className = "lock" + (slot.locked ? " on" : ""); lock.textContent = slot.locked ? "Locked" : "Lock";
+    lock.title = slot.locked ? "Click to unlock: Regenerate may then replace this shot" : "Keep this shot when you regenerate the shots around it";
+    lock.onclick = () => setLock(slot, !slot.locked, card, lock); actions.appendChild(lock);
+  }
   const slowed = slot.speed && slot.speed < 1;
   if (slot.can_slow) {
     const slow = document.createElement("button"); slow.className = "slow" + (slowed ? " on" : ""); slow.dataset.role = "slow";
@@ -176,24 +205,72 @@ function cardFor(slot) {
     const lab = document.createElement("div"); lab.className = "lab"; lab.innerHTML = `<span style="color:${a.kind ? `var(--${a.kind})` : "var(--muted)"}">${a.kind ? a.kind.replace("_", " ") : (a.tag || "?")}</span><br>${originLabel[a.origin] || a.origin}${a.origin === "other_clip" ? "<br>" + a.name.replace("MNSTR", "").replace(".MP4", "") : ""}`;
     b.appendChild(lab); b.onclick = () => choose(slot, a, "swap", card, b); alts.appendChild(b);
   }
-  card.appendChild(alts); return card;
+  card.appendChild(alts);
+  if (askReason.has(slot.index) && reasonCodes) card.appendChild(reasonRow(slot, card));
+  return card;
 }
+function reasonRow(slot, card) {
+  const row = document.createElement("div"); row.className = "reasons";
+  const q = document.createElement("span"); q.className = "q"; q.textContent = "Why did you change it? (optional)"; row.appendChild(q);
+  for (const r of reasonCodes) {
+    const b = document.createElement("button"); b.textContent = r.label; if (!r.taste) { b.className = "client"; b.title = "Kept out of what the system learns about your taste"; }
+    b.onclick = async () => {
+      row.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+      try {
+        await api(`/post/jobs/${jobId}/edit-review/reason`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slot_index: slot.index, reasons: [r.code], explains: askReason.get(slot.index) }) });
+        askReason.delete(slot.index); row.replaceWith(Object.assign(document.createElement("div"), { className: "small", textContent: `Reason saved: ${r.label}${r.taste ? "" : " (not counted as your taste)"}` }));
+      } catch (e) { toast(e.message, true); row.querySelectorAll("button").forEach((x) => { x.disabled = false; }); }
+    };
+    row.appendChild(b);
+  }
+  const skip = document.createElement("button"); skip.textContent = "Skip"; skip.onclick = () => { askReason.delete(slot.index); row.remove(); }; row.appendChild(skip);
+  return row;
+}
+function updateHeader() {
+  $("progressText").textContent = `${review.approved} of ${review.total} shots reviewed`; $("fill").style.width = `${Math.round((review.approved / review.total) * 100)}%`;
+  $("sub").textContent = `${review.slots.length} shots · ${review.duration_seconds} s · style: ${review.style} · ${review.swapped} swapped${review.slowed ? ` · ${review.slowed} slowed` : ""}${review.locked ? ` · ${review.locked} locked` : ""}`;
+}
+async function setLock(slot, locked, card, btn) {
+  btn.disabled = true;
+  try {
+    const res = await (await api(`/post/jobs/${jobId}/edit-review/lock`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slot_index: slot.index, locked }) })).json();
+    const i = review.slots.findIndex((s) => s.index === slot.index); review.slots[i] = res.slot; review.approved = res.approved; review.locked = res.locked;
+    const fresh = cardFor(res.slot); card.replaceWith(fresh); updateHeader();
+    toast(locked ? `Shot ${slot.index}: locked` : `Shot ${slot.index}: unlocked`);
+  } catch (e) { toast(e.message, true); btn.disabled = false; }
+}
+$("regenBtn").onclick = () => {
+  const open = review.slots.filter((s) => s.role === "body" && !s.locked && !s.approved);
+  $("regenFrom").value = open.length ? open[0].index : 1; $("regenTo").value = open.length ? open[open.length - 1].index : review.total;
+  $("regenDialog").showModal();
+};
+$("regenCancel").onclick = () => $("regenDialog").close();
+$("regenGo").onclick = async () => {
+  const b = $("regenGo"); b.disabled = true; b.textContent = "Regenerating…";
+  try {
+    const res = await (await api(`/post/jobs/${jobId}/edit-review/regenerate`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from_index: Number($("regenFrom").value), to_index: Number($("regenTo").value) }) })).json();
+    for (const s of res.slots) { const i = review.slots.findIndex((x) => x.index === s.index); review.slots[i] = s; }
+    review.approved = res.approved; review.swapped = res.swapped; $("regenDialog").close(); render();
+    const kept = res.kept_yours.length ? `, ${res.kept_yours.length} of yours left as they were` : ""; const none = res.unchanged.length ? `, ${res.unchanged.length} had nothing new left` : "";
+    banner("ok", `Saved -- regenerated ${res.regenerated.length} shot${res.regenerated.length === 1 ? "" : "s"}${kept}${none}. Each new one offers back what it showed before ("before regenerate"); the whole previous plan is in Plan history. (Connected to ${location.host})`);
+  } catch (e) { toast(e.message, true); } finally { b.disabled = false; b.textContent = "Regenerate"; }
+};
 function render() {
   const grid = $("grid"); const only = $("onlyOpen").checked; grid.textContent = "";
   for (const slot of review.slots) if (!only || !slot.approved) grid.appendChild(cardFor(slot));
   $("title").textContent = `Edit review — ${review.job.shoot_name}`;
-  $("sub").textContent = `${review.slots.length} shots · ${review.duration_seconds} s · style: ${review.style} · ${review.swapped} swapped${review.slowed ? ` · ${review.slowed} slowed` : ""}`;
-  $("progressText").textContent = `${review.approved} of ${review.total} shots reviewed`;
-  $("fill").style.width = `${Math.round((review.approved / review.total) * 100)}%`;
+  $("regenBtn").hidden = !review.can_regenerate;
+  updateHeader();
 }
 async function choose(slot, cand, action, card, btn) {
   if (btn) btn.classList.add("busy");
   try {
     const res = await (await api(`/post/jobs/${jobId}/edit-review/choice`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slot_index: slot.index, file_id: cand.file_id, source_in: cand.source_in, action }) })).json();
     const i = review.slots.findIndex((s) => s.index === slot.index); review.slots[i] = res.slot; review.approved = res.approved; review.swapped = res.swapped; review.slowed = res.slowed;
-    const fresh = cardFor(res.slot); card.replaceWith(fresh); $("progressText").textContent = `${review.approved} of ${review.total} shots reviewed`; $("fill").style.width = `${Math.round((review.approved / review.total) * 100)}%`;
-    $("sub").textContent = `${review.slots.length} shots · ${review.duration_seconds} s · style: ${review.style} · ${review.swapped} swapped${review.slowed ? ` · ${review.slowed} slowed` : ""}`;
-    if ($("onlyOpen").checked) fresh.remove();
+    if (action === "swap" && cand.origin !== "current" && res.event_id) askReason.set(slot.index, res.event_id); else askReason.delete(slot.index);
+    const fresh = cardFor(res.slot); card.replaceWith(fresh); updateHeader();
+    if ($("onlyOpen").checked && !askReason.has(slot.index)) fresh.remove();
     banner("ok", `Saved -- shot ${slot.index} ${action === "swap" ? "swapped" : "kept"}. ${review.approved} of ${review.total} reviewed, ${review.swapped} swapped. (Connected to ${location.host})`);
     toast(action === "swap" ? `Shot ${slot.index}: moment swapped` : `Shot ${slot.index}: kept`);
   } catch (e) { toast(e.message, true); if (btn) btn.classList.remove("busy"); }
@@ -203,8 +280,7 @@ async function setSpeed(slot, speed, card, btn) {
   try {
     const res = await (await api(`/post/jobs/${jobId}/edit-review/speed`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slot_index: slot.index, speed }) })).json();
     const i = review.slots.findIndex((s) => s.index === slot.index); review.slots[i] = res.slot; review.approved = res.approved; review.swapped = res.swapped; review.slowed = res.slowed;
-    const fresh = cardFor(res.slot); card.replaceWith(fresh); $("progressText").textContent = `${review.approved} of ${review.total} shots reviewed`; $("fill").style.width = `${Math.round((review.approved / review.total) * 100)}%`;
-    $("sub").textContent = `${review.slots.length} shots · ${review.duration_seconds} s · style: ${review.style} · ${review.swapped} swapped${review.slowed ? ` · ${review.slowed} slowed` : ""}`;
+    const fresh = cardFor(res.slot); card.replaceWith(fresh); updateHeader();
     if ($("onlyOpen").checked) fresh.remove();
     banner("ok", `Saved -- shot ${slot.index} ${speed < 1 ? "slowed to half speed" : "back to normal speed"}. ${review.slowed} slowed, ${review.approved} of ${review.total} reviewed. Rebuild the Premiere edit to see it. (Connected to ${location.host})`);
     toast(speed < 1 ? `Shot ${slot.index}: slow motion on` : `Shot ${slot.index}: normal speed`);
@@ -225,7 +301,11 @@ async function load() {
   if (location.protocol === "file:") { banner("bad", `NOT SAVED -- this page was opened as a file, so it can't reach your backend. Open ${LIVE_URL} in your browser instead.`); $("sub").textContent = "Opened as a file -- no connection"; return; }
   if (!jobId) { $("sub").textContent = "Add ?job=<id> to the address, e.g. ?job=34"; return; }
   if (!token) await askToken();
-  try { review = await (await api(`/post/jobs/${jobId}/edit-review`)).json(); render(); banner("ok", `Connected to ${location.host}. Your choices are saved as you click.`); }
+  $("variantsLink").href = `/static/edit_variants.html?job=${encodeURIComponent(jobId)}`;
+  try {
+    review = await (await api(`/post/jobs/${jobId}/edit-review`)).json(); render(); banner("ok", `Connected to ${location.host}. Your choices are saved as you click.`);
+    try { reasonCodes = (await (await api(`/post/learning/reason-codes`)).json()).reasons; } catch (e) { reasonCodes = null; }   // the chips are optional: the page works without them
+  }
   catch (e) { $("sub").textContent = e.message; toast(e.message, true); }
 }
 load();

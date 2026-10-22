@@ -15,6 +15,7 @@ via VisionUnavailableError instead of quietly degrading.
 
 import asyncio
 import base64
+import hashlib
 import json
 import re
 import time
@@ -35,6 +36,11 @@ Reply with ONLY JSON: {"scene":"3-6 word label of what this clip shows","people"
 
 MAX_STILLS = 40
 EVENT_KINDS = ("action", "reaction", "camera_move", "reveal", "hero")
+# What a description was made with (2026-10-22), stored on every NEW description so a changed prompt, model or sampling can be told apart from the cache.
+# Older descriptions have none and count as "legacy": they are still used (re-describing costs real money) and never re-done without being asked.
+PROMPT_VERSION = hashlib.sha1(MOMENTS_SYSTEM_PROMPT.encode()).hexdigest()[:10]
+SAMPLER_VERSION = "stills every 0.5 s (clips up to 20 s), 0.75 s (up to 30 s), else 1 s; at most 40"
+USAGE_FILE = "api_usage.jsonl"
 
 
 def moments_path(edit_dir: Path) -> Path:
@@ -164,7 +170,8 @@ async def probe_missing(
                 failed.append(clip["name"])
                 if on_result: on_result(clip["name"], False)
                 return
-            moments[str(clip["file_id"])] = {"name": clip["name"], "duration": clip["duration"], **result}
+            moments[str(clip["file_id"])] = {"name": clip["name"], "duration": clip["duration"], **result,
+                                             "provenance": {"model": model, "prompt": PROMPT_VERSION, "sampler": SAMPLER_VERSION, "described_at": time.strftime("%Y-%m-%dT%H:%M:%S")}}
             try:
                 await on_drive(save_moments, edit_dir, moments, writing=True)
             except DriveNotResponding as exc:
@@ -192,13 +199,77 @@ ASSUMED_USD_PER_M_IN = 5.0
 ASSUMED_USD_PER_M_OUT = 25.0
 
 
-def estimate_cost(clip_count: int) -> dict[str, Any]:
+# Anthropic first-party list prices in US$ per million tokens (input, output), as listed in the Claude API reference on 2026-10-06. Used to cost what a run
+# REALLY used (the usage ledger) and to show a list-price estimate beside the upper bound. The account's own bill is the truth.
+LIST_PRICE_PER_M = {"claude-sonnet-5-5": (2.0, 10.0), "claude-sonnet-5": (2.0, 10.0), "claude-opus-5-5": (4.0, 20.0)}
+LIST_PRICE_SOURCE = "Anthropic list price as of 2026-10-06"
+
+
+def usd(model: str | None, tokens_in: int, tokens_out: int) -> tuple[float, str]:
+    """(cost, basis) at the model's list price, or at the upper-bound assumption for a model not listed."""
+    price_in, price_out = LIST_PRICE_PER_M.get(model or "", (ASSUMED_USD_PER_M_IN, ASSUMED_USD_PER_M_OUT))
+    basis = f"{LIST_PRICE_SOURCE} for {model}" if model in LIST_PRICE_PER_M else "upper-bound assumption (model's price not listed)"
+    return round(tokens_in / 1e6 * price_in + tokens_out / 1e6 * price_out, 4), basis
+
+
+def estimate_cost(clip_count: int, model: str | None = None) -> dict[str, Any]:
+    """Before a run: `usd_at_most` is the deliberate upper bound the app has always shown; with `model` given, `usd_list_price` adds the estimate at that
+    model's list price (claude-sonnet-5-5 is about 2.5 times cheaper than the bound)."""
     tokens_in, tokens_out = clip_count * TOKENS_IN_PER_CLIP, clip_count * TOKENS_OUT_PER_CLIP
-    return {
+    out = {
         "clips": clip_count, "input_tokens": tokens_in, "output_tokens": tokens_out,
         "usd_at_most": round(tokens_in / 1e6 * ASSUMED_USD_PER_M_IN + tokens_out / 1e6 * ASSUMED_USD_PER_M_OUT, 2),
         "assumption": f"${ASSUMED_USD_PER_M_IN:g} per million input tokens and ${ASSUMED_USD_PER_M_OUT:g} per million output tokens, as an upper bound",
     }
+    if model in LIST_PRICE_PER_M:
+        out["usd_list_price"], out["list_price_basis"] = usd(model, tokens_in, tokens_out)
+        out["usd_list_price"] = round(out["usd_list_price"], 2)
+    return out
+
+
+def freshness(moments: dict[str, Any], model: str) -> dict[str, int]:
+    """How the cached descriptions relate to what a new run would make: `current` (same model, prompt and sampling), `legacy` (made before versions were
+    recorded) and `other_version` (a different model, prompt or sampling). Nothing is re-described automatically; this only reports."""
+    out = {"current": 0, "legacy": 0, "other_version": 0}
+    for rec in moments.values():
+        prov = rec.get("provenance") if isinstance(rec, dict) else None
+        if not prov:
+            out["legacy"] += 1
+        elif prov.get("model") == model and prov.get("prompt") == PROMPT_VERSION and prov.get("sampler") == SAMPLER_VERSION:
+            out["current"] += 1
+        else:
+            out["other_version"] += 1
+    return out
+
+
+def record_usage(edit_dir: Path, *, job_id: int, operation: str, model: str, usage: dict[str, int], extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Appends what one run REALLY used (token counts from the API's own responses) to the job's usage ledger, costed at list price. Returns the line."""
+    tokens_in, tokens_out = int(usage.get("in", 0)), int(usage.get("out", 0))
+    cost, basis = usd(model, tokens_in, tokens_out)
+    line = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "job_id": job_id, "operation": operation, "model": model, "calls": int(usage.get("calls", 0)),
+            "input_tokens": tokens_in, "output_tokens": tokens_out, "usd": cost, "price_basis": basis, **(extra or {})}
+    edit_dir.mkdir(parents=True, exist_ok=True)
+    with open(edit_dir / USAGE_FILE, "a") as fh:
+        fh.write(json.dumps(line) + "\n")
+    return line
+
+
+def usage_summary(edit_dir: Path) -> dict[str, Any]:
+    """Totals of the job's usage ledger by operation: calls, tokens, US$ at list price. Corrupt lines are skipped."""
+    path = edit_dir / USAGE_FILE
+    totals: dict[str, dict[str, Any]] = {}
+    if path.exists():
+        for raw in path.read_text().splitlines():
+            try:
+                line = json.loads(raw)
+            except ValueError:
+                continue
+            t = totals.setdefault(line.get("operation", "?"), {"runs": 0, "calls": 0, "input_tokens": 0, "output_tokens": 0, "usd": 0.0})
+            t["runs"] += 1
+            for k in ("calls", "input_tokens", "output_tokens"):
+                t[k] += int(line.get(k, 0))
+            t["usd"] = round(t["usd"] + float(line.get("usd", 0.0)), 4)
+    return {"by_operation": totals, "usd_total": round(sum(t["usd"] for t in totals.values()), 4)}
 
 
 async def check_credit(client: Any, model: str) -> None:
@@ -261,6 +332,12 @@ def start_run(job_id: int, client: Any, model: str, clips: list[dict], edit_dir:
             print(f"[post_moments] run for job {job_id} failed: {run['message']}")
         finally:
             run["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            if run["usage"].get("calls"):   # what this run really used, kept after the process forgets the run
+                try:
+                    await on_drive(record_usage, edit_dir, job_id=job_id, operation="describe_clips", model=model, usage=dict(run["usage"]),
+                                   extra={"clips_described": run["done"], "clips_failed": len(run["failed"]), "state": run["state"]}, writing=True)
+                except Exception as exc:  # the ledger must never break the run's own report
+                    print(f"[post_moments] couldn't record usage for job {job_id}: {type(exc).__name__}")
 
     run["task"] = asyncio.get_running_loop().create_task(go())  # kept in the dict so it isn't garbage-collected mid-run
     _RUNS[job_id] = run

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 FEEDBACK_DIR = Path(__file__).resolve().parents[1] / "data" / "learning" / "feedback"
+_REAL_FEEDBACK_DIR = FEEDBACK_DIR   # tests point FEEDBACK_DIR elsewhere; see _write_log
 SAME_MOMENT_SHARE = 0.5     # his shot counts as "the planned moment" when at least this share of it lies inside the planned stretch of the same clip
 EVENT_NEAR_SECONDS = 0.75   # his shot "sits on" a described moment when the moment is inside it (give or take 0.25 s) or within this of its centre
 EVENT_MARGIN_SECONDS = 0.25
@@ -245,6 +246,17 @@ def _write_log(job: dict[str, Any], sequence: str, plan_style: str | None, resul
     os.replace(tmp, path)
     with open(FEEDBACK_DIR / "index.jsonl", "a") as fh:
         fh.write(json.dumps({"ts": record["ts"], "job_id": job["id"], "sequence": sequence, "file": path.name, "source": source, "stale_plan": bool(result.get("stale_plan")), "summary": result["summary"]}) + "\n")
+    # the same comparison as versioned learning events in the job's own file (observed only when compared with the plan it was built from). The feedback log above
+    # is the record of truth: finding the job's folder or writing the copy must never break it, so any failure here is logged and passed over. The copy follows the
+    # log: a log sent somewhere else (a test redirects FEEDBACK_DIR to a temp folder while reading his REAL project) must not write into his real job folder --
+    # it did on 2026-10-22, four test runs left 324 copies in GWM's learning_events.jsonl before this check existed.
+    if FEEDBACK_DIR == _REAL_FEEDBACK_DIR:
+        from app import post_learning_events as le
+        from app.post_edit_plan import edit_dir
+        try:
+            le.record_for_job(edit_dir(job), le.from_learn_record(record))
+        except Exception as exc:   # noqa: BLE001 -- DriveNotConnected, a job without a folder, ...: none may cost him the log
+            le._log.warning("learning events for job %s not recorded: %s", job.get("id"), exc)
     return path, aggregate()["edits"]
 
 
@@ -307,7 +319,7 @@ async def learn_from_edit(job: dict[str, Any], sequence_name: str | None = None,
         raise LearnError("This job has no saved edit plan to compare against. Plan the edit in P Corp OS first.")
     moments = moments_by_clip_name(await on_drive(load_moments, edit_dir(job)))
     result = compare_with_plan(sequence, shots, plan, basis, made_at, moments)
-    log_path, edits = _write_log(job, sequence, plan.get("style"), result)
+    log_path, edits = await on_drive(_write_log, job, sequence, plan.get("style"), result, writing=True)   # also appends to the job's learning events, on the drive
     report = lines(sequence, plan.get("style"), result)
     totals = aggregate()
     report.append(f"Saved to the feedback log ({edits} edit{'s' if edits != 1 else ''} logged so far, {totals['shots']} shots).")

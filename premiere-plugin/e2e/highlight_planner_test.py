@@ -127,16 +127,20 @@ except Exception as exc:
 
 # ---------------------------------------------------------------- the brand graphics on a vertical frame
 tmp = tempfile.mkdtemp(prefix="hl_gfx_")
+# (2026-10-22) the logo this test used, gfx/test_logo.png, was never committed, so the test failed on any other checkout: it draws its own now
+from PIL import Image as _Image  # noqa: E402
+LOGO = f"{tempfile.mkdtemp(prefix='hl_logo_')}/test_logo.png"
+_Image.new("RGBA", (600, 240), (230, 40, 40, 255)).save(LOGO)
 try:
     from pathlib import Path
-    gfx, notes = bg.build_graphics(plan, job={"deliverable_format": "9:16", "resolution": "4k_uhd"}, logo_path="gfx/test_logo.png", size=(2160, 3840), out_dir=Path(tmp), tagline="Moving forward", contact_lines=["a.co.za", "b@a.co.za"], logo_bug=False)
+    gfx, notes = bg.build_graphics(plan, job={"deliverable_format": "9:16", "resolution": "4k_uhd"}, logo_path=LOGO, size=(2160, 3840), out_dir=Path(tmp), tagline="Moving forward", contact_lines=["a.co.za", "b@a.co.za"], logo_bug=False)
     check("graphics: opening and closing cards only (no logo bug, no captions) on a 2160 x 3840 frame", gfx["frame_size"] == [2160, 3840] and [c["role"] for c in gfx["cards"]] == ["opener", "closer"] and gfx["logo_bug"] is None and gfx["captions"] is None, {k: gfx[k] for k in ("frame_size", "logo_bug", "captions")})
     check("graphics: each card sits exactly on its slot", gfx["cards"][0]["start_frame"] == shots[0]["start_frame"] and gfx["cards"][0]["frames"] == shots[0]["duration_frames"] and gfx["cards"][1]["start_frame"] == shots[-1]["start_frame"] and gfx["cards"][1]["frames"] == shots[-1]["duration_frames"])
     check("graphics: the card images are full-frame 2160 x 3840", all(__import__("PIL.Image", fromlist=["Image"]).open(c["file"]).size == (2160, 3840) for c in gfx["cards"]))
-    g2, _ = bg.build_graphics(plan, job={}, logo_path="gfx/test_logo.png", size=(2160, 3840), out_dir=Path(tmp), tagline=None, contact_lines=None, logo_bug=True)
+    g2, _ = bg.build_graphics(plan, job={}, logo_path=LOGO, size=(2160, 3840), out_dir=Path(tmp), tagline=None, contact_lines=None, logo_bug=True)
     box = g2["logo_bug"]["box"]
     check("graphics: with the logo bug on, the vertical plate keeps the reference's shape (about 2.1:1), 24% of the width, in the top-right", abs((box[2] - box[0]) / (box[3] - box[1]) - 2.14) < 0.15 and abs((box[2] - box[0]) / 2160 - 0.24) < 0.01 and box[2] < 2160 and box[1] > 100, box)
-    land, _ = bg.build_graphics({**plan}, job={}, logo_path="gfx/test_logo.png", size=(3840, 2160), out_dir=Path(tmp), tagline=None, contact_lines=None, logo_bug=True)
+    land, _ = bg.build_graphics({**plan}, job={}, logo_path=LOGO, size=(3840, 2160), out_dir=Path(tmp), tagline=None, contact_lines=None, logo_bug=True)
     check("graphics: a 16:9 frame still uses the reference's own plate box (unchanged)", land["logo_bug"]["box"] == [round(0.796 * 3840), round(0.051 * 2160), round(0.949 * 3840), round(0.178 * 2160)], land["logo_bug"]["box"])
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
@@ -144,7 +148,9 @@ finally:
 # ---------------------------------------------------------------- end to end: plan_for_job, fake job, REAL fixture clips + a real song, vertical 4K
 SONG = "/Users/joshuapeters/Downloads/Channel 13 - Do You Remember - Instrumental Version.mp3"; SRC = "e2e/src_corporate_4k"
 def probe_seconds(p): return float(subprocess.run(["/opt/homebrew/bin/ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", p], capture_output=True, text=True).stdout.split()[0])
-REAL = [{"file_id": i + 1, "name": f, "path": os.path.abspath(f"{SRC}/{f}"), "duration": probe_seconds(f"{SRC}/{f}"), "created": "", "picks": []} for i, f in enumerate(sorted(os.listdir(SRC))) if f.endswith(".MP4")]
+# (2026-10-22) this section needs 4K fixture footage and a song that live outside the repo; when they are missing it says so and is skipped instead of crashing
+HAVE_FIXTURES = os.path.isdir(SRC) and os.path.exists(SONG)
+REAL = [{"file_id": i + 1, "name": f, "path": os.path.abspath(f"{SRC}/{f}"), "duration": probe_seconds(f"{SRC}/{f}"), "created": "", "picks": []} for i, f in enumerate(sorted(os.listdir(SRC))) if f.endswith(".MP4")] if HAVE_FIXTURES else []
 async def e2e():
     from app import post_db
     tmp = tempfile.mkdtemp(prefix="hl_e2e_")
@@ -154,7 +160,7 @@ async def e2e():
     real_get, real_load = post_db.get_post_job, pe.load_job_clips
     post_db.get_post_job, pe.load_job_clips = fake_job, fake_clips
     try:
-        os.makedirs(f"{tmp}/07_MUSIC"); os.makedirs(f"{tmp}/06_GRAPHICS"); shutil.copyfile(SONG, f"{tmp}/07_MUSIC/bed.mp3"); shutil.copyfile("gfx/test_logo.png", f"{tmp}/06_GRAPHICS/logo.png")
+        os.makedirs(f"{tmp}/07_MUSIC"); os.makedirs(f"{tmp}/06_GRAPHICS"); shutil.copyfile(SONG, f"{tmp}/07_MUSIC/bed.mp3"); shutil.copyfile(LOGO, f"{tmp}/06_GRAPHICS/logo.png")
         plan = await pe.plan_for_job(9101, style=["corporate-highlight-calm"], music_path=f"{tmp}/07_MUSIC/bed.mp3", seed=4, card_tagline="Moving forward", card_contact=["a.co.za"])
         out = f"{tmp}/10_PREMIERE/edit_plans"
         check("e2e: a highlight plan, saved, 40 s by default, with the cut-to-music checks", plan["mode"] == "highlight" and os.path.exists(f"{out}/edit_plan_latest.json") and plan["duration_seconds"] == 40.0 and plan["checks"]["cuts_on_hits"] >= 0.75, (plan["mode"], plan["duration_seconds"], plan["checks"]["cuts_on_hits"]))
@@ -179,5 +185,8 @@ async def e2e():
         except pe.EditPlanError as e: check("e2e: a 400 s highlight with a 194 s song is refused with the track length stated", "track is" in str(e), str(e)[:100])
     finally:
         post_db.get_post_job, pe.load_job_clips = real_get, real_load; shutil.rmtree(tmp, ignore_errors=True)
-asyncio.run(e2e())
+if HAVE_FIXTURES:
+    asyncio.run(e2e())
+else:
+    print(f"SKIP e2e section: fixture footage ({SRC}) or song ({SONG}) not on this machine -- 0 of its checks ran")
 print("\nFAILS:", fails); sys.exit(1 if fails else 0)

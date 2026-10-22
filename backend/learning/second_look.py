@@ -134,7 +134,7 @@ async def run(args: argparse.Namespace) -> int:
         print("ANTHROPIC_API_KEY is not set (backend/.env)."); return 1
     vision_eval.MODEL = MODEL
     inventory = json.loads((footage.DEFAULT_DATA / args.inventory).read_text())
-    measures = {s.path: evaluate.load_measure(s.path) for s in evaluate.sample_shots(inventory) if os.path.exists(s.path)}
+    measures = {s.path: m for s in evaluate.sample_shots(inventory) if (m := evaluate.load_measure(s.path))}
     samples = [s for s in evaluate.sample_shots(inventory) if measures.get(s.path)]
     random.Random(7).shuffle(samples)
     samples = samples[: args.n] if args.n else samples

@@ -226,7 +226,7 @@ def _event_windows(clip: dict[str, Any], length: float, taken: list[tuple[float,
         rec = score_window(m, start, length)
         if rec["cuts"] or rec["dark"]:
             continue
-        out.append({"start": round(start, 3), "duration": round(length, 3), "overlaps_earlier_use": False, "event_punch": e.get("punch"),
+        out.append({"start": round(start, 3), "duration": round(length, 3), "overlaps_earlier_use": False, "event_punch": e.get("punch"), "event_kind": e.get("kind"),
                     "source": f"event pick ({e.get('kind', 'moment')}): {e.get('what', '')} -- Claude's judgment from the pictures, not checked against your taste",
                     "steady": {"score": round(rec["score"], 4), "cuts": rec["cuts"], "mean_motion": round(rec["mean_motion"], 4), "peak_motion": round(rec["peak_motion"], 4),
                                "jerk": round(rec["jerk"], 4), "blur": round(rec["blur"], 3), "static": rec["static"], "exposure": round(rec["exposure"], 3), "luma": round(rec["luma"], 3)}})

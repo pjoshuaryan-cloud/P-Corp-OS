@@ -25,7 +25,7 @@ import re
 import statistics
 from typing import Any
 
-from app import post_pick, post_steady
+from app import post_candidate_moments, post_pick, post_steady
 from app.post_edit_plan import COMPOSE_MIN_START, EditPlanError, MIN_SHOT_FRAMES, MUSIC_FADE_OUT_SECONDS, _scene_key, choose_window, select_clips, select_clips_by_moments
 from app.post_style import StoryStyle, StyleProfile
 
@@ -145,18 +145,24 @@ def _steady_window(clip: dict, length: float, taken: list[tuple[float, float]]) 
     return post_steady.window_for_slot(clip, length, taken)
 
 
-def assign_clips_to_slots(slots: list[dict[str, Any]], *, fps: float, clips: list[dict], bookend_file_id: int | None, seed: int = 7, slow_zooms: bool = True) -> dict[str, Any]:
+def assign_clips_to_slots(slots: list[dict[str, Any]], *, fps: float, clips: list[dict], bookend_file_id: int | None, seed: int = 7, slow_zooms: bool = True,
+                          picker_options: dict[str, Any] | None = None, slot_roles: dict[str, str | None] | None = None) -> dict[str, Any]:
     """Clip + best window for every slot ({role, start_frame, frames, phrase?}), shared by the narrated story and the corporate highlight to music.
     When the clips have been analysed (post_steady), every slot is filled by post_pick: the cleanest stretch of the clip that does not look like a shot already in
     the edit, broadly following the shoot's order. Without an analysis the old rule is used (clips spread evenly in the order given). The opener and the closing hold
-    use the bookend clip if there is one. Returns {shots, zooms, by_id, bookend, repetition}."""
+    use the bookend clip if there is one. `picker_options` (role_weights, diversity, avoid, preferences) and `slot_roles` ({"first": role, "last": role}) are
+    optional style / variant settings (post_style_library, post_variants); without them the plan is exactly what it always was. Every shot carries a
+    `candidate` record (post_candidate_moments) saying what it is, the evidence and how it scored. Returns {shots, zooms, by_id, bookend, repetition}."""
     n_body = sum(1 for s in slots if s["role"] == "body")
     exclude = {bookend_file_id} if bookend_file_id is not None else set()
     has_moments = any(c.get("events") for c in clips)
     chosen = (select_clips_by_moments if has_moments else select_clips)(clips, max(n_body, 1), exclude)
     by_id = {c["file_id"]: c for c in clips}
     bookend = by_id.get(bookend_file_id) if bookend_file_id is not None else None
-    picker = post_pick.Picker(clips) if any(c.get("steady") for c in clips) else None
+    picker = post_pick.Picker(clips, **(picker_options or {})) if any(c.get("steady") for c in clips) else None
+    # a style's opening / closing preference goes to the first and last slots the picker fills: the closing hold too when no establishing clip was given
+    picked_slots = [k for k, s in enumerate(slots) if s["role"] == "body" or bookend is None]
+    first_pick, last_pick = (picked_slots[0], picked_slots[-1]) if picked_slots else (None, None)
     post_steady.clear_series_cache()
     used: dict[int, list[tuple[float, float]]] = {}
     shots: list[dict[str, Any]] = []
@@ -166,7 +172,8 @@ def assign_clips_to_slots(slots: list[dict[str, Any]], *, fps: float, clips: lis
         picked = None
         if picker is not None and (sl["role"] == "body" or bookend is None):
             target = (body_i + 0.5) / max(n_body, 1) if sl["role"] == "body" else (0.0 if sl["role"] == "opener" else 1.0)
-            picked = picker.pick(length, target, exclude=exclude if sl["role"] == "body" else None)
+            prefer = (slot_roles or {}).get("first") if i == first_pick else ((slot_roles or {}).get("last") if i == last_pick else None)
+            picked = picker.pick(length, target, exclude=exclude if sl["role"] == "body" else None, prefer_role=prefer)
         similar_to_previous = None
         if picked is not None:
             clip, w = picked["clip"], picked["window"]
@@ -208,11 +215,14 @@ def assign_clips_to_slots(slots: list[dict[str, Any]], *, fps: float, clips: lis
             if picker is not None:
                 similar_to_previous = picker.register(clip, w)
         used.setdefault(clip["file_id"], []).append((w["start"], w["start"] + w["duration"]))
+        candidate = post_candidate_moments.describe(clip, w, parts=picked["parts"] if picked is not None else None, score=picked["score"] if picked is not None else None,
+                                                    describe_provenance=clip.get("moments_provenance"), length=sl["frames"] / fps)
         shots.append({
             "index": i + 1, "role": sl["role"], "file_id": clip["file_id"], "name": clip["name"], "path": clip["path"],
             "start_frame": sl["start_frame"], "duration_frames": sl["frames"],
             "source_in": w["start"], "source_out": round(w["start"] + sl["frames"] / fps, 3),
             "moment_source": w["source"], "cut_hit_percentile": None, "cut_on_hit": False,
+            "candidate": post_candidate_moments.compact(candidate),
             **({"steady": w["steady"]} if w.get("steady") else {}),
             **({"phrase": sl["phrase"]} if sl.get("phrase") else {}),
             **({"alike_previous": round(similar_to_previous, 2)} if similar_to_previous is not None and picker.chosen[-1]["sig"] is not None else {}),

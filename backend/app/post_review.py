@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app import post_pick
+from app import post_candidate_moments, post_pick
 from app.post_media import COMPOSE_MIN_START, FFMPEG_PATH
 from app.post_edit_plan import EVENT_LEAD_SECONDS, _clamp, _scene_key
 from app.ssd_guard import on_drive
@@ -37,6 +37,12 @@ _CLIP_RENDER_LIMIT = asyncio.Semaphore(3)
 SLOW_SPEED = 0.5
 SLOW_SPEEDS = (1.0, SLOW_SPEED)
 SLOW_MIN_CLIP_SLACK_SECONDS = 0.05
+
+# Earlier / later (2026-10-22): the same clip with the stretch moved by half the shot's length (0.2 to 1 s). Measured on 168 of Josh's shots, no placement rule
+# (centred, lead-in, by kind of moment) beat the planner's own by enough to adopt (learning/placement.py), so the timing is offered as a one-click choice instead.
+NUDGE_SHARE = 0.5
+NUDGE_MIN_SECONDS, NUDGE_MAX_SECONDS = 0.2, 1.0
+CHANGE_OUTCOMES = ("swapped", "moved", "regenerated")   # the decisions a reason chip can explain
 
 
 class ReviewError(RuntimeError):
@@ -137,10 +143,30 @@ def _build_multicam_review(plan: dict[str, Any], clips: list[dict]) -> dict[str,
         slots.append({
             "index": shot["index"], "role": shot["role"], "seconds": round(length, 2), "duration_frames": shot["duration_frames"],
             "cut_at_seconds": round(shot["start_frame"] / fps, 2), "approved": shot["index"] in approved, "current": current, "alternatives": alts,
-            "speed": 1.0, "can_slow": False, "slow_note": None,
+            "speed": 1.0, "can_slow": False, "slow_note": None, "locked": False, "why": None,
         })
     return {"fps": fps, "style": plan.get("style"), "duration_seconds": plan["duration_seconds"], "slots": slots,
-            "approved": len(approved), "total": len(slots), "swapped": sum(1 for s in slots if str(s["index"]) in originals), "slowed": 0}
+            "approved": len(approved), "total": len(slots), "swapped": sum(1 for s in slots if str(s["index"]) in originals), "slowed": 0, "locked": 0,
+            "can_regenerate": False}
+
+
+def _nudges(plan: dict[str, Any], clips: list[dict], clip: dict | None, shot: dict[str, Any], length: float, steady_plan: bool) -> list[dict[str, Any]]:
+    """The current moment moved earlier and later (see NUDGE_SHARE). Not for opening/closing cards or slowed shots, never past either end of the clip, and on a plan
+    cut from the steadiness analysis never onto a stretch with a cut in it."""
+    if clip is None or shot["role"] != "body" or shot_speed(shot) != 1.0:
+        return []
+    step = round(_clamp(length * NUDGE_SHARE, NUDGE_MIN_SECONDS, NUDGE_MAX_SECONDS), 2)
+    out = []
+    for origin, delta in (("earlier", -step), ("later", step)):
+        start = round(shot["source_in"] + delta, 3)
+        if start < 0 or start + length > clip["duration"] - 0.04:
+            continue
+        if steady_plan and post_pick.valid_alternative(plan, clips, shot["index"], clip["file_id"], start) is None:
+            continue
+        c = _describe(clip, clip["file_id"], clip["name"], start, length, origin)
+        c.update({"what": f"the same moment, {step:.2f} s {origin}", "tag": "timing"})
+        out.append(c)
+    return out
 
 
 def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
@@ -154,6 +180,7 @@ def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
     used = {s["file_id"] for s in plan["shots"]}
     review = plan.get("review") or {}
     approved = set(review.get("approved", []))
+    locked = set(review.get("locked", []))
     originals = review.get("original", {})
     steady_plan = _is_steady_plan(plan, clips)
     picked = _picker_alternatives(plan, clips) if steady_plan else {}
@@ -179,6 +206,9 @@ def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
         orig = originals.get(str(shot["index"]))
         if orig and candidate_id(orig["file_id"], orig["source_in"]) != current["id"]:
             add(_describe(by_id.get(orig["file_id"]), orig["file_id"], orig["name"], orig["source_in"], length, "original"))
+        prev = (review.get("previous") or {}).get(str(shot["index"]))   # what it showed just before the last Regenerate
+        if prev and candidate_id(prev["file_id"], prev["source_in"]) != current["id"]:
+            add(_describe(by_id.get(prev["file_id"]), prev["file_id"], prev["name"], prev["source_in"], length, "previous"))
         if steady_plan:  # the picker's ranked swaps: clean stretches that don't look like the shots around this one
             for cand in picked.get(shot["index"], []):
                 described = _describe(by_id.get(cand["file_id"]), cand["file_id"], cand["name"], cand["source_in"], length, cand["origin"])
@@ -207,15 +237,18 @@ def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
                 scenes.add(_scene_key(c))
                 add(_describe(c, c["file_id"], c["name"], _window_start(c, e["t"], length), length, "other_clip"))
                 n += 1
+        alts.extend(c for c in _nudges(plan, clips, clip, shot, length, steady_plan) if c["id"] not in seen)   # deliberately close to the current one: not through add()'s gap rule
         slots.append({
             "index": shot["index"], "role": shot["role"], "seconds": round(length, 2), "duration_frames": shot["duration_frames"],
             "cut_at_seconds": round(shot["start_frame"] / fps, 2), "approved": shot["index"] in approved,
             "current": current, "alternatives": alts,
             "speed": speed, "can_slow": can_slow or speed != 1.0, "slow_note": slow_note,
+            "locked": shot["index"] in locked,
+            "why": post_candidate_moments.explain_choice(shot["candidate"]) if shot.get("candidate") else None,
         })
     return {"fps": fps, "style": plan.get("style"), "duration_seconds": plan["duration_seconds"], "slots": slots,
             "approved": len(approved), "total": len(slots), "swapped": sum(1 for s in slots if str(s["index"]) in originals),
-            "slowed": sum(1 for s in slots if s["speed"] != 1.0)}
+            "slowed": sum(1 for s in slots if s["speed"] != 1.0), "locked": len(locked), "can_regenerate": steady_plan}
 
 
 def apply_choice(plan: dict[str, Any], clips: list[dict], slot_index: int, file_id: int, source_in: float, action: str) -> dict[str, Any]:
@@ -227,6 +260,7 @@ def apply_choice(plan: dict[str, Any], clips: list[dict], slot_index: int, file_
     shot = next((s for s in plan["shots"] if s["index"] == slot_index), None)
     if shot is None:
         raise ReviewError(f"The plan has no shot {slot_index}.")
+    was_yours = str(shot.get("moment_source", "")).startswith("picked in review")   # keeping (or leaving) his OWN pick says nothing about the planner's kinds
     slot = next(s for s in build_review(plan, clips)["slots"] if s["index"] == slot_index)
     wanted = candidate_id(file_id, source_in)
     options = {c["id"]: c for c in [slot["current"], *slot["alternatives"]]}
@@ -235,7 +269,12 @@ def apply_choice(plan: dict[str, Any], clips: list[dict], slot_index: int, file_
         # The list of swaps for a shot depends on its neighbours, so it can change after another swap: a page opened earlier still offers the old one.
         # It is still the job's own clip with a clean stretch (no cut inside), so it is accepted.
         clip_ = next(c for c in clips if c["file_id"] == file_id)
-        chosen = _describe(clip_, file_id, clip_["name"], source_in, shot["duration_frames"] / plan["fps"], "other_clip" if file_id != shot["file_id"] else "same_clip")
+        length_ = shot["duration_frames"] / plan["fps"]
+        origin_ = "other_clip" if file_id != shot["file_id"] else "same_clip"
+        step = round(_clamp(length_ * NUDGE_SHARE, NUDGE_MIN_SECONDS, NUDGE_MAX_SECONDS), 2)
+        if origin_ == "same_clip" and abs(abs(source_in - shot["source_in"]) - step) < 0.006:
+            origin_ = "earlier" if source_in < shot["source_in"] else "later"   # exactly this shot's nudge: a re-timing, not a different moment
+        chosen = _describe(clip_, file_id, clip_["name"], source_in, length_, origin_)
         chosen.update({"what": "a clean stretch offered earlier", "tag": "steady", "kind": None, "punch": None})
     if chosen is None:
         raise ReviewError("That moment isn't one of the options for this shot any more -- reload the page.")
@@ -252,11 +291,14 @@ def apply_choice(plan: dict[str, Any], clips: list[dict], slot_index: int, file_
             speed = 1.0
         src_len = window * speed
         new_in = round(min(max(chosen["source_in"] + (window - src_len) / 2.0, 0.0), max(clip["duration"] - src_len - 0.04, 0.0)), 3) if speed != 1.0 else chosen["source_in"]
+        moved = f" -- moved {chosen['origin']}" if chosen["origin"] in ("earlier", "later") else ""
         shot.update({
             "file_id": clip["file_id"], "name": clip["name"], "path": clip["path"], "source_in": new_in,
             "source_out": round(new_in + src_len, 3),
-            "moment_source": f"picked in review" + (f" -- event ({chosen['kind']}): {chosen['what']}" if chosen["kind"] else ""),
+            "moment_source": f"picked in review{moved}" + (f" -- event ({chosen['kind']}): {chosen['what']}" if chosen["kind"] else ""),
         })
+        shot.pop("candidate_real_time", None)   # it described the footage that was just swapped out
+        shot.pop("event_kind", None)            # the kind of moment a regeneration picked: the new stretch's kind comes from its own event
         if speed != 1.0:
             shot["speed"] = speed
             shot["speed_original"] = {"source_in": chosen["source_in"], "source_out": round(chosen["source_in"] + window, 3)}
@@ -273,9 +315,13 @@ def apply_choice(plan: dict[str, Any], clips: list[dict], slot_index: int, file_
         if plan.get("mode") == "multicam":
             shot["moment_source"] = f"angle switched in review -- {clip['name']}"
             shot["angle"] = next(i for i, c in enumerate(plan["cameras"]) if c["file_id"] == clip["file_id"])
+        refresh_candidate(plan, shot, clip)
     if slot_index not in review["approved"]:
         review["approved"].append(slot_index)  # choosing a moment also counts as having reviewed the slot
-    return {"chosen": chosen, "shown": [slot["current"], *slot["alternatives"]], "slot": {k: slot[k] for k in ("index", "role", "seconds", "cut_at_seconds")}}
+    if slot_index in review.get("approved_by_lock", []):
+        review["approved_by_lock"].remove(slot_index)   # now his own decision: unlocking no longer takes the approval back
+    return {"chosen": chosen, "shown": [slot["current"], *slot["alternatives"]], "slot": {k: slot[k] for k in ("index", "role", "seconds", "cut_at_seconds")},
+            "current_was_yours": was_yours}
 
 
 def set_speed(plan: dict[str, Any], clips: list[dict], slot_index: int, speed: float) -> dict[str, Any]:
@@ -299,23 +345,204 @@ def set_speed(plan: dict[str, Any], clips: list[dict], slot_index: int, speed: f
             src_len = window * speed
             new_in = round(min(max(real_in + (window - src_len) / 2.0, 0.0), max(clip["duration"] - src_len - 0.04, 0.0)), 3)
             shot["speed_original"] = {"source_in": real_in, "source_out": round(real_in + window, 3)}
+            # the real-time candidate record is kept beside it, so going back to normal speed gives back the identical shot
+            shot["candidate_real_time"] = shot.get("candidate")
             shot.update({"source_in": new_in, "source_out": round(new_in + src_len, 3), "speed": speed})
             zooms = (plan.get("zooms") or {}).get("items")
             if zooms:
                 plan["zooms"]["items"] = [z for z in zooms if z["shot_index"] != slot_index]
+            refresh_candidate(plan, shot, clip)
         else:
             original = shot.pop("speed_original", None)
             real_in = original["source_in"] if original else shot["source_in"]
             shot.update({"source_in": real_in, "source_out": round(real_in + window, 3)})
             shot.pop("speed", None)
+            if "candidate_real_time" in shot:
+                kept = shot.pop("candidate_real_time")
+                if kept is None:
+                    shot.pop("candidate", None)
+                else:
+                    shot["candidate"] = kept
+            else:   # slowed before candidate records existed: describe the real-time window afresh
+                refresh_candidate(plan, shot, clip)
     review = plan.setdefault("review", {"approved": [], "original": {}})
     if slot_index not in review["approved"]:
         review["approved"].append(slot_index)   # deciding about a shot's speed also counts as having reviewed it
+    if slot_index in review.get("approved_by_lock", []):
+        review["approved_by_lock"].remove(slot_index)
     event = next((e for e in (clip or {}).get("events") or [] if abs((e["t"] - EVENT_LEAD_SECONDS) - shot["source_in"]) <= 0.75), None)
     return {"slot": {"index": slot_index, "role": shot["role"], "seconds": round(window, 3), "cut_at_seconds": round(shot["start_frame"] / plan["fps"], 2)}, "speed": speed, "was": was,
             "clip": {"name": shot["name"], "fps": (clip or {}).get("fps"), "seconds": (clip or {}).get("duration")},
             "moment": {"kind": event["kind"] if event else None, "punch": event["punch"] if event else None, "what": event["what"] if event else None},
             "clip_position": round(shot["source_in"] / clip["duration"], 2) if clip and clip.get("duration") else None}
+
+
+def refresh_candidate(plan: dict[str, Any], shot: dict[str, Any], clip: dict | None) -> None:
+    """Rewrites the shot's candidate record (post_candidate_moments) for the stretch it NOW shows. A swap, a nudge, a speed change or a regeneration moves the
+    stretch; without this the plan's "why this shot" would describe footage that is no longer in it. (A plan made before candidate records existed gets one now.)"""
+    if clip is None:
+        shot.pop("candidate", None)
+        return
+    window = {"start": shot["source_in"], "duration": shot["source_out"] - shot["source_in"], "source": shot["moment_source"], "steady": shot.get("steady")}
+    if shot.get("event_kind"):
+        window["event_kind"] = shot["event_kind"]
+    record = post_candidate_moments.describe(clip, window, describe_provenance=clip.get("moments_provenance"), length=shot["source_out"] - shot["source_in"])
+    shot["candidate"] = post_candidate_moments.compact(record)
+
+
+def _shot_summary(shot: dict[str, Any]) -> dict[str, Any]:
+    return {"file_id": shot["file_id"], "name": shot["name"], "source_in": shot["source_in"], "source_out": shot["source_out"]}
+
+
+def set_lock(plan: dict[str, Any], slot_index: int, locked: bool) -> dict[str, Any]:
+    """Locks a shot (Regenerate leaves it alone, and it counts as reviewed) or unlocks it. A lock never stops Josh swapping the shot himself. Mutates `plan`."""
+    shot = next((s for s in plan["shots"] if s["index"] == slot_index), None)
+    if shot is None:
+        raise ReviewError(f"The plan has no shot {slot_index}.")
+    review = plan.setdefault("review", {"approved": [], "original": {}})
+    locks = review.setdefault("locked", [])
+    by_lock = review.setdefault("approved_by_lock", [])   # approvals that exist only because of a lock: unlocking takes them back
+    if locked and slot_index not in locks:
+        locks.append(slot_index)
+    elif not locked and slot_index in locks:
+        locks.remove(slot_index)
+    if locked and slot_index not in review["approved"]:
+        review["approved"].append(slot_index)
+        by_lock.append(slot_index)
+    elif not locked and slot_index in by_lock:
+        by_lock.remove(slot_index)
+        if slot_index in review["approved"]:
+            review["approved"].remove(slot_index)   # so Regenerate may replace it again, as the Unlock button says
+    return {"slot": {"index": slot_index, "role": shot["role"], "seconds": round(shot["duration_frames"] / plan["fps"], 3), "cut_at": round(shot["start_frame"] / plan["fps"], 2)},
+            "locked": locked, "shot": _shot_summary(shot)}
+
+
+def decided(shot: dict[str, Any], review: dict[str, Any]) -> str | None:
+    """Why a shot is Josh's own decision, which Regenerate never touches, or None: locked, kept ("Keep this"), a moment he picked, or slowed by him."""
+    if shot["index"] in review.get("locked", []):
+        return "locked"
+    if str(shot.get("moment_source", "")).startswith("picked in review"):
+        return "picked by you"
+    if shot_speed(shot) != 1.0:
+        return "slowed by you"
+    if shot["index"] in review.get("approved", []):
+        return "kept by you"
+    return None
+
+
+def regenerate_section(plan: dict[str, Any], clips: list[dict], from_index: int, to_index: int) -> dict[str, Any]:
+    """Re-picks the body shots from `from_index` to `to_index` that Josh has NOT decided on (see `decided`: locked, kept, picked or slowed shots are left exactly
+    as they are) with the planner's own picker (post_pick.regenerate). Shots outside the range never change, nor does cut timing. A shot never gets back a stretch
+    it has already shown (plan["review"]["seen"]), so pressing it twice moves on. Each changed shot offers back the moment it had just before (and the planner's
+    original), and has to be reviewed again. Only for plans cut from the steadiness analysis (highlight and story). Mutates `plan`; returns what changed."""
+    if not _is_steady_plan(plan, clips):
+        raise ReviewError("Regenerate works on plans cut from the footage analysis (Your usual pace, corporate highlight and story plans). "
+                          "This plan's moments come from Claude's descriptions: swap its shots one at a time instead.")
+    lo, hi = sorted((int(from_index), int(to_index)))
+    fps = plan["fps"]
+    review = plan.setdefault("review", {"approved": [], "original": {}})
+    locked = set(review.get("locked", []))
+    in_range = [s for s in plan["shots"] if lo <= s["index"] <= hi and s["role"] == "body"]
+    kept_yours = [{"index": s["index"], "why": why} for s in in_range if (why := decided(s, review))]
+    targets = [s["index"] for s in in_range if not decided(s, review)]
+    if not targets:
+        raise ReviewError("Every shot in that range is one you've decided on (locked, kept, picked or slowed) or an opening/closing shot: "
+                          "Regenerate only re-picks the others.")
+    seen_map = review.setdefault("seen", {})
+    seen: dict[int, list[tuple[int, float, float]]] = {}
+    by_index = {s["index"]: s for s in plan["shots"]}
+    for idx in targets:
+        shot = by_index[idx]
+        real_in = (shot.get("speed_original") or {}).get("source_in", shot["source_in"])
+        here = [shot["file_id"], round(real_in, 3), round(real_in + shot["duration_frames"] / fps, 3)]
+        history = seen_map.setdefault(str(idx), [])
+        if here not in history:
+            history.append(here)
+        seen[idx] = [tuple(x) for x in history]
+    picks = post_pick.regenerate(plan, clips, targets, seen)
+    by_id = {c["file_id"]: c for c in clips}
+    changed, unchanged = [], []
+    for idx in targets:
+        pick, shot = picks.get(idx), by_index[idx]
+        if pick is None:
+            unchanged.append(idx)
+            continue
+        before = _shot_summary(shot)
+        before["candidate"] = shot.get("candidate")
+        here = {"file_id": shot["file_id"], "name": shot["name"], "path": shot["path"], "source_in": shot["source_in"], "moment_source": shot["moment_source"]}
+        review["original"].setdefault(str(idx), here)   # the planner's own moment (kept from the first change on)
+        review.setdefault("previous", {})[str(idx)] = here   # the moment it had just before THIS regeneration
+        window, length = pick["window"], shot["duration_frames"] / fps
+        clip = by_id[pick["file_id"]]
+        shot.update({"file_id": clip["file_id"], "name": clip["name"], "path": clip["path"], "source_in": window["start"], "source_out": round(window["start"] + length, 3),
+                     "moment_source": window["source"], "steady": window["steady"]})
+        for key in ("alike_previous", "event_kind"):
+            shot.pop(key, None)
+        if window.get("event_kind"):
+            shot["event_kind"] = window["event_kind"]
+        zooms = (plan.get("zooms") or {}).get("items")
+        if zooms:
+            plan["zooms"]["items"] = [z for z in zooms if z["shot_index"] != idx]
+        refresh_candidate(plan, shot, clip)
+        seen_map[str(idx)].append([clip["file_id"], round(window["start"], 3), round(window["start"] + length, 3)])
+        changed.append({"index": idx, "before": before, "after": _shot_summary(shot), "candidate": shot.get("candidate"),
+                        "slot": {"index": idx, "role": shot["role"], "seconds": round(length, 3), "cut_at": round(shot["start_frame"] / fps, 2)}})
+    return {"range": [lo, hi], "regenerated": changed, "unchanged": unchanged, "locked_kept": sorted(i for i in locked if lo <= i <= hi), "kept_yours": kept_yours}
+
+
+def _event_candidate(c: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A shot (or a shot summary with its candidate record) in the learning event's candidate shape."""
+    if not c:
+        return None
+    cand = c.get("candidate") or {}
+    event = cand.get("event") or {}
+    return {"candidate_id": cand.get("id"), "file_id": c.get("file_id"), "name": c.get("name"), "source_in": c.get("source_in"), "source_out": c.get("source_out"),
+            "kind": event.get("kind"), "punch": event.get("punch"), "speed": c.get("speed")}
+
+
+def review_events(job_id: int, plan: dict[str, Any], outcome_name: str, outcome: dict[str, Any]) -> list[dict[str, Any]]:
+    """Learning events (post_learning_events) for a lock, an unlock or a regeneration: explicit feedback, confirmed. None of these counts as a vote for or against
+    a kind of moment (only kept / approved / swapped / replaced / dropped do), so locking or regenerating can't skew the taste evidence by itself."""
+    from app import post_learning_events as le
+    context = {"style": plan.get("style"), "variant": (plan.get("variant") or {}).get("style")}
+    ts = le.now_precise()   # lock, unlock, lock within one second are three events, not one
+    if outcome_name in ("locked", "unlocked"):
+        shot = next(s for s in plan["shots"] if s["index"] == outcome["slot"]["index"])
+        return [le.make_event(category="explicit_feedback", confidence="confirmed", outcome=outcome_name, source="review_page", job_id=job_id, slot=outcome["slot"],
+                              planned=_event_candidate(shot), context=context, ts=ts)]
+    if outcome_name == "regenerated":
+        return [le.make_event(category="explicit_feedback", confidence="confirmed", outcome="regenerated", source="review_page", job_id=job_id, slot=c["slot"],
+                              planned=_event_candidate(c["before"]), replacement=_event_candidate({**c["after"], "candidate": c["candidate"]}),
+                              context={**context, "range": outcome["range"]}, ts=ts) for c in outcome["regenerated"]]
+    raise ValueError(outcome_name)
+
+
+def reason_event(edit_dir: Path, job_id: int, plan: dict[str, Any], slot_index: int, reasons: list[str], note: str | None,
+                 explains: str | None = None) -> dict[str, Any]:
+    """The reason Josh gave for a change to a shot, as a 'reasoned' event that names that change (context["explains"]), so a client's request takes the change out of
+    his taste evidence (post_learning_events._explained_away). `explains`: the id of the change's own event (the review page gets it back from the swap); without it,
+    the latest change to that shot in this job. Raises ReviewError for an unknown reason code, a shot he hasn't changed, or an id that isn't a change to that shot."""
+    from app import post_learning_events as le
+    unknown = [r for r in reasons if r not in le.REASON_CODES]
+    if not reasons or unknown:
+        raise ReviewError("Pick at least one of the listed reasons." if not reasons else f"Unknown reason {unknown[0]!r}.")
+    shot = next((s for s in plan["shots"] if s["index"] == slot_index), None)
+    if shot is None:
+        raise ReviewError(f"The plan has no shot {slot_index}.")
+    events = le.load_events(Path(edit_dir) / le.EVENTS_FILE)
+    changes = [e for e in events if (e.get("slot") or {}).get("index") == slot_index and e.get("outcome") in CHANGE_OUTCOMES and e.get("job_id") == job_id
+               and e.get("category") == "explicit_feedback"]   # his own changes on the review page, never a "moved" seen in a finished timeline
+    if explains is not None:
+        last = next((e for e in changes if e["id"] == explains), None)
+        if last is None:
+            raise ReviewError("That change wasn't recorded for this shot, so a reason can't be attached to it.")
+    else:
+        last = changes[-1] if changes else None
+    if last is None:
+        raise ReviewError("A reason explains a change: swap, nudge or regenerate this shot first.")
+    return le.make_event(category="explicit_feedback", confidence="confirmed", outcome="reasoned", source="review_page", job_id=job_id, ts=le.now_precise(), slot=last.get("slot"),
+                         planned=last.get("planned"), replacement=last.get("replacement"), reasons=reasons, note=note,
+                         context={"style": plan.get("style"), "explains": last["id"], "explains_outcome": last["outcome"]})
 
 
 def log_speed_record(edit_dir: Path, job_id: int, plan: dict[str, Any], outcome: dict[str, Any]) -> None:
@@ -325,20 +552,27 @@ def log_speed_record(edit_dir: Path, job_id: int, plan: dict[str, Any], outcome:
     record = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "job_id": job_id, "style": plan.get("style"), "action": "slow" if outcome["speed"] != 1.0 else "normal", **outcome}
     with open(edit_dir / "review_speed_log.jsonl", "a") as fh:
         fh.write(json.dumps(record) + "\n")
+    from app import post_learning_events as le   # the same decision as a versioned learning event (converted exactly as a bulk import would, so never twice)
+    le.record_for_job(edit_dir, le.from_speed_record(record))
 
 
-def log_record(edit_dir: Path, job_id: int, plan: dict[str, Any], action: str, outcome: dict[str, Any]) -> None:
+def log_record(edit_dir: Path, job_id: int, plan: dict[str, Any], action: str, outcome: dict[str, Any]) -> str | None:
     """One JSON line per decision: what was picked and everything that was offered (so the passed-over
-    candidates are as informative as the pick)."""
+    candidates are as informative as the pick). Returns the id of the learning event written for it (None when it couldn't be written), so a reason
+    given afterwards can name exactly this change."""
     edit_dir.mkdir(parents=True, exist_ok=True)
     chosen = outcome["chosen"]
     record = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "job_id": job_id, "style": plan.get("style"), "action": action, "slot": outcome["slot"],
         "chosen": chosen, "passed_over": [c for c in outcome["shown"] if c["id"] != chosen["id"]],
         "kept_current": chosen["origin"] == "current" or chosen["id"] == outcome["shown"][0]["id"],
+        "current_was_yours": bool(outcome.get("current_was_yours")),   # the shot already held a moment HE picked: not a vote on the planner's kinds
     }
     with open(edit_dir / "review_log.jsonl", "a") as fh:
         fh.write(json.dumps(record) + "\n")
+    from app import post_learning_events as le   # the same decision as a versioned learning event (converted exactly as a bulk import would, so never twice)
+    events = le.from_review_record(record)
+    return events[0]["id"] if events and le.record_for_job(edit_dir, events) >= 0 else None
 
 
 def clip_cache_path(edit_dir: Path, file_id: int, start: float, seconds: float, speed: float = 1.0) -> Path:

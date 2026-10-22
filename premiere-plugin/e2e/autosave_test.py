@@ -183,6 +183,9 @@ if os.path.exists(PROJECT):
         post_learn.FEEDBACK_DIR = Path(tmp) / "feedback"
         real_job = {"id": 48, "premiere_project_path": PROJECT, "shoot_name": "GWM - Highlight Video", "profile": "alpha_mode", "destination_root": "/Volumes/Joshx SSD/Two Tone/GWM - Highlight Video"}
         before = {p: os.stat(p).st_mtime for p in [s["path"] for s in pa.list_sources(PROJECT)]}
+        # ...and the job's plans folder, where the learning-event copy of a log would go (2026-10-22: it did, from this very test, until post_learn checked)
+        PLANS = Path(PROJECT).parent / "edit_plans"
+        plans_before = {p.name: p.stat().st_mtime for p in PLANS.iterdir()} if PLANS.is_dir() else {}
         t0 = time.time(); total = {"read": 0, "new_states": 0}
         while True:
             r = pa.scan_job(store, real_job, budget=15)
@@ -199,6 +202,9 @@ if os.path.exists(PROJECT):
         mine = [i for i in idx if i["sequence"].startswith("GWM - Highlight Video - Edit 2026-10-15")]
         check("the finished GWM edit is logged against the plan it was BUILT from (the 40 s, 16-shot plan, not the later selects)", len(mine) == 1 and mine[0]["stale_plan"] is False and mine[0]["summary"]["plan_shots"] == 16, [(i["summary"]["plan_shots"], i["stale_plan"]) for i in mine])
         check("nothing on the SSD was touched", all(os.stat(p).st_mtime == t for p, t in before.items()))
+        plans_after = {p.name: p.stat().st_mtime for p in PLANS.iterdir()} if PLANS.is_dir() else {}
+        check("...not even the job's plans folder: no file added or changed there (a test log never writes learning events into his real job)", plans_after == plans_before,
+              sorted(set(plans_after.items()) ^ set(plans_before.items()))[:4])
 else:
     print("SKIP the real GWM checks (drive not mounted)")
 

@@ -63,14 +63,40 @@ def sample_shots(inventory: dict, per_project: int = 8, seed: int = 1, max_clip_
     return out
 
 
-def cache_file(path: str) -> Path:
-    st = os.stat(path)
-    return MEASURE_DIR / (hashlib.sha1(f"{path}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest() + ".json")
+_KNOWN_STATS: dict[str, list] | None = None
+
+
+def _known_stat(path: str) -> tuple[int, float] | None:
+    """The (size, modified time) the inventory recorded for `path` (footage.Durations' cache), so a clip measured earlier can be found
+    while its drive is unplugged. None when the file was never seen."""
+    global _KNOWN_STATS
+    if _KNOWN_STATS is None:
+        try:
+            _KNOWN_STATS = json.loads((footage.DEFAULT_DATA / "duration_cache.json").read_text())
+        except (OSError, ValueError):
+            _KNOWN_STATS = {}
+    rec = _KNOWN_STATS.get(path)
+    return (int(rec[0]), float(rec[1])) if isinstance(rec, list) and len(rec) >= 2 else None
+
+
+def cache_file(path: str) -> Path | None:
+    """Where the clip's measurement is cached: keyed by path, size and modified time. With the drive unplugged the size and time come from the
+    inventory's record of the file (None if it was never seen)."""
+    try:
+        st = os.stat(path)
+        size, mtime = st.st_size, st.st_mtime
+    except OSError:
+        known = _known_stat(path)
+        if known is None:
+            return None
+        size, mtime = known
+    return MEASURE_DIR / (hashlib.sha1(f"{path}|{size}|{int(mtime)}".encode()).hexdigest() + ".json")
 
 
 def load_measure(path: str) -> dict | None:
+    """The cached measurement of a clip, whether or not its drive is plugged in; None if it was never measured."""
     f = cache_file(path)
-    return json.loads(f.read_text()) if f.exists() else None
+    return json.loads(f.read_text()) if f is not None and f.exists() else None
 
 
 def starts_for(duration: float, length: float) -> np.ndarray:

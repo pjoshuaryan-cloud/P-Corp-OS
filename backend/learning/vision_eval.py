@@ -147,7 +147,7 @@ async def run(args: argparse.Namespace) -> int:
         print("ANTHROPIC_API_KEY is not set (backend/.env)."); return 1
 
     inventory = json.loads((footage.DEFAULT_DATA / args.inventory).read_text())
-    measures = {s.path: evaluate.load_measure(s.path) for s in evaluate.sample_shots(inventory) if os.path.exists(s.path)}
+    measures = {s.path: m for s in evaluate.sample_shots(inventory) if (m := evaluate.load_measure(s.path))}
     samples = [s for s in evaluate.sample_shots(inventory) if measures.get(s.path)]
     random.Random(7).shuffle(samples)
     samples = samples[: args.n] if args.n else samples
@@ -219,7 +219,7 @@ def _distinct(starts: list[float], L: float, k: int = 3) -> list[float]:
 def analyse(args: argparse.Namespace) -> int:
     """No API calls: reads the cached replies. How do the pictures compare with the signal-only ranker, and do the two catch the same shots?"""
     inventory = json.loads((footage.DEFAULT_DATA / args.inventory).read_text())
-    measures = {s.path: evaluate.load_measure(s.path) for s in evaluate.sample_shots(inventory) if os.path.exists(s.path)}
+    measures = {s.path: m for s in evaluate.sample_shots(inventory) if (m := evaluate.load_measure(s.path))}
     samples = [s for s in evaluate.sample_shots(inventory) if measures.get(s.path)]
     picks_by_shot = {}
     for s in samples:
@@ -278,7 +278,7 @@ def planner_check(args: argparse.Namespace) -> int:
     the next two it would offer from the same clip (the review's alternatives)."""
     from app import post_moments, post_steady
     inventory = json.loads((footage.DEFAULT_DATA / args.inventory).read_text())
-    measures = {s.path: evaluate.load_measure(s.path) for s in evaluate.sample_shots(inventory) if os.path.exists(s.path)}
+    measures = {s.path: m for s in evaluate.sample_shots(inventory) if (m := evaluate.load_measure(s.path))}
     samples = [s for s in evaluate.sample_shots(inventory) if measures.get(s.path)]
     rng_eval = evaluate.evaluate_rule(samples, None, measures)
     print(f"{len(samples)} shots;  random guess: top-1 {np.mean([r['hit1'] for r in rng_eval['results']]):.1%}  top-3 {np.mean([r['hit3'] for r in rng_eval['results']]):.1%}")

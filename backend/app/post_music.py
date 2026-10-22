@@ -14,6 +14,7 @@ the tempo is drifting or ambiguous and the cuts will feel loose.
 
 import asyncio
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -253,15 +254,25 @@ def _analyze_samples(samples: np.ndarray) -> dict[str, Any]:
     }
 
 
+OWN_CUT_MARKERS = ("_reelcut",)   # a plan's music cut (<song>_reelcut.wav)
+_VARIANT_CUT = re.compile(r"_variants_\d{8}T\d{6}$")   # a variant set's (<song>_variants_<set id>.wav); exact, so a song of his with "_variants_" in its name still counts
+
+
+def is_own_cut(path: Path) -> bool:
+    """A music cut this app rendered, not a song Josh put there. (2026-10-22: the first variant set's cut was the newest file in GWM's music folder, so the next
+    plan without a chosen song picked that 20 s cut as "the song"; every place that looks for his songs uses this.)"""
+    stem = Path(path).stem
+    return any(marker in stem for marker in OWN_CUT_MARKERS) or bool(_VARIANT_CUT.search(stem))
+
+
 def find_music_file(music_folder: str) -> str | None:
-    """The newest audio file in a job's music folder (ignoring the reel cuts this module
-    writes itself), or None."""
+    """The newest audio file in a job's music folder (ignoring the music cuts the app writes itself), or None."""
     folder = Path(music_folder)
     if not folder.is_dir():
         return None
     candidates = [
         p for p in folder.iterdir()
-        if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS and not p.name.startswith(".") and "_reelcut" not in p.stem
+        if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS and not p.name.startswith(".") and not is_own_cut(p)
     ]
     return str(max(candidates, key=lambda p: p.stat().st_mtime)) if candidates else None
 

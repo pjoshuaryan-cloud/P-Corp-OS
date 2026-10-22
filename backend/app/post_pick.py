@@ -23,7 +23,7 @@ from typing import Any
 
 import numpy as np
 
-from app import post_steady
+from app import post_candidate_moments, post_steady
 
 QUALITY_SCALE = 0.3        # quality = 1 / (1 + steadiness_score / QUALITY_SCALE): a clean window is ~0.95, a shaky one ~0.6, one with a cut ~0. Was 0.1; on the 165 static-heavy GWM clips that made the very stillest
                            # footage win every slot (7 shots in a row of people standing at the booth), so how still a shot is now counts for less than whether it adds a new look
@@ -41,6 +41,14 @@ EVENT_QUALITY = 0.2        # added for a stretch that covers a described event, 
 ALIKE = 0.5                # for the plan's repetition report: two shots at or above this correlation are "alike"
 EVENT_CANDIDATES = 3       # a described clip offers its best three moments to each slot, and the one that adds the most variety wins. Measured on Josh's GWM footage: taking only each clip's
                            # single best moment made every shot a hero/logo shot of the same showroom (27 distinct looks in 76 shots vs 41 for the old steadiest-window plan)
+
+
+# Optional terms (2026-10-22), all ZERO unless a caller asks for them, so default plans are exactly what they were (premiere-plugin/e2e/candidate_engine_test.py):
+ROLE_WEIGHT = 0.4            # a style's preference for a kind of shot (-1..1) is worth up to this: less than the gap between a clean and a shaky stretch
+FIRST_LAST_ROLE_BONUS = 0.5  # the first or last shot of a style that wants to open / close on a particular kind of shot (e.g. a hero)
+VARIANT_OVERLAP_PENALTY = 1.5  # a stretch another variant of the same edit already uses: alternatives should show different footage
+VARIANT_SAME_CLIP_PENALTY = 0.35  # a different stretch of a clip another variant uses
+PREFERENCE_WEIGHT = 1.0      # learned per-kind adjustments (post_learning_events, already clipped to +-0.15); only passed in once they clear the adoption gate
 
 
 def _ramp(sim: float) -> float:
@@ -66,7 +74,14 @@ def look_penalty(scene: str, sig: np.ndarray | None, others: list[tuple[int, np.
 
 
 class Picker:
-    def __init__(self, clips: list[dict[str, Any]]) -> None:
+    def __init__(self, clips: list[dict[str, Any]], *, role_weights: dict[str, float] | None = None, diversity: float = 1.0,
+                 avoid: dict[int, list[tuple[float, float]]] | None = None, preferences: dict[str, float] | None = None) -> None:
+        """`role_weights`: a style's preference per kind of shot (post_style_library); `diversity`: how hard to avoid repeated looks (1.0 = as always);
+        `avoid`: stretches other variants of the same edit already use, by file id; `preferences`: learned per-kind adjustments that passed the adoption gate."""
+        self.role_weights = role_weights or {}
+        self.diversity = diversity
+        self.avoid = avoid or {}
+        self.preferences = preferences or {}
         self.pool = [c for c in clips if c.get("steady")]
         self.order = {c["file_id"]: i for i, c in enumerate(clips)}
         self.denominator = max(len(clips) - 1, 1)
@@ -75,8 +90,12 @@ class Picker:
         self._windows: dict[tuple, dict[str, Any]] = {}
         self._event_windows: dict[tuple, list[dict[str, Any]]] = {}
 
+    def _taken(self, clip: dict[str, Any]) -> list[tuple[float, float]]:
+        """Stretches of the clip this edit already uses, plus (for a variant) the ones other variants use, so the clip offers different footage."""
+        return self.used.get(clip["file_id"], []) + self.avoid.get(clip["file_id"], [])
+
     def _window(self, clip: dict[str, Any], length: float) -> dict[str, Any]:
-        taken = self.used.get(clip["file_id"], [])
+        taken = self._taken(clip)
         key = (clip["file_id"], round(length * 8), tuple((round(a, 2), round(b, 2)) for a, b in taken))
         if key not in self._windows:
             self._windows[key] = post_steady.window_for_slot(clip, length, taken)
@@ -84,7 +103,7 @@ class Picker:
 
     def _candidates(self, clip: dict[str, Any], length: float) -> list[dict[str, Any]]:
         """The windows of `clip` this slot may choose between: its best few described moments, else the single best stretch (_window)."""
-        taken = self.used.get(clip["file_id"], [])
+        taken = self._taken(clip)
         key = (clip["file_id"], round(length * 8), tuple((round(a, 2), round(b, 2)) for a, b in taken))
         if key not in self._event_windows:
             self._event_windows[key] = post_steady.event_windows(clip, length, taken, EVENT_CANDIDATES) if EVENT_CANDIDATES > 1 else []
@@ -98,9 +117,9 @@ class Picker:
         scene = (clip.get("scene") or "").strip().lower()
         return look_penalty(scene, sig, [(back, other["sig"], other["scene"]) for back, other in enumerate(reversed(self.chosen), start=1)])
 
-    def pick(self, length: float, target_position: float, *, exclude: set[int] | None = None) -> dict[str, Any] | None:
+    def pick(self, length: float, target_position: float, *, exclude: set[int] | None = None, prefer_role: str | None = None) -> dict[str, Any] | None:
         """The best {clip, window, sig, score, parts} for a slot of `length` seconds that falls at `target_position` (0..1) of the edit, or None if no
-        clip is long enough."""
+        clip is long enough. `prefer_role`: this slot would rather be that kind of shot (a style's opening or closing shot)."""
         best: dict[str, Any] | None = None
         for clip in self.pool:
             if (exclude and clip["file_id"] in exclude) or clip["duration"] < length + 0.2:
@@ -114,10 +133,19 @@ class Picker:
                 overlap += CUT_PENALTY if window["steady"]["cuts"] else 0.0
                 position = POSITION_WEIGHT * abs(self.order[clip["file_id"]] / self.denominator - target_position)
                 event = EVENT_QUALITY * (window.get("event_punch") or 0) / 10.0
-                score = quality - DIVERSITY_WEIGHT * looks - reuse - overlap - position + event
+                role = post_candidate_moments.role_of(window)
+                role_bonus = ROLE_WEIGHT * self.role_weights.get(role, 0.0) + (FIRST_LAST_ROLE_BONUS if prefer_role and role == prefer_role else 0.0)
+                preference = PREFERENCE_WEIGHT * self.preferences.get(role, 0.0)
+                variant = 0.0
+                if self.avoid.get(clip["file_id"]):
+                    s0, s1 = window["start"], window["start"] + window["duration"]
+                    variant = VARIANT_OVERLAP_PENALTY if any(s0 < b and s1 > a for a, b in self.avoid[clip["file_id"]]) else VARIANT_SAME_CLIP_PENALTY
+                score = quality - self.diversity * DIVERSITY_WEIGHT * looks - reuse - overlap - position + event + role_bonus + preference - variant
                 if best is None or score > best["score"]:
                     best = {"clip": clip, "window": window, "sig": sig, "score": score, "similar_to_previous": previous,
-                            "parts": {"quality": round(quality, 3), "looks_like_earlier": round(looks, 3), "reused_clip": bool(reuse), "event": round(event, 3)}}
+                            "parts": {"quality": round(quality, 3), "looks_like_earlier": round(looks, 3), "reused_clip": bool(reuse), "event": round(event, 3),
+                                      "role": role, "role_bonus": round(role_bonus, 3), "learned_preference": round(preference, 3), "other_variant_penalty": round(variant, 3),
+                                      "position_penalty": round(position, 3)}}
         return best
 
     def register(self, clip: dict[str, Any], window: dict[str, Any], sig: np.ndarray | None = None) -> float:
@@ -181,6 +209,41 @@ def _plan_infos(plan: dict[str, Any], by_id: dict[int, dict[str, Any]]) -> list[
     return out
 
 
+def _scored_for_slot(picker: Picker, plan: dict[str, Any], infos: list[dict[str, Any]], k: int,
+                     also_taken: list[tuple[int, float, float]] | tuple = ()) -> list[dict[str, Any]]:
+    """Every clean stretch that could fill shot `k` of the plan, best first, scored like a planned shot against the plan's OTHER shots as they stand (`infos`).
+    `also_taken`: (file_id, start, end) stretches this slot must not offer again (what it has already shown in review)."""
+    shot = plan["shots"][k]
+    n = len(infos)
+    length = infos[k]["length"]
+    target = (k + 0.5) / n if shot["role"] == "body" else (0.0 if shot["role"] == "opener" else 1.0)
+    neighbours = [(abs(j - k), infos[j]["sig"], infos[j]["scene"]) for j in range(n) if j != k]
+    used_elsewhere = {infos[j]["file_id"] for j in range(n) if j != k}
+    scored: list[dict[str, Any]] = []
+    for clip in picker.pool:
+        if clip["duration"] < length + 0.2:
+            continue
+        taken = [(infos[j]["start"], infos[j]["start"] + infos[j]["length"]) for j in range(n) if infos[j]["file_id"] == clip["file_id"] and j != k]
+        if clip["file_id"] == infos[k]["file_id"]:
+            taken.append((infos[k]["start"], infos[k]["start"] + infos[k]["length"]))  # a different stretch of the same clip, not the current one
+        taken += [(a, b) for f, a, b in also_taken if f == clip["file_id"]]
+        key = (clip["file_id"], round(length * 8), tuple((round(a, 2), round(b, 2)) for a, b in taken))
+        window = picker._windows.get(key) or picker._windows.setdefault(key, post_steady.window_for_slot(clip, length, taken))
+        if window.get("overlaps_earlier_use") or window["steady"]["cuts"]:
+            continue
+        sig = picker._signature(clip, window)
+        quality = 1.0 / (1.0 + window["steady"]["score"] / QUALITY_SCALE)
+        looks, nearest = look_penalty((clip.get("scene") or "").strip().lower(), sig, neighbours)
+        same_clip = clip["file_id"] == infos[k]["file_id"]
+        if same_clip and post_steady.similarity(sig, infos[k]["sig"]) >= ALIKE:
+            continue  # the same shot again, a quarter second along
+        score = (quality - DIVERSITY_WEIGHT * looks - (REUSE_PENALTY if clip["file_id"] in used_elsewhere else 0.0)
+                 - POSITION_WEIGHT * abs(picker.order[clip["file_id"]] / picker.denominator - target) + EVENT_QUALITY * (window.get("event_punch") or 0) / 10.0)
+        scored.append({"score": score, "clip": clip, "window": window, "sig": sig, "same_clip": same_clip, "nearest": nearest, "quality": quality})
+    scored.sort(key=lambda c: -c["score"])
+    return scored
+
+
 def alternatives(plan: dict[str, Any], clips: list[dict[str, Any]], per_shot: int = ALTERNATIVES_PER_SHOT) -> dict[int, list[dict[str, Any]]]:
     """For every shot of a corporate plan, the best OTHER stretches to swap in: the plan's other shots stay as they are, and each candidate is scored like a
     planned shot (clean + exposed, not looking like its neighbours on either side, not a clip used elsewhere, near where it falls in the shoot). The offered set
@@ -190,7 +253,6 @@ def alternatives(plan: dict[str, Any], clips: list[dict[str, Any]], per_shot: in
     picker = Picker(clips)
     by_id = {c["file_id"]: c for c in clips}
     infos = _plan_infos(plan, by_id)
-    n = len(infos)
     bookended = bool((plan.get("checks") or {}).get("bookend"))
     result: dict[int, list[dict[str, Any]]] = {}
     for k, shot in enumerate(plan["shots"]):
@@ -198,30 +260,7 @@ def alternatives(plan: dict[str, Any], clips: list[dict[str, Any]], per_shot: in
             result[shot["index"]] = []
             continue
         length = infos[k]["length"]
-        target = (k + 0.5) / n if shot["role"] == "body" else (0.0 if shot["role"] == "opener" else 1.0)
-        neighbours = [(abs(j - k), infos[j]["sig"], infos[j]["scene"]) for j in range(n) if j != k]
-        used_elsewhere = {infos[j]["file_id"] for j in range(n) if j != k}
-        scored: list[dict[str, Any]] = []
-        for clip in picker.pool:
-            if clip["duration"] < length + 0.2:
-                continue
-            taken = [(infos[j]["start"], infos[j]["start"] + infos[j]["length"]) for j in range(n) if infos[j]["file_id"] == clip["file_id"] and j != k]
-            if clip["file_id"] == shot["file_id"]:
-                taken.append((infos[k]["start"], infos[k]["start"] + infos[k]["length"]))  # a different stretch of the same clip, not the current one
-            key = (clip["file_id"], round(length * 8), tuple((round(a, 2), round(b, 2)) for a, b in taken))
-            window = picker._windows.get(key) or picker._windows.setdefault(key, post_steady.window_for_slot(clip, length, taken))
-            if window.get("overlaps_earlier_use") or window["steady"]["cuts"]:
-                continue
-            sig = picker._signature(clip, window)
-            quality = 1.0 / (1.0 + window["steady"]["score"] / QUALITY_SCALE)
-            looks, nearest = look_penalty((clip.get("scene") or "").strip().lower(), sig, neighbours)
-            same_clip = clip["file_id"] == shot["file_id"]
-            if same_clip and post_steady.similarity(sig, infos[k]["sig"]) >= ALIKE:
-                continue  # the same shot again, a quarter second along
-            score = (quality - DIVERSITY_WEIGHT * looks - (REUSE_PENALTY if clip["file_id"] in used_elsewhere else 0.0)
-                     - POSITION_WEIGHT * abs(picker.order[clip["file_id"]] / picker.denominator - target) + EVENT_QUALITY * (window.get("event_punch") or 0) / 10.0)
-            scored.append({"score": score, "clip": clip, "window": window, "sig": sig, "same_clip": same_clip, "nearest": nearest, "quality": quality})
-        scored.sort(key=lambda c: -c["score"])
+        scored = _scored_for_slot(picker, plan, infos, k)
         offered: list[dict[str, Any]] = []
         for cand in scored:
             if len(offered) >= per_shot:
@@ -238,6 +277,32 @@ def alternatives(plan: dict[str, Any], clips: list[dict[str, Any]], per_shot: in
         } for c in offered]
     post_steady.clear_series_cache()  # the per-clip arrays were only needed while scoring
     return result
+
+
+def regenerate(plan: dict[str, Any], clips: list[dict[str, Any]], indices: list[int], seen: dict[int, list[tuple[int, float, float]]] | None = None) -> dict[int, dict[str, Any]]:
+    """A fresh pick for each shot in `indices`, in timeline order, scored exactly like a review swap (_scored_for_slot) against the plan's other shots; each new
+    pick becomes the neighbour the next one is judged against, so a regenerated run of shots is varied within itself. `seen`: per shot, every (file_id, start, end)
+    it has already shown, never offered again (so pressing Regenerate twice moves on instead of swinging back). {index: {file_id, name, source_in, seconds,
+    window, score}}; a shot with nothing new left is left out. Pure: the plan is not changed."""
+    seen = seen or {}
+    post_steady.clear_series_cache()
+    picker = Picker(clips)
+    by_id = {c["file_id"]: c for c in clips}
+    infos = _plan_infos(plan, by_id)
+    position = {s["index"]: k for k, s in enumerate(plan["shots"])}
+    out: dict[int, dict[str, Any]] = {}
+    for index in sorted((i for i in indices if i in position), key=position.get):
+        k = position[index]
+        scored = _scored_for_slot(picker, plan, infos, k, also_taken=seen.get(index, []))
+        if not scored:
+            continue
+        best = scored[0]
+        clip, window = best["clip"], best["window"]
+        out[index] = {"file_id": clip["file_id"], "name": clip["name"], "path": clip.get("path"), "source_in": window["start"], "seconds": round(infos[k]["length"], 3),
+                      "window": window, "score": round(best["score"], 4)}
+        infos[k] = {**infos[k], "file_id": clip["file_id"], "start": window["start"], "scene": (clip.get("scene") or "").strip().lower(), "sig": best["sig"]}
+    post_steady.clear_series_cache()
+    return out
 
 
 def valid_alternative(plan: dict[str, Any], clips: list[dict[str, Any]], slot_index: int, file_id: int, source_in: float) -> dict[str, Any] | None:

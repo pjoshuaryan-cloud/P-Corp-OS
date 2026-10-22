@@ -29,7 +29,7 @@ CLOSING_SHARE = 0.11           # the closing hold (the brand card) is about this
 CLOSING_MIN_SECONDS, CLOSING_MAX_SECONDS = 2.5, 4.5  # ... within these bounds (a 40 s highlight holds its card about 4.4 s)
 
 
-def cut_profile(profile: StyleProfile, duration: float, pace: float) -> StyleProfile:
+def cut_profile(profile: StyleProfile, duration: float, pace: float, curve: list[float] | None = None) -> StyleProfile:
     """The profile the cut-time planner uses: the corporate reference's shot lengths times the calm pace, flat across the edit
     (a highlight doesn't build like a reel), a closing hold sized to the edit, and nothing shorter than a second."""
     story = profile.story
@@ -39,7 +39,9 @@ def cut_profile(profile: StyleProfile, duration: float, pace: float) -> StylePro
     lengths = [max(floor, l * pace) for l in story.body_lengths]
     hold = min(CLOSING_MAX_SECONDS, max(CLOSING_MIN_SECONDS, CLOSING_SHARE * duration), story.closing_hold_seconds)
     return dataclasses.replace(
-        profile, shot_lengths=lengths, pacing_curve=[round(statistics.mean(lengths), 3)] * 10, end_card_seconds=round(hold, 2),
+        profile, shot_lengths=lengths,
+        pacing_curve=([round(statistics.mean(lengths) * c, 3) for c in curve] if curve else [round(statistics.mean(lengths), 3)] * 10),   # a style's curve (mean 1.0) or flat
+        end_card_seconds=round(hold, 2),
         min_shot_seconds=floor, max_shot_seconds=MAX_SHOT_SECONDS, cut_lead_seconds=0.0, accents=None,
     )
 
@@ -47,6 +49,7 @@ def cut_profile(profile: StyleProfile, duration: float, pace: float) -> StylePro
 def build_highlight_plan(
     *, profile: StyleProfile, hits: list[list[float]], music_in: float, duration: float, fps: float, clips: list[dict],
     bookend_file_id: int | None, seed: int = 7, pace: float = CALM_PACE, slow_zooms: bool = True, with_opener: bool = True, fill_frame: bool = True,
+    pacing_curve: list[float] | None = None, picker_options: dict[str, Any] | None = None, slot_roles: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """Cut times on the music's hits + clip and steadiest window for every slot, snapped to the frame grid. `hits` are song-time [t, strength percentile];
     `clips` are ordered [{file_id, name, path, duration, steady?, ...}]. The first shot is the opening-card slot (`with_opener`), the last is the closing hold."""
@@ -58,7 +61,9 @@ def build_highlight_plan(
     if duration < MIN_HIGHLIGHT_SECONDS:
         raise EditPlanError(f"A highlight needs at least {MIN_HIGHLIGHT_SECONDS:.0f} seconds (an opening card, a closing hold and a few shots); got {duration:.0f}.")
     rng = random.Random(seed)
-    cprof = cut_profile(profile, duration, pace)
+    if pacing_curve is not None and (len(pacing_curve) != 10 or abs(statistics.mean(pacing_curve) - 1.0) > 0.05 or min(pacing_curve) <= 0):
+        raise EditPlanError("A pacing curve needs 10 positive values that average 1.0.")
+    cprof = cut_profile(profile, duration, pace, pacing_curve)
     rel_hits = [[h[0] - music_in, h[1]] for h in hits if music_in - 0.05 <= h[0] <= music_in + duration + 0.05]
     cuts = plan_cut_times(rel_hits, duration, cprof, rng, opener_seconds=story.opener_seconds if with_opener else None)
     frames: list[int] = []
@@ -77,7 +82,8 @@ def build_highlight_plan(
     if len(raw) < 3:
         raise EditPlanError("That length leaves no room for shots between the opening and closing cards. Use a longer edit.")
     slots = [{"role": "opener" if (i == 0 and with_opener) else ("end_card" if i == len(raw) - 1 else "body"), "start_frame": f0, "frames": f1 - f0} for i, (f0, f1) in enumerate(raw)]
-    got = assign_clips_to_slots(slots, fps=fps, clips=clips, bookend_file_id=bookend_file_id, seed=seed, slow_zooms=slow_zooms)
+    got = assign_clips_to_slots(slots, fps=fps, clips=clips, bookend_file_id=bookend_file_id, seed=seed, slow_zooms=slow_zooms,
+                                picker_options=picker_options, slot_roles=slot_roles)
     shots, zooms, by_id, bookend, repetition = got["shots"], got["zooms"], got["by_id"], got["bookend"], got["repetition"]
     for shot, cut in zip(shots, kept):
         shot["cut_hit_percentile"], shot["cut_on_hit"] = cut["hit_pct"], cut["on_hit"]
