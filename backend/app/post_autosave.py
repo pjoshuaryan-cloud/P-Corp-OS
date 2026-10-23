@@ -124,6 +124,28 @@ class Store:
     def set_enabled(self, value: bool) -> None:
         self._write("settings.json", {"enabled": bool(value)})
 
+    # ---- projects that are NOT POST shoots, watched because he asked (Learn From My Edit on such a project adds it) -------------------------------------
+    def projects(self) -> list[dict[str, Any]]:
+        """[{path, added_at}] in projects.json (its own file, so switching the watch on or off can never drop it)."""
+        rows = self._read("projects.json", [])
+        return [r for r in rows if isinstance(r, dict) and isinstance(r.get("path"), str)] if isinstance(rows, list) else []
+
+    def add_project(self, path: str) -> bool:
+        """Watches another project. Returns whether it was new."""
+        rows = self.projects()
+        if any(os.path.normpath(r["path"]) == os.path.normpath(path) for r in rows):
+            return False
+        rows.append({"path": path, "added_at": _iso(time.time())})
+        self._write("projects.json", rows)
+        return True
+
+    def remove_project(self, path: str) -> bool:
+        rows = self.projects()
+        keep = [r for r in rows if os.path.normpath(r["path"]) != os.path.normpath(path)]
+        if len(keep) != len(rows):
+            self._write("projects.json", keep)
+        return len(keep) != len(rows)
+
     def state(self) -> dict[str, Any]:
         s = self._read("state.json", {})
         s.setdefault("processed", {}); s.setdefault("finals", {}); s.setdefault("last_scan", None)
@@ -230,6 +252,18 @@ def settle_job(store: Store, job: dict[str, Any], *, now: float | None = None) -
             last_at = time.mktime(time.strptime(row["at"], "%Y-%m-%dT%H:%M:%S"))
             if now - last_at < SETTLE_SECONDS:
                 continue
+            if job.get("no_plan"):   # a project he started himself: his cut as it is, logged when it settles and is the size of a cut
+                if row.get("built_at"):   # a sequence P Corp built in his project: never his cut (Learn From My Edit compares it with its learned plan)
+                    state["finals"][key] = row["hash"]
+                    continue
+                from app.post_learn import analyse_unplanned, write_unplanned_log
+                shots = [prproj.Shot(t0=r[3], t1=r[3] + r[4], src_in=r[1], src_out=r[2], path=r[0], name=r[0], track=1, src_duration=r[6]) for r in row["shots"]]
+                state["finals"][key] = row["hash"]
+                if "rough cut" not in name.lower() and MIN_SHOTS <= row["n"] <= MAX_HAND_SHOTS:
+                    write_unplanned_log(job["premiere_project_path"], name, analyse_unplanned(shots), source="auto-save")
+                    state["logged"][key] = row["hash"]
+                    logged.append(name)
+                continue
             folder = edit_dir(job)
             plan, _file, basis, made_at = plan_for_build_time(folder, row.get("built_at"))
             if plan is None:
@@ -267,11 +301,26 @@ def status(store: Store, jobs: list[dict[str, Any]]) -> dict[str, Any]:
             s["logged"] = state.get("logged", {}).get(f"{job['id']}:{r['sequence']}") == r["hash"]
         out_jobs.append({"job_id": job["id"], "shoot": job["shoot_name"], "files_read": sum(1 for k in state["processed"] if str(k).startswith(str(Path(job["premiere_project_path"]).parent))),
                          "sequences": list(seqs.values())})
-    return {"enabled": store.enabled(), "last_scan": state["last_scan"], "settle_minutes": SETTLE_SECONDS // 60, "jobs": out_jobs}
+    projects = []
+    for proj in store.projects():
+        pj = project_job(proj["path"])
+        seqs = {}
+        for r in store.snapshots(pj["id"]):
+            sq = seqs.setdefault(r["sequence"], {"sequence": r["sequence"], "states": 0, "last_at": r["at"], "shots_now": r["n"], "logged": False})
+            sq["states"] += 1; sq["last_at"] = r["at"]; sq["shots_now"] = r["n"]
+            sq["logged"] = state.get("logged", {}).get(f"{pj['id']}:{r['sequence']}") == r["hash"]
+        projects.append({"project": proj["path"], "added_at": proj.get("added_at"), "id": pj["id"], "sequences": list(seqs.values())})
+    return {"enabled": store.enabled(), "last_scan": state["last_scan"], "settle_minutes": SETTLE_SECONDS // 60, "jobs": out_jobs, "projects": projects}
+
+
+def project_job(path: str) -> dict[str, Any]:
+    """A watched project that is not a POST shoot, in the shape scan_job / settle_job take: a stable negative id, no plan."""
+    from app.post_learn import project_key
+    return {"id": project_key(path), "premiere_project_path": path, "shoot_name": Path(path).stem, "no_plan": True}
 
 
 async def autosave_watch_loop(app) -> None:
-    """The background loop: every SCAN_SECONDS, one small pass per shoot that has a Premiere project, if the watch is on."""
+    """The background loop: every SCAN_SECONDS, one small pass per shoot that has a Premiere project, and per project he asked to have watched, if the watch is on."""
     import asyncio
     from app.main import _pooled_postgres_conn  # local import -- avoids a circular import at module load time
     from app.post_db import list_post_jobs
@@ -282,7 +331,9 @@ async def autosave_watch_loop(app) -> None:
             if store.enabled():
                 async with _pooled_postgres_conn() as postgres_conn:
                     jobs = await list_post_jobs(None, postgres_conn)
-                for job in jobs:
+                shoots = {os.path.normpath(j["premiere_project_path"]) for j in jobs if j.get("premiere_project_path")}
+                extra = [project_job(p["path"]) for p in store.projects() if os.path.normpath(p["path"]) not in shoots]   # a shoot's own project is watched as the shoot
+                for job in [*jobs, *extra]:
                     if not job.get("premiere_project_path"):
                         continue
                     try:

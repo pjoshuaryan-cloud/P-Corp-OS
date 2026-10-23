@@ -60,6 +60,30 @@ in a browser against the real routes with synthetic footage; **Premiere** = stil
    from the current plan, `uncertain` otherwise; a kept shot you trimmed or lengthened shows as `shortened` / `extended`, one you moved as `moved`. Nothing
    changes any plan: `learning.adopt_preferences` decides whether anything learned may, and on 22 Oct its held-out test said no.
 
+## 3b. A project of your own (not a P Corp shoot), e.g. HAUS WINE - CAMPAIGN (added 2026-10-22)
+
+1. Reload the plugin in Premiere (it changed: Learn now handles projects P Corp didn't make).
+2. With the project open and your cut's sequence active, click **Learn From My Edit**. Expect: "This project isn't one of P Corp OS's shoots ...", then
+   either your cut read as-is (shots, pace) or, for a stringout like `horizontal` today, "... is your clips laid end to end ... nothing was saved"; in both
+   cases "Watching this project's auto-saves from now on".
+3. Keep cutting. 45 minutes after you stop changing the cut it is logged by itself (`GET /post/autosave-watch` lists the project and its sequences).
+
+## 3c. The learned vertical in HAUS WINE - CAMPAIGN (added 2026-10-22)
+
+0. (2026-10-23, the full version) First: set `vertical` to 2160 x 3840 (Sequence Settings) -- the logo/end-card images are drawn for that size and are
+   refused otherwise -- and, with `vertical` open, File > New > Adjustment Layer at 2160 x 3840 (keep the old one). Expect in the build: shots picked
+   by picture, his music on A2, his 11 sounds on A3/A4, 2 flashes + 3 zoom hits on V2 copied from the NEW adjustment layer ("Using the Adjustment Layer
+   that covers this sequence"), zoom blur on 3 shots, B&W on 4, 12 punch-ins, logo (fading in 3 steps) and end card on V3. Then paste his titles.
+1. Reload the plugin. Open the HAUS project. Click **Build My Edit**. Expect "This project isn't a P Corp shoot, but it has a plan learned from your
+   own cut." then "Building the plan learned from "horizontal - CUT LOCK" ...", and a NEW sequence
+   `HAUS WINE  - CAMPAIGN (vertical, learned) - Edit <time>`, settings copied from `vertical`. Since 2026-10-23 the plan is his FINISHED cut: 35 shots,
+   535 frames (22.31 s at 23.976), cut points identical to his, plus his song ("Lamb Truck Keys", from 10.594 s, -5 dB, hard end) on A2:
+   "Music "...from10.594s_535f_-5.0dB.wav" placed on audio track 2." No camera sound, SFX, effects or graphics yet. Nothing else in the project changes.
+   (The 20:33 rough-cut plan, 50 shots / 2824 frames, is kept in the workspace as `edit_plan_learned_vertical_20261022T205439.json`.)
+2. Save the project (Cmd+S), then tell me: `learning/verify_build.py` checks every shot against the plan from the saved file.
+3. Change whatever you'd change, then click **Learn From My Edit** on that sequence. Expect "how much of it you kept": shots kept, moved to another
+   moment in the same clip, or dropped. That number is the score of the transfer.
+
 ## 4. The full list (master prompt section 14) and how each is checked
 
 | Check | How | Expected |

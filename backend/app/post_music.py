@@ -299,13 +299,17 @@ def choose_music_window(analysis: dict[str, Any], beats_needed: int, bar_beats: 
     return {"start_beat": best, "in_seconds": beats[best], "beat_times": [b - beats[best] for b in beats[best:best + beats_needed + 1]]}
 
 
-async def render_music_cut(src: str, out_path: str, in_seconds: float, duration: float, fade_out: float = 1.5) -> None:
-    """The chosen stretch as 48 kHz 16-bit stereo WAV: begins exactly on the beat (20 ms
-    fade-in against a click), fades out over the last `fade_out` seconds."""
+async def render_music_cut(src: str, out_path: str, in_seconds: float, duration: float, fade_out: float = 1.5, gain_db: float = 0.0,
+                           fade_in: float = 0.02) -> None:
+    """The chosen stretch as 48 kHz 16-bit stereo WAV: begins exactly on the beat (`fade_in`, 20 ms
+    against a click; 0 for a sound effect whose attack must stay sharp), fades out over the last
+    `fade_out` seconds (0: none); `gain_db` bakes in a level (his own mix, e.g. -5 dB), 0 leaves it."""
     fade_start = max(0.0, duration - fade_out)
+    filters = ([f"afade=t=in:st=0:d={fade_in:.3f}"] if fade_in > 0 else []) + ([f"afade=t=out:st={fade_start:.3f}:d={fade_out:.3f}"] if fade_out > 0 else []) \
+        + ([f"volume={gain_db:.2f}dB"] if abs(gain_db) >= 0.01 else [])
     proc = await asyncio.create_subprocess_exec(
         FFMPEG_PATH, "-hide_banner", "-v", "error", "-y", "-ss", f"{in_seconds:.4f}", "-t", f"{duration:.4f}", "-i", src,
-        "-vn", "-af", f"afade=t=in:st=0:d=0.02,afade=t=out:st={fade_start:.3f}:d={fade_out:.3f}",
+        "-vn", *(["-af", ",".join(filters)] if filters else []),
         "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", out_path,
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
     )

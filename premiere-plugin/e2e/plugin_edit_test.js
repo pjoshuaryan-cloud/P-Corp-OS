@@ -23,7 +23,8 @@ function makeWorld(opts = {}) {
         createBinAction(name) { return { run: () => { let n = name, k = 0; while (this.children.some((c) => c.isFolder && c.name === n)) n = `${name} ${String(++k).padStart(2, "0")}`; this.children.push(new Folder(n)); } }; }
         createMoveItemAction(item, newParent) { return { run: () => { this.children = this.children.filter((c) => c !== item); newParent.children.push(item); } }; }
     }
-    const root = new Folder("root"); root.isRoot = true; const video = new Folder("Video"); root.children.push(video);
+    const root = new Folder("root"); root.isRoot = true; const video = new Folder(opts.nested ? "vertical" : "Video");
+    if (opts.nested) { const footage = new Folder("footage"); footage.children.push(video); root.children.push(footage); } else root.children.push(video);   // his own projects: footage > vertical > clips
     const N = opts.clips || 6; const subclipLog = [];
     for (let i = 0; i < N; i++) {
         const name = `MNSTR${2684 + i}.MP4`;
@@ -53,6 +54,7 @@ function makeWorld(opts = {}) {
         async getVideoTrack(i) { return { getTrackItems: async () => this.tracks[i] }; }
     }
     const sequences = [];
+    for (const own of opts.ownSequences || []) { const s = new Sequence(own.name); s.settings.rect = own.rect; sequences.push(s); }   // sequences he made himself
     const project = {
         path: "/Volumes/X/10_PREMIERE/JD.prproj",
         async getRootItem() { return root; },
@@ -188,6 +190,66 @@ async function run(label, worldOpts, fps, backendOpts) {
     check(/Premiere would not show 1 of the unrestricted/.test(t.output) && /\(5 can be stretched past their cut, 1 cannot\)/.test(t.output) && /Done\. 6 of 6/.test(t.output), "partial fallback: 5 stretchable, 1 restricted");
     t = await run("E12: Premiere lists the new subclips a few scans late -> found by retrying, no fallback needed", { clips: 6, fail: { lateSubclips: 3 } }, 25);
     check(!/Premiere would not show/.test(t.output) && /\(6 can be stretched past their cut, 0 cannot\)/.test(t.output) && /Done\. 6 of 6/.test(t.output), "late listing handled by the retry");
+    {   // 2026-10-22: a plan LEARNED from his own cut, built in a project that is not a P Corp shoot (Build My Edit hands it to assembleEdit)
+        console.log("\n== E13: a learned plan in his own project: no job, the format of his own 'vertical' sequence, no music ==");
+        const world = makeWorld({ clips: 6, ownSequences: [{ name: "vertical", rect: { width: 2180, height: 3480 } }] });
+        const plan = makePlan(25, world);
+        Object.assign(plan, { music: {}, fit: null, format_from_sequence: "vertical", mode: "learned_transfer", shoot_name: "HAUS WINE  - CAMPAIGN (vertical, learned)", learned_from: { cut: "horizontal - CUT LOCK" } });
+        const posts = []; const seen = [];
+        const backend = (pathname, method) => { seen.push(pathname); if (pathname === "/post/project-plan/built") { posts.push(pathname); return { body: { recorded: true } }; } return { ok: false, body: { detail: "unexpected " + pathname } }; };
+        const { sandbox, output } = load(world, backend);
+        sandbox.__learned = plan;
+        await vm.runInContext("assembleEdit(__learned)", sandbox);
+        const out = output.textContent; const seq = world.stats.created; const TPF = 10160640000n;
+        const shots = seq.inserted.filter((i) => i.startTicks);
+        check(!seen.some((x) => x.startsWith("/post/jobs")), "no P Corp shoot is looked up or fetched");
+        check(/Building the plan learned from "horizontal - CUT LOCK"/.test(out), "it says what it is building");
+        check(seq.settings.rect.width === 2180 && seq.settings.rect.height === 3480 && /copied from your "vertical" sequence/.test(out), "the new sequence takes the format of his own 'vertical' sequence");
+        check(shots.length === 6 && shots.every((x, i) => BigInt(x.atTicks) === BigInt(plan.shots[i].start_frame) * TPF), "every shot at its exact planned frame");
+        check(seq.inserted.every((i) => i.startTicks) && /no music cut/.test(out), "no music is placed (the plan has none) and it says so");
+        check(posts.length === 1 && /Done\. 6 of 6/.test(out), "completion is reported to /post/project-plan/built, and the run finishes");
+        check(world.stats.created.name.startsWith("HAUS WINE  - CAMPAIGN (vertical, learned) - Edit "), "a NEW sequence, named after the learned plan");
+    }
+    {
+        console.log("\n== E14: the learned plan names a format sequence that doesn't exist ==");
+        const world = makeWorld({ clips: 6 }); const plan = makePlan(25, world);
+        Object.assign(plan, { music: {}, format_from_sequence: "vertical", learned_from: { cut: "x" } });
+        const { sandbox, output } = load(world, (pathname) => (pathname === "/post/project-plan/built" ? { body: {} } : { ok: false, body: {} }));
+        sandbox.__learned = plan;
+        await vm.runInContext("assembleEdit(__learned)", sandbox);
+        check(/left at Premiere's default \(no sequence called "vertical"\)/.test(output.textContent) && /Done\. 6 of 6/.test(output.textContent), "it says the format was left at the default, and still builds");
+    }
+    {   // 2026-10-23: the learned plan of his FINISHED horizontal carries his song (cut from where his starts, at his level) -- placed like any plan's music
+        console.log("\n== E15: a learned plan at 23.976 with his music ==");
+        const world = makeWorld({ clips: 6, ownSequences: [{ name: "vertical", rect: { width: 2180, height: 3480 } }] });
+        const plan = makePlan(23.976, world);
+        Object.assign(plan, { music: { cut_path: "/x/edit_plans/Lamb Truck Keys_from10.594s_535f_-5.0dB.wav", in_seconds: 10.594, gain_db: -5.0 }, fit: null,
+                              format_from_sequence: "vertical", mode: "learned_transfer", shoot_name: "HAUS WINE  - CAMPAIGN (vertical, learned)", learned_from: { cut: "horizontal - CUT LOCK" } });
+        const posts = [];
+        const { sandbox, output } = load(world, (pathname) => { if (pathname === "/post/project-plan/built") { posts.push(pathname); return { body: {} }; } return { ok: false, body: {} }; });
+        sandbox.__learned = plan;
+        await vm.runInContext("assembleEdit(__learned)", sandbox);
+        const out = output.textContent; const seq = world.stats.created; const TPF = 10594584000n;
+        const shots = seq.inserted.filter((i) => i.startTicks); const music = seq.inserted.filter((i) => !i.startTicks);
+        check(shots.length === 6 && shots.every((x, i) => BigInt(x.atTicks) === BigInt(plan.shots[i].start_frame) * TPF), "every shot on its exact 23.976 frame (his cut points)");
+        check(music.length === 1 && music[0].a === 1 && /Music "Lamb Truck Keys_from10\.594s_535f_-5\.0dB\.wav" placed/.test(out), "his song is placed from the start, on audio track index 1");
+        check(posts.length === 1 && /Done\. 6 of 6/.test(out), "completion reported, run finishes");
+    }
+    {   // 2026-10-23, found live in HAUS: his clips sit two bins deep (footage > vertical), and the build found none of them
+        console.log("\n== E16: a learned plan whose clips are two bins deep (footage > vertical), subclips landing next to them ==");
+        const world = makeWorld({ clips: 6, nested: true, ownSequences: [{ name: "vertical", rect: { width: 2160, height: 3840 } }] });
+        const plan = makePlan(23.976, world);
+        Object.assign(plan, { music: { cut_path: "/x/edit_plans/song_cut.wav" }, fit: null, format_from_sequence: "vertical", mode: "learned_transfer",
+                              shoot_name: "HAUS WINE  - CAMPAIGN (vertical, learned)", learned_from: { cut: "horizontal - CUT LOCK" } });
+        const { sandbox, output } = load(world, (pathname) => (pathname === "/post/project-plan/built" ? { body: {} } : { ok: false, body: {} }));
+        sandbox.__learned = plan;
+        await vm.runInContext("assembleEdit(__learned)", sandbox);
+        const out = output.textContent; const TPF = 10594584000n; const shots = world.stats.created.inserted.filter((i) => i.startTicks);
+        check(!/isn't in the project/.test(out) && shots.length === 6 && shots.every((x, i) => BigInt(x.atTicks) === BigInt(plan.shots[i].start_frame) * TPF),
+            "all 6 clips found two bins deep, every shot at its frame");
+        check(/Done\. 6 of 6/.test(out) && world.video.children.filter((c) => c && String(c.name).startsWith("RC_")).length === 0,
+            "the working subclips made next to his clips are tidied out of his footage bin");
+    }
     console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
     process.exit(failures ? 1 : 0);
 })();

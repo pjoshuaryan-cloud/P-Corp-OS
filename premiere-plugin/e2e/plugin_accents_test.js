@@ -19,6 +19,7 @@ function world(opts = {}) {
         async getItems() { stats.scans++; for (const p of stats.pending) if (stats.scans >= p.at) { root.children.push(p.item); p.done = true; } stats.pending = stats.pending.filter((p) => !p.done); return [...this.children]; } }
     const root = new Folder("root");
     if (!opts.noAdjustment) root.children.push(Object.assign(new Item("Adjustment Layer"), { defaultFrames: 7 }));
+    for (const info of opts.moreLayers || []) root.children.push(Object.assign(new Item("Adjustment Layer"), { defaultFrames: 7, videoInfo: info }));
     // sequence tracks
     const trackItem = (start, frames) => {
         const t = { startTicks: start, endTicks: start + frames * TPF, components: [], getStartTime: async () => new TickTime(t.startTicks) };
@@ -37,7 +38,7 @@ function world(opts = {}) {
     if (opts.seqSize) sequence.getFrameSize = async () => ({ width: opts.seqSize[0], height: opts.seqSize[1] });
     const editor = { createOverwriteItemAction: (item, time, v, a) => ({ run: () => {
         if (a > 0 || item.sub && item.sub.o && item.sub.o.takeAudio) { placedAudio.push({ name: item.name, at: time.ticks, audioIndex: a, sub: item.sub }); return; }
-        const frames = item.defaultFrames || (item.name.endsWith(".png") ? 150 : 7); video[v].push(trackItem(time.ticksNumber, frames)); video[v][video[v].length - 1].name = item.name;
+        const frames = item.defaultFrames || (item.name.endsWith(".png") ? 150 : 7); video[v].push(trackItem(time.ticksNumber, frames)); video[v][video[v].length - 1].name = item.name; video[v][video[v].length - 1].from = item;
     } }) };
     const project = {
         async getRootItem() { return root; },
@@ -49,7 +50,7 @@ function world(opts = {}) {
     const mkParam = (name, owner) => ({ displayName: name, createKeyframe: (v) => ({ v }), createSetValueAction: (kf) => ({ run: () => { owner.values[name] = kf.v; } }) });
     const ppro = {
         Constants: { TrackItemType: { CLIP: 1 } }, TickTime,
-        ...(opts.layerInfo !== undefined ? { Metadata: { getProjectColumnsMetadata: async (item) => { if (opts.layerInfoThrows) throw new Error('Invalid parameter.'); return JSON.stringify([{ ColumnID: 'Column.Intrinsic.Name', ColumnValue: item.name }, { ColumnID: 'Column.Intrinsic.VideoInfo', ColumnName: 'Video Info', ColumnValue: opts.layerInfo }]); } } } : {}),
+        ...(opts.layerInfo !== undefined ? { Metadata: { getProjectColumnsMetadata: async (item) => { if (opts.layerInfoThrows) throw new Error('Invalid parameter.'); return JSON.stringify([{ ColumnID: 'Column.Intrinsic.Name', ColumnValue: item.name }, { ColumnID: 'Column.Intrinsic.VideoInfo', ColumnName: 'Video Info', ColumnValue: item.videoInfo || opts.layerInfo }]); } } } : {}),
         FolderItem: { cast: (i) => (i && i.isFolder ? i : null) }, ClipProjectItem: { cast: (i) => (i && i.isClip ? i : null) },
         VideoFilterFactory: { createComponent: async (match) => {
             if (opts.failEffect && opts.failEffect === match) throw new Error("effect not installed");
@@ -115,6 +116,14 @@ async function run(label, opts, mutate) {
     t = await run("A8: the Adjustment Layer is 2160x3840 but the sequence is 3840x2160 (found live)", { layerInfo: "2160 x 3840 (1,0)", seqSize: [3840, 2160] });
     check(/Warning: the "Adjustment Layer" in this project is 2160 x 3840 but this sequence is 3840 x 2160/.test(t.output) && /File > New > Adjustment Layer, width 3840, height 2160/.test(t.output), "warns with both sizes and how to fix it");
     check(/WARNING: the "Adjustment Layer"/.test(t.summary) && t.w.video[1].length === 3, "the summary carries the warning too, and the flashes and zoom hits are still placed (no change in behaviour)");
+    check(!/delete/i.test(t.output) && /keep the old one/.test(t.output), "never tells him to delete the old layer (his other sequences use it: deleting it would strip their flashes)");
+    t = await run("A11: two Adjustment Layers -- his horizontal's (3840x2180) and one made for the vertical (2160x3840) -- in a 2160x3840 sequence",
+        { layerInfo: "3840 x 2180 (1,0)", moreLayers: ["2160 x 3840 (1,0)"], seqSize: [2160, 3840] });
+    check(t.w.video[1].length === 3 && t.w.video[1].every((x) => x.from && x.from.videoInfo === "2160 x 3840 (1,0)"), "every flash and zoom hit is a copy of the one that covers the sequence");
+    check(!/WARNING/.test(t.summary) && /Using the "Adjustment Layer" that covers this sequence \(the project has 2\)/.test(t.output), "no warning; it says which one it used");
+    t = await run("A11b: two layers and neither covers the sequence", { layerInfo: "3840 x 2180 (1,0)", moreLayers: ["1920 x 1080 (1,0)"], seqSize: [2160, 3840] });
+    check(/WARNING: the "Adjustment Layer" in this project is 3840 x 2180/.test(t.summary) && t.w.video[1].length === 3 && t.w.video[1].every((x) => !x.from.videoInfo),
+        "warns about the first and still places copies of it (unchanged behaviour)");
     t = await run("A9: the Adjustment Layer matches the sequence, or is larger", { layerInfo: "3840 x 2160 (1,0)", seqSize: [3840, 2160] });
     check(!/Adjustment Layer" in this project/.test(t.output) && !/WARNING/.test(t.summary), "same size: no warning");
     t = await run("A9b: larger layer", { layerInfo: "4096 x 4096 (1,0)", seqSize: [3840, 2160] });

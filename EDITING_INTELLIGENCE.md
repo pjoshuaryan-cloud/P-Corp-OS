@@ -249,3 +249,72 @@ skipped (5 need a drive, 1 needs 4K fixture footage that is no longer on this ma
   It re-runs with `learning.adopt_preferences --save` as his decisions accumulate.
 - The real-GWM half of `autosave_test.py` (including the new plans-folder check) did not run this afternoon: the SSD was unplugged.
 - The desktop app was not rebuilt; the new pages are reached from the review page (Variants link) or by URL.
+
+## 10. Learning from his own projects, and the horizontal-to-vertical test (2026-10-22 evening, uncommitted)
+
+**Learn from a project P Corp didn't make.** The plugin's Learn button, in a project that isn't a shoot, now reads the cut, logs it with no plan
+to compare against, and adds the project to an opt-in auto-save watch (`data/learning/autosaves/projects.json`). A stringout (whole clips end to end)
+is refused as "not a cut yet". A sequence P Corp built inside his project is never logged as his cut; Learn on it compares it with the learned plan
+instead (kept / moved to another moment / dropped). Files: `app/post_learn.py`, `app/post_autosave.py`, three routes in `app/main.py`, `index.js`.
+
+**The test he asked for: HAUS WINE - CAMPAIGN.** He cut the horizontal (`horizontal - CUT LOCK`, Learn click at 20:33: 50 shots, 117.79 s, median
+2.19 s, shots lengthening through the cut 1.93 -> 2.96 s, 42 of 54 clips, recording order kept). `learning/transfer_cut.py` (`prepare`, `study`, `plan`):
+
+- `prepare` described all 117 clips (both orientations) with Claude; cost $1.17 (approved: about $1.60). Steadiness measured locally.
+- `study`, everything held out (leave one shot out):
+  - Where in a clip he takes his shot: 44 of 50 of his shots sit on a moment Claude described. A rule learned from his other shots ("the same
+    relative position in the clip") hit 28 of 50 held-out shots; the planner's default hit 21; chance 21.9. +7 over the default: the gate (+5,
+    fixed before the run) is met.
+  - Which clips he uses: a model on clip features ranks his used clips above his unused ones with AUC 0.74 (90% interval 0.59-0.88): useful.
+- `plan`: 50 vertical shots at his lengths, 117.78 s at 23.976 fps (his sequence rate; the footage is 25 fps), matched to his horizontal shots by
+  what is in them, in recording order, repeating a clip where he repeated one; 44 distinct vertical clips. `validate_plan` OK.
+- Workspace: `backend/data/learning/projects/215347841/09_PROJECT FILES/edit_plans/`. Build: the plugin's **Build My Edit** in the HAUS project
+  asks `POST /post/project-plan` and builds a new sequence copying the `vertical` sequence's settings, picture only, no music.
+
+**Not seen in real Premiere.** `transfer_cut_test.py` (20 checks) covers the study, the alignment and the learned-build comparison on synthetic data;
+the plugin path is covered by mocks (`plugin_edit_test.js` E13/E14, `plugin_build_test.js`). Checklist: section 3c.
+
+**What the learning does NOT read today:** only video track 1 (which clip, in/out, where on the timeline, at constant speed). Effects, transitions,
+speed ramps, adjustment layers, V2+ overlays, SFX and music are ignored. A clip with a speed ramp would be read at the wrong source length.
+
+**Suite after this work:** 1107 Python checks + 172 plugin mocks, 0 failures; backend restarted onto it.
+
+**2026-10-23: the vertical of his FINISHED horizontal (his choice "B").** He finished the edit inside `horizontal - CUT LOCK` and clicked Learn at 00:40:
+35 shots, 22.31 s (Out mark), cut to "Lamb Truck Keys" from 10.59 s into the song (102 BPM); 31 of 34 cuts within a frame of a beat or half-beat (chance
+about 9). The plan was re-made from that click:
+- `study` now re-runs whenever the cut it was made from changes (`cut_source` in `study.json`). On the final cut neither learned part clears its gate:
+  placement held-out 3 of 35 vs default 1 (chance 3.7), +2 < 5; selection AUC 0.60 (0.46-0.74). So: default placement, no selection model.
+- Shot frames come from his cut points (not each length rounded alone): the plan's 35 start frames equal his, 535 frames.
+- `music_for_plan`: his song as he set it, read from the project (`pick_music_bed`: the non-SFX, non-camera item covering most of the cut;
+  `post_reference._audio_level_db`: Premiere's Level, 1.0 = +15 dB), rendered from his in point at his level (-5.02 dB, `render_music_cut(gain_db=)`),
+  hard end like his. Checked: same start sample as the song decoded without seeking, -5.02 dB measured. Not placed (with a note) if the file is missing
+  or his song starts after 0.
+- Tests: `transfer_cut_test.py` +10 checks, `plugin_edit_test.js` E15. Suite: 1117 Python checks + 175 plugin mocks, 0 failures; backend restarted.
+- Not yet: his SFX, flashes / zoom blurs, punch-ins (Transform scale), B&W + letterbox, logo / titles / end card (step 2, after he sees the picture).
+- Fix (his "fix it"): the clip was chosen for being like his shot, but the window went on the clip's BEST moment. `aim_at_match` now centres it on the
+  clip's moment sharing clearly more of his shot's words (+0.1 Jaccard over the rule's moment; the kind label alone never moves it -- a first version
+  that let it moved 17 slots, several to worse moments). 8 slots moved: 7 clearly closer, 1 sideways. Cut points and music unchanged. +4 checks; suite
+  1121 Python checks + 175 plugin mocks.
+- **Step 2, by picture (`transfer_cut look`, approved "about $1", cap $1.20 for the whole approval; spent $0.55, Sonnet 5.5, 43 calls).** For each of
+  his 35 shots: a frame of his clip beside up to 6 vertical candidates (one moment per clip, from clips around where the slot falls in the vertical shoot
+  and around the description match; dark (luma < 0.12) or soft (< 35% of median sharpness) frames left out: 28 of 238). Claude ranks them; the plan
+  uses the best-ranked one that doesn't bring back a clip within 3 slots (unless he did) or reuse a stretch. At 300 output tokens 8 of 35 answers ran
+  out before their JSON (Claude reasoned first); 600 fixed it. Result: 35 of 35 by picture, 28 distinct clips (his: 31), rank 1 in 26 slots, rank 2 in 9.
+  My own read of the 35 pairs (`look_frames/`, contact sheets): about 14 are real stand-ins (same person, same action); most others share only the
+  setting -- his outdoor deck-chair/garden shots have no vertical coverage. Before the reuse rule one clip filled 3 of 5 slots.
+- **Step 3, his finishing (`learning/transfer_finish.py`).** Read from his saved project, mapped by cut point (his = the plan's): 11 sounds (each
+  rendered from his in point, at his length and level, no fades: `render_music_cut(fade_in=0, fade_out=0, gain_db=)`), his A2/A3 -> A3/A4; 2 flashes
+  (his 0 -> +6.2 -> 0 ramp over 4 frames -> +6.2 held 2 frames around the peak); 3 zoom hits with his values (Zoom 46/46/34, same preset as JD
+  draft 01, which the plugin has placed in real Premiere); zoom blur on 3 shots, B&W on 4; 12 punch-ins (his Transform Scale 100<->110, eased ->
+  plan.zooms, Motion Scale, linear, whole shot); logo and end card drawn as full-frame 2160x3840 PNGs at his Scale of their own pixels (measured in
+  his preview renders: the end card 496 px, to the pixel) on V3, his logo's 9-frame fade as 3 steps. Left out: the 4:3 letterbox (his request), his
+  9 title items (no text API: he pastes them), a layered copy of the opening shot on V2.
+- **Plugin:** with several "Adjustment Layer" items, the one that covers the sequence is used (`findAllItemsByName`); the coverage warning no longer
+  says to delete the old one (his horizontal uses it). The graphics size-mismatch message names the format sequence for a learned plan.
+- Tests: `transfer_finish_test.py` (28 checks, incl. his real project read-only), `plugin_accents_test.js` A11/A11b. Suite 1149 + 179, 0 failures.
+- NOT seen in real Premiere: this is the first build with all of these together; the adjustment-layer choice is mock-tested only.
+- **First real build (10:37) found none of its 35 clips**: his project nests bins (footage > vertical > C2911.MP4) and the plugin's lookups
+  (`collectAllClips`, `findItemsByName`, the pieces tidy-up) only read the root and one bin down -- enough for P Corp's own projects, not his. It stopped
+  before creating anything. Fixed with one walker (`walkProject`, up to 6 bins deep; `findItemsByName` goes below one level only while a name is still
+  missing, so P Corp projects are scanned exactly as before). Mock E16 reproduces his layout (failed before the fix, passes after). Also found in his
+  saved project: `vertical` at 2160 x 3480 (height not yet 3840) and the new Adjustment Layer made at 3840 x 2180 (made with the horizontal open).

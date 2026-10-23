@@ -18,6 +18,7 @@ Read-only with respect to Premiere: it never opens or changes the project.
 
 import gzip
 import json
+import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -99,6 +100,29 @@ def _effect_params(item: ET.Element, ids: dict[str, ET.Element]) -> dict[str, di
     return out
 
 
+PREMIERE_LEVEL_0DB = 0.177827941   # Premiere stores an audio clip's Volume Level as linear gain with 1.0 = +15 dB, so 0 dB is 10 ** (-15 / 20)
+
+
+def _audio_level_db(item: ET.Element, ids: dict[str, ET.Element]) -> float | None:
+    """An audio clip's Volume > Level in dB (its first keyframe, or its value when it isn't animated); None when the clip has none recorded."""
+    comps = item.find("ClipTrackItem/ComponentOwner/Components")
+    if comps is None or "ObjectRef" not in comps.attrib:
+        return None
+    for ref in ids[comps.attrib["ObjectRef"]].iter("Component"):
+        comp = ids.get(ref.attrib.get("ObjectRef", ""))
+        for p in comp.iter("Param") if comp is not None else ():
+            param = ids.get(p.attrib.get("ObjectRef", ""))
+            if param is None or param.findtext("Name") != "Level":
+                continue
+            parts = (param.findtext("StartKeyframe") or "").split(",")
+            try:
+                value = float(parts[1].strip("."))
+            except (IndexError, ValueError):
+                return None
+            return round(20 * math.log10(value / PREMIERE_LEVEL_0DB), 2) if value > 0 else None
+    return None
+
+
 def sequence_names(prproj_path: str) -> list[str]:
     root, _ = _load(prproj_path)
     return [n.text for s in root.iter("Sequence") if (n := s.find("Name")) is not None and n.text]
@@ -132,6 +156,7 @@ def extract_reference_edit(prproj_path: str, sequence_name: str) -> dict[str, An
                     "source_out": round(_ticks(clip, "Clip/OutPoint") / TICKS_PER_SECOND, 3),
                     "effects": _effects(item, ids),
                     "params": _effect_params(item, ids),
+                    **({"level_db": _audio_level_db(item, ids)} if group.tag == "AudioTrackGroup" else {}),
                 })
             (video if group.tag == "VideoTrackGroup" else audio).append(items)
     shots, overlays, graphics = [], [], []

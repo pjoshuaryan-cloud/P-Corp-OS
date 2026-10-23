@@ -544,7 +544,11 @@ def from_learn_record(rec: dict[str, Any]) -> list[dict[str, Any]]:
     stale = bool(rec.get("stale_plan"))
     observed = basis == "matched" and not stale
     context: dict[str, Any] = {"style": rec.get("plan_style"), "shoot": rec.get("shoot"), "imported_from": "learn_record", "stale_plan": stale}
-    if not observed:
+    if rec.get("no_plan"):
+        context["no_plan"] = True
+        context["project_file"] = _basename(rec.get("project_path"))
+        context["why_uncertain"] = "made without a P Corp plan: his cut is recorded as it is (which stretches he used), not as decisions about a plan"
+    elif not observed:
         context["why_uncertain"] = (f"the timeline was compared with a plan (basis {basis!r}) that is not known to be the one it was built from" if basis != "matched"
                                     else "the saved plan is flagged as stale")
     common: dict[str, Any] = {"category": "observed_edit", "confidence": "observed" if observed else "uncertain", "source": "learn_button" if rec.get("source") == "button" else "autosave_watch",

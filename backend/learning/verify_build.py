@@ -73,9 +73,10 @@ def compare_build(plan: dict[str, Any], seq: prproj.Sequence, before: list[prpro
     checks.append(("the edit is the planned length", abs(end - plan["duration_frames"]) <= 0.5, f"{end:.1f} frames vs {plan['duration_frames']}"))
     cards = (plan.get("graphics") or {}).get("cards") or []
     if cards:
-        v2 = sorted((s for s in seq.shots if s.track == 2), key=lambda s: s.t0)
-        placed = [c for c in cards if any(abs(s.t0 * fps - c["start_frame"]) <= 0.5 and abs((s.t1 - s.t0) * fps - c["frames"]) <= 1.5 and _base(s.path) == _base(c["file"]) for s in v2)]
-        checks.append(("every brand card is on V2 over its slot", len(placed) == len(cards), f"{len(placed)} of {len(cards)} placed"))
+        track = ((plan.get("graphics") or {}).get("tracks") or {}).get("cards") or 2   # V2 for P Corp's brand cards; a learned plan puts his logo/end card on V3
+        on_track = sorted((s for s in seq.shots if s.track == track), key=lambda s: s.t0)
+        placed = [c for c in cards if any(abs(s.t0 * fps - c["start_frame"]) <= 0.5 and abs((s.t1 - s.t0) * fps - c["frames"]) <= 1.5 and _base(s.path) == _base(c["file"]) for s in on_track)]
+        checks.append((f"every brand card is on V{track} over its slot", len(placed) == len(cards), f"{len(placed)} of {len(cards)} placed"))
     if before is not None and after is not None:
         old = {prproj.normalise_name(s.name): _signature(s) for s in before}
         changed = [s.name for s in after if prproj.normalise_name(s.name) in old and prproj.normalise_name(s.name) != prproj.normalise_name(seq.name)

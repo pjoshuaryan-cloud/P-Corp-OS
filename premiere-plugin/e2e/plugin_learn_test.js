@@ -28,7 +28,12 @@ function world(opts = {}) {
             const u = new URL(url);
             events.push((init && init.method) || "GET");
             if (u.pathname === "/post/jobs" && u.searchParams.get("status") === "premiere_project_created") {
-                return { ok: true, status: 200, json: async () => ({ jobs: opts.noJob ? [] : [{ id: 48, shoot_name: "GWM - Highlight Video", premiere_project_path: project.path }] }) };
+                const other = [{ id: 48, shoot_name: "GWM - Highlight Video", premiere_project_path: "/Volumes/X/10_PREMIERE/GWM.prproj" }];
+                return { ok: true, status: 200, json: async () => ({ jobs: opts.noJob ? [] : (opts.otherJobOnly ? other : [{ id: 48, shoot_name: "GWM - Highlight Video", premiere_project_path: project.path }]) }) };
+            }
+            if (u.pathname === "/post/learn-from-project") {
+                posts.push({ route: "project", ...JSON.parse(init.body) });
+                return { ok: true, status: 200, json: async () => ({ lines: ["Read your edit \"BTS cut\" from BTS.prproj: 31 shots.", "Watching this project's auto-saves from now on: ..."] }) };
             }
             if (u.pathname === "/post/jobs/48/learn-from-edit") {
                 posts.push(JSON.parse(init.body));
@@ -66,10 +71,20 @@ function world(opts = {}) {
         await vm.runInContext("learnFromEdit()", w.sandbox);
         check(w.output.textContent.includes("No sequence is open") && !w.events.includes("save") && w.posts.length === 0, "with no open sequence it says so, saves nothing and sends nothing");
     }
-    {
-        const w = world({ noJob: true });
+    {   // 2026-10-22: a project he started himself (not a P Corp shoot) is learned from as it is, instead of being refused
+        const w = world({ noJob: true, path: "/Volumes/Lexar - A/Clients/BTS/BTS.prproj", sequenceName: "BTS cut" });
         await vm.runInContext("learnFromEdit()", w.sandbox);
-        check(w.output.textContent.includes("Couldn't find a P Corp OS job") && !w.events.includes("save") && w.posts.length === 0, "a project with no matching job is explained; nothing is saved or sent");
+        const t = w.output.textContent;
+        check(t.includes("isn't one of P Corp OS's shoots") && t.includes("saved as it is"), "a project that isn't a shoot is explained: no plan, the cut is saved as it is");
+        check(w.events.filter((e) => e === "save").length === 1 && w.events.indexOf("save") < w.events.lastIndexOf("POST"), "...it is saved once, before the backend reads it");
+        check(w.posts.length === 1 && w.posts[0].route === "project" && w.posts[0].project_path === "/Volumes/Lexar - A/Clients/BTS/BTS.prproj" && w.posts[0].sequence_name === "BTS cut",
+              "...and sent to /post/learn-from-project with its path and the open sequence");
+        check(t.includes("31 shots") && t.includes("Watching this project") && w.els.learnButton.disabled === false, "...the backend's report is shown and the button comes back");
+    }
+    {   // strict lookup: with ONE prepared shoot, a different project must not be taken for it (the old lenient guess would have)
+        const w = world({ otherJobOnly: true, path: "/Volumes/Lexar - A/Clients/BTS/BTS.prproj" });
+        await vm.runInContext("learnFromEdit()", w.sandbox);
+        check(w.posts.length === 1 && w.posts[0].route === "project" && !w.output.textContent.includes("Found #48"), "a project of his own is never taken for the only prepared shoot");
     }
     {
         const w = world({ noProject: true });

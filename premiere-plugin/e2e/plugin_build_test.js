@@ -27,6 +27,10 @@ function world(opts = {}) {
             const status = u.searchParams.get("status");
             if (u.pathname === "/post/jobs" && status === "premiere_project_created") return { ok: true, status: 200, json: async () => ({ jobs: opts.prepared || [] }) };
             if (u.pathname === "/post/jobs" && status === "ingested") return { ok: true, status: 200, json: async () => ({ jobs: opts.ingested || [] }) };
+            if (u.pathname === "/post/project-plan") {
+                calls.push("learned-check");
+                return opts.learned ? { ok: true, status: 200, json: async () => opts.learned } : { ok: false, status: 404, json: async () => ({ detail: "No learned plan for this project." }) };
+            }
             const m = u.pathname.match(/^\/post\/jobs\/(\d+)\/edit-plan$/);
             if (m) {
                 calls.push("plan-check");
@@ -44,7 +48,7 @@ function world(opts = {}) {
         if (opts.switchOnRun) activePath = opts.runProjectPath;
         return { job: opts.ingested[0], projectPath: opts.runProjectPath };
     };
-    sandbox.assembleEdit = async () => { calls.push("assemble"); sandbox.reset(); sandbox.log("assemble ran"); };
+    sandbox.assembleEdit = async (learned) => { calls.push(learned ? "assemble-learned" : "assemble"); sandbox.reset(); sandbox.log("assemble ran"); };
     return { sandbox, output, calls, els, ppro };
 }
 
@@ -53,17 +57,28 @@ const GWM_READY = { id: 48, shoot_name: "GWM", media_analyzed_at: "2026-10-20T10
 
 (async () => {
     console.log("== Build My Edit ==");
+    {   // 2026-10-22: his own project (not a shoot) with a plan learned from his cut -> that plan is built, nothing else is set up
+        const w = world({ activePath: "/Volumes/Lexar - A/HAUS.prproj", prepared: [JD_PREPARED], ingested: [GWM_READY], learned: { shots: [1, 2], shoot_name: "HAUS (vertical, learned)" } });
+        await vm.runInContext("buildMyEdit()", w.sandbox);
+        check(w.calls.join(",") === "learned-check,assemble-learned", "his own project with a learned plan: it builds that plan there (no shoot set up, no other project made)");
+        check(w.output.textContent.includes("plan learned from your own cut"), "...and says so");
+    }
+    {
+        const w = world({ activePath: "/Volumes/X/10_PREMIERE/Other.prproj", prepared: [JD_PREPARED], ingested: [GWM_READY] });
+        await vm.runInContext("buildMyEdit()", w.sandbox);
+        check(w.calls[0] === "learned-check" && !w.calls.includes("assemble-learned"), "without a learned plan, Build My Edit carries on exactly as before");
+    }
     {
         const w = world({ activePath: "/Volumes/X/10_PREMIERE/JD.prproj", prepared: [JD_PREPARED], ingested: [GWM_READY] });
         await vm.runInContext("buildMyEdit()", w.sandbox);
-        check(w.calls.join(",") === "assemble", "in a project that is already set up it just builds the edit (no new project)");
+        check(w.calls.filter((c) => c !== "learned-check").join(",") === "assemble", "in a project that is already set up it just builds the edit (no new project)");
         check(w.output.textContent.includes('Premiere project for "JD Sports"') && w.output.textContent.includes("assemble ran"), "it says which shoot it is building and shows the build's own report");
         check(w.els.buildButton.disabled === false && vm.runInContext("keepLog", w.sandbox) === false, "the button comes back and the panel will clear normally next time");
     }
     {
         const w = world({ activePath: "/Volumes/X/10_PREMIERE/Other.prproj", prepared: [], ingested: [GWM_READY], runProjectPath: "/Volumes/X/10_PREMIERE/GWM.prproj", switchOnRun: true });
         await vm.runInContext("buildMyEdit()", w.sandbox);
-        check(w.calls.join(",") === "plan-check,run,assemble", "in any other project it checks the plan exists, sets up the project, then builds");
+        check(w.calls.filter((c) => c !== "learned-check").join(",") === "plan-check,run,assemble", "in any other project it checks the plan exists, sets up the project, then builds");
         const text = w.output.textContent;
         check(text.indexOf("Setting up the Premiere project") >= 0 && text.indexOf("prepare ran") > text.indexOf("Setting up") && text.indexOf("assemble ran") > text.indexOf("prepare ran"), "the log keeps everything in order across the two steps (the second step doesn't wipe the first)");
         check(text.includes("Now building the edit"), "and says when it moves on to building");
@@ -71,38 +86,38 @@ const GWM_READY = { id: 48, shoot_name: "GWM", media_analyzed_at: "2026-10-20T10
     {
         const w = world({ activePath: "/Volumes/X/10_PREMIERE/Other.prproj", prepared: [], ingested: [GWM_READY], noPlan: true });
         await vm.runInContext("buildMyEdit()", w.sandbox);
-        check(w.calls.join(",") === "plan-check", "a shoot with no plan gets no project made for it");
+        check(w.calls.filter((c) => c !== "learned-check").join(",") === "plan-check", "a shoot with no plan gets no project made for it");
         check(w.output.textContent.includes('"GWM" has no edit plan yet') && w.output.textContent.includes("Plan Edit"), "it says to press Plan Edit in P Corp OS and click again");
     }
     {
         const w = world({ prepared: [], ingested: [] });
         await vm.runInContext("buildMyEdit()", w.sandbox);
-        check(w.calls.length === 0 && w.output.textContent.includes("Nothing is ready to build"), "with no ready shoot it says so and does nothing");
+        check(w.calls.filter((c) => c !== "learned-check").length === 0 && w.output.textContent.includes("Nothing is ready to build"), "with no ready shoot it says so and does nothing");
     }
     {
         const w = world({ activePath: "/Volumes/X/10_PREMIERE/Other.prproj", prepared: [], ingested: [GWM_READY], runProjectPath: "/Volumes/X/10_PREMIERE/GWM.prproj", runFails: true });
         await vm.runInContext("buildMyEdit()", w.sandbox);
-        check(w.calls.join(",") === "plan-check,run", "if setting up the project fails it stops there (that step has already said why)");
+        check(w.calls.filter((c) => c !== "learned-check").join(",") === "plan-check,run", "if setting up the project fails it stops there (that step has already said why)");
     }
     {
         const w = world({ activePath: "/Volumes/X/10_PREMIERE/Other.prproj", prepared: [], ingested: [GWM_READY], runProjectPath: "/Volumes/X/10_PREMIERE/GWM.prproj", switchOnRun: false });
         await vm.runInContext("buildMyEdit()", w.sandbox);
-        check(w.calls.join(",") === "plan-check,run" && w.output.textContent.includes("Open it in Premiere") && w.output.textContent.includes("GWM.prproj"), "if Premiere didn't switch to the new project it says to open it and click again, rather than building into the wrong one");
+        check(w.calls.filter((c) => c !== "learned-check").join(",") === "plan-check,run" && w.output.textContent.includes("Open it in Premiere") && w.output.textContent.includes("GWM.prproj"), "if Premiere didn't switch to the new project it says to open it and click again, rather than building into the wrong one");
     }
     {
         const w = world({ activePath: "/Volumes/X/10_PREMIERE/Other.prproj", prepared: [JD_PREPARED], ingested: [GWM_READY], runProjectPath: "/Volumes/X/10_PREMIERE/GWM.prproj", switchOnRun: true });
         await vm.runInContext("buildMyEdit()", w.sandbox);
-        check(w.calls.join(",") === "plan-check,run,assemble", "a different project open while ONE shoot is prepared is not mistaken for that shoot's project");
+        check(w.calls.filter((c) => c !== "learned-check").join(",") === "plan-check,run,assemble", "a different project open while ONE shoot is prepared is not mistaken for that shoot's project");
     }
     {
         const w = world({ activePath: null, prepared: [], ingested: [GWM_READY], runProjectPath: "/Volumes/X/10_PREMIERE/GWM.prproj", switchOnRun: true });
         await vm.runInContext("buildMyEdit()", w.sandbox);
-        check(w.calls.join(",") === "plan-check,run,assemble", "with no project open at all it still sets up the next ready shoot and builds it");
+        check(w.calls.filter((c) => c !== "learned-check").join(",") === "plan-check,run,assemble", "with no project open at all it still sets up the next ready shoot and builds it");
     }
     {
         const w = world({ noToken: true, prepared: [], ingested: [] });
         await vm.runInContext("buildMyEdit()", w.sandbox);
-        check(w.calls.length === 0 && w.output.textContent.includes("Paste your P Corp OS auth token"), "without a token it asks for one and does nothing");
+        check(w.calls.filter((c) => c !== "learned-check").length === 0 && w.output.textContent.includes("Paste your P Corp OS auth token"), "without a token it asks for one and does nothing");
     }
 
     console.log("== the panel ==");

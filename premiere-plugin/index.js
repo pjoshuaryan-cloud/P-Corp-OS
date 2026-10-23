@@ -393,33 +393,15 @@ async function run() {
     }
 }
 
-/** Collects every non-sequence ClipProjectItem reachable from the
- * project root: root-level clips directly, plus one level into any real
- * bin (this app's own projects never nest bins deeper than that). Same
- * FolderItem/ClipProjectItem .cast() discipline already proven
- * necessary for bin lookup, proxy attachment, and color labeling. */
+/** Collects every ClipProjectItem reachable from the project root, in any bin (walkProject: this app's own projects are one bin deep, his own
+ * nest deeper -- HAUS: footage > vertical > clips). Same FolderItem/ClipProjectItem .cast() discipline already proven necessary for bin lookup,
+ * proxy attachment, and color labeling. */
 async function collectAllClips(project) {
-    const rootItem = await project.getRootItem();
-    const topLevelItems = await rootItem.getItems();
     const clips = [];
-    for (const rawItem of topLevelItems) {
-        if (!rawItem) continue;
+    await walkProject(project, async (rawItem) => {
         const clip = ppro.ClipProjectItem.cast(rawItem);
         if (clip) clips.push(clip);
-        const bin = ppro.FolderItem.cast(rawItem);
-        if (bin) {
-            try {
-                const rawClips = await bin.getItems();
-                for (const rawClip of rawClips) {
-                    if (!rawClip) continue;
-                    const nestedClip = ppro.ClipProjectItem.cast(rawClip);
-                    if (nestedClip) clips.push(nestedClip);
-                }
-            } catch (e) {
-                // Not actually a folder with real items -- skip.
-            }
-        }
-    }
+    }, () => false);
     return clips;
 }
 
@@ -962,36 +944,61 @@ async function readTimelineOrder(project, shootName) {
     return { source, names };
 }
 
-/** One pass over the project (root + each top-level bin, one level deep)
- * finding the project items with the given names. RAW items, never cast --
- * a cast item makes the insert silently return undefined. */
-async function findItemsByName(project, wantedNames) {
-    const found = new Map();
+// P Corp's own projects keep every item within one bin of the root; his own projects nest bins (HAUS, 2026-10-23: footage > vertical > C2911.MP4 -- a
+// learned build found none of its 35 clips). Bins deeper than one level are read only while something asked for is still missing, so a P Corp project is
+// scanned exactly as before.
+const MAX_BIN_DEPTH = 6;
+
+/** Breadth-first over the bins, level by level: calls visit(item, parent) for every item; stops after level `minDepth` once done() says so; a bin is
+ * opened only if enter(item) says so. */
+async function walkProject(project, visit, done, minDepth = 1, enter = async () => true) {
     let nulls = 0;  // empty entries Premiere returned in place of items it couldn't wrap
     const rootItem = await project.getRootItem();
-    const topLevelItems = await rootItem.getItems();
-    const bins = [];
-    for (const item of topLevelItems) {
-        if (!item) { nulls += 1; continue; }
+    let level = [rootItem];
+    for (let depth = 0; depth <= MAX_BIN_DEPTH && level.length > 0; depth++) {
+        const next = [];
+        for (const bin of level) {
+            let children = [];
+            if (depth === 0) {
+                children = await bin.getItems();
+            } else {
+                try {
+                    children = await bin.getItems();
+                } catch (e) {
+                    continue;
+                }
+            }
+            for (const item of children) {
+                if (!item) { nulls += 1; continue; }
+                await visit(item, bin);
+                const sub = ppro.FolderItem.cast(item);
+                if (sub && (await enter(item))) next.push(sub);
+            }
+        }
+        if (depth >= minDepth && done()) break;
+        level = next;
+    }
+    return { rootItem, nulls };
+}
+
+/** One pass over the project (root and its bins; deeper bins only while a name is still missing) finding the project items with the given names.
+ * RAW items, never cast -- a cast item makes the insert silently return undefined. */
+async function findItemsByName(project, wantedNames) {
+    const found = new Map();
+    const { rootItem, nulls } = await walkProject(project, async (item, parent) => {
         const name = await itemName(item);
-        if (wantedNames.has(name)) found.set(name, { item, parent: rootItem });
-        const bin = ppro.FolderItem.cast(item);
-        if (bin) bins.push(bin);
-    }
-    for (const bin of bins) {
-        let children = [];
-        try {
-            children = await bin.getItems();
-        } catch (e) {
-            continue;
-        }
-        for (const child of children) {
-            if (!child) { nulls += 1; continue; }
-            const name = await itemName(child);
-            if (wantedNames.has(name)) found.set(name, { item: child, parent: bin });
-        }
-    }
+        if (wantedNames.has(name)) found.set(name, { item, parent });
+    }, () => [...wantedNames].every((n) => found.has(n)));
     return { found, rootItem, nulls };
+}
+
+/** Every item called `name`, in any bin (findItemsByName keeps only the last of several with the same name). */
+async function findAllItemsByName(project, name) {
+    const out = [];
+    await walkProject(project, async (item, parent) => {
+        if ((await itemName(item)) === name) out.push({ item, parent });
+    }, () => false);
+    return out;
 }
 
 /** Which job is this open project? Exact stored path first, then the same
@@ -1046,19 +1053,10 @@ async function tidyRoughCutPieces(project) {
     if (!piecesBin) throw new Error("couldn't find the new bin");
 
     const toMove = [];
-    const bins = [];
-    for (const item of topLevelItems) {
-        if (!item) continue;
-        const name = await itemName(item);
-        if (name.startsWith("RC_")) toMove.push({ item, parent: rootItem });
-        const bin = ppro.FolderItem.cast(item);
-        if (bin && name !== ROUGH_CUT_PIECES_BIN) bins.push(bin);
-    }
-    for (const bin of bins) {
-        for (const child of await bin.getItems()) {
-            if (child && (await itemName(child)).startsWith("RC_")) toMove.push({ item: child, parent: bin });
-        }
-    }
+    // every bin but the pieces bin itself, at any depth (in his own projects a subclip lands next to its clip, e.g. footage > vertical)
+    await walkProject(project, async (item, parent) => {
+        if ((await itemName(item)).startsWith("RC_")) toMove.push({ item, parent });
+    }, () => false, 1, async (item) => (await itemName(item)) !== ROUGH_CUT_PIECES_BIN);
     for (let i = 0; i < toMove.length; i += ROUGH_CUT_BATCH_SIZE) {
         const batch = toMove.slice(i, i + ROUGH_CUT_BATCH_SIZE);
         await project.lockedAccess(async () => {
@@ -1552,7 +1550,8 @@ async function adjustmentLayerCoverageProblem(item, sequence) {
         if (size.width >= frame.width && size.height >= frame.height) return null;
         return `the "${ADJUSTMENT_LAYER_NAME}" in this project is ${size.width} x ${size.height} but this sequence is ${frame.width} x ${frame.height}, `
             + `so the flashes and zoom hits only affect part of the picture. Make a new one at the sequence's size `
-            + `(File > New > Adjustment Layer, width ${frame.width}, height ${frame.height}), delete the old one, then run Assemble Edit again.`;
+            + `(File > New > Adjustment Layer, width ${frame.width}, height ${frame.height}) and keep the old one (your other sequences use it): `
+            + `the plugin uses whichever covers the sequence. Then build again.`;
     } catch (e) {
         return null;
     }
@@ -1561,15 +1560,24 @@ async function adjustmentLayerCoverageProblem(item, sequence) {
 async function placeOverlays(project, sequence, editor, plan, tpf, keepAlive) {
     const overlays = [...(plan.accents.flashes || []), ...(plan.accents.zoom_hits || [])].sort((a, b) => a.start_frame - b.start_frame);
     if (overlays.length === 0) return { flashes: 0, zoomHits: 0 };
-    const { found } = await findItemsByName(project, new Set([ADJUSTMENT_LAYER_NAME]));
-    const adjustment = found.get(ADJUSTMENT_LAYER_NAME);
-    if (!adjustment) {
+    const layers = await findAllItemsByName(project, ADJUSTMENT_LAYER_NAME);
+    if (layers.length === 0) {
         log(`Note: this project has no "${ADJUSTMENT_LAYER_NAME}" item, so the ${overlays.length} flashes and zoom hits were skipped. `
             + `Make one (File > New > Adjustment Layer), then run Assemble Edit again.`);
         return { flashes: 0, zoomHits: 0 };
     }
-    keepAlive.push(adjustment);
-    const coverage = await adjustmentLayerCoverageProblem(adjustment.item, sequence);
+    // 2026-10-23: a project can hold one per frame shape (his HAUS horizontal's, and one made for the vertical): use the first that covers this sequence
+    let adjustment = layers[0];
+    let coverage = await adjustmentLayerCoverageProblem(adjustment.item, sequence);
+    for (const other of layers.slice(1)) {
+        if (!coverage) break;
+        if (!(await adjustmentLayerCoverageProblem(other.item, sequence))) {
+            adjustment = other;
+            coverage = null;
+            log(`Using the "${ADJUSTMENT_LAYER_NAME}" that covers this sequence (the project has ${layers.length}).`);
+        }
+    }
+    for (const l of layers) keepAlive.push(l);
     if (coverage) log(`Warning: ${coverage}`);
     const trackIndex = (plan.accents.overlay_track || 2) - 1;
     const at = (frame) => ppro.TickTime.createWithTicks(String(frame * tpf));
@@ -2055,7 +2063,9 @@ async function placeBrandGraphics(project, sequence, editor, plan, tpf, keepAliv
     }
     if (size && g.frame_size && (size.w !== g.frame_size[0] || size.h !== g.frame_size[1])) {
         log(`The sequence is ${size.w}x${size.h} but the brand images were drawn for ${g.frame_size[0]}x${g.frame_size[1]}, and an image is placed at its own size, so they would not line up. `
-            + `They were NOT placed. Set the job's deliverable format and 4K resolution (so the sequence comes out the right size), then plan again.`);
+            + (plan.format_from_sequence
+                ? `They were NOT placed. Set your "${plan.format_from_sequence}" sequence to ${g.frame_size[0]} x ${g.frame_size[1]} (Sequence > Sequence Settings; the build copies it), then build again.`
+                : `They were NOT placed. Set the job's deliverable format and 4K resolution (so the sequence comes out the right size), then plan again.`));
         return "Brand cards, logo bug and captions: not placed (the sequence size doesn't match the images).";
     }
     const phase = async (label, run) => {
@@ -2099,7 +2109,7 @@ async function placeBrandGraphics(project, sequence, editor, plan, tpf, keepAliv
  * flashes or sound effects (those are a separate, not-yet-built step). Same safe mechanism as Assemble Rough
  * Cut: subclips in batches, ONE scan, batched inserts, everything held alive, saves between phases.
  */
-async function assembleEdit() {
+async function assembleEdit(learned = null) {
     const token = ensureToken();
     if (!token) {
         reset();
@@ -2117,22 +2127,30 @@ async function assembleEdit() {
             return;
         }
         keepAlive.push(project);
-        const job = await findJobForProject(project, token);
-        if (!job) {
-            log('Couldn\'t find a P Corp OS job with a Premiere project matching this one. Run "Prepare POST Project" for this shoot first.');
-            return;
-        }
-        log(`Found #${job.id} "${job.shoot_name}".`);
-
-        log("Fetching the edit plan…");
+        let job = null;
         let plan;
-        try {
-            plan = await apiGet(`/post/jobs/${job.id}/edit-plan`, token);
-        } catch (e) {
-            log("This job has no edit plan yet. Plan the edit in P Corp OS first (style + music), then run this again.");
-            return;
+        let prep;
+        if (learned) {   // 2026-10-22: a plan learned from an edit he cut by hand in THIS project (not a P Corp shoot): no job; the format comes from one of its own sequences
+            plan = learned;
+            prep = { shoot_name: plan.shoot_name };
+            log(`Building the plan learned from "${(plan.learned_from && plan.learned_from.cut) || "your edit"}" in this project.`);
+        } else {
+            job = await findJobForProject(project, token);
+            if (!job) {
+                log('Couldn\'t find a P Corp OS job with a Premiere project matching this one. Run "Prepare POST Project" for this shoot first.');
+                return;
+            }
+            log(`Found #${job.id} "${job.shoot_name}".`);
+
+            log("Fetching the edit plan…");
+            try {
+                plan = await apiGet(`/post/jobs/${job.id}/edit-plan`, token);
+            } catch (e) {
+                log("This job has no edit plan yet. Plan the edit in P Corp OS first (style + music), then run this again.");
+                return;
+            }
+            prep = await apiGet(`/post/jobs/${job.id}/premiere-prep`, token);
         }
-        const prep = await apiGet(`/post/jobs/${job.id}/premiere-prep`, token);
         const tpf = exactFrameTicks(plan.fps);
         log(`Plan: ${plan.shots.length} shot(s), ${plan.duration_seconds}s at ${plan.fps} fps, style "${plan.style}".`);
 
@@ -2171,7 +2189,14 @@ async function assembleEdit() {
         const sequence = await project.createSequence(sequenceName, "");
         if (!sequence) throw new Error("createSequence returned no sequence");
         keepAlive.push(sequence);
-        const formatNote = await applyJobFormat(project, sequence, prep);
+        let formatNote;
+        if (plan.format_from_sequence) {   // the format of one of the project's own sequences (e.g. his "vertical")
+            const own = (await project.getSequences()).find((s) => s.name === plan.format_from_sequence);
+            formatNote = own ? `copied from your "${plan.format_from_sequence}" sequence (${await matchSequenceFormat(project, own, sequence)})`
+                : `left at Premiere's default (no sequence called "${plan.format_from_sequence}")`;
+        } else {
+            formatNote = await applyJobFormat(project, sequence, prep);
+        }
         log(`Sequence format ${formatNote}; frame size is ${await describeFormat(sequence)}. The plan assumes ${plan.fps} fps.`);
         const sequenceEditor = await ppro.SequenceEditor.getEditor(sequence);
         keepAlive.push(sequenceEditor);
@@ -2336,11 +2361,15 @@ async function assembleEdit() {
         }
 
         log("Reporting completion back to P Corp OS…");
-        await apiPost(`/post/jobs/${job.id}/rough-cut-assembled`, token, {
-            sequence_name: sequenceName,
-            clip_count: new Set(placeable.map((p) => p.shot.file_id)).size,
-            candidate_count: placed,
-        });
+        if (job) {
+            await apiPost(`/post/jobs/${job.id}/rough-cut-assembled`, token, {
+                sequence_name: sequenceName,
+                clip_count: new Set(placeable.map((p) => p.shot.file_id)).size,
+                candidate_count: placed,
+            });
+        } else {
+            await apiPost("/post/project-plan/built", token, { project_path: project.path, sequence_name: sequenceName, placed });
+        }
         log(`Done. ${placed} of ${plan.shots.length} planned shot(s) placed on "${sequenceName}" `
             + `(${placeable.length - restrictedCount} can be stretched past their cut, ${restrictedCount} cannot). `
             + (plan.accents ? "With the accents listed above." : (plan.graphics ? "Hard cuts with the brand graphics" + ((plan.zooms && plan.zooms.items && plan.zooms.items.length) ? " and slow zooms" : "") + " listed above." : ((plan.zooms && plan.zooms.items && plan.zooms.items.length) ? "Hard cuts with slow zooms on the static shots listed above." : "Hard cuts only -- no effects, flashes or sound effects."))));
@@ -2375,12 +2404,13 @@ async function learnFromEdit() {
             log("No project is currently open in Premiere.");
             return;
         }
-        const job = await findJobForProject(project, token);
-        if (!job) {
-            log('Couldn\'t find a P Corp OS job with a Premiere project matching this one. Run "Prepare POST Project" for this shoot first.');
-            return;
+        // Strict: a project he started himself must never be taken for a shoot's (the lenient "only prepared job" guess would do exactly that).
+        const job = await findJobForProject(project, token, { lenient: false });
+        if (job) {
+            log(`Found #${job.id} "${job.shoot_name}".`);
+        } else {
+            log("This project isn't one of P Corp OS's shoots, so there's no plan to compare with: your cut will be saved as it is, and this project's auto-saves watched from now on.");
         }
-        log(`Found #${job.id} "${job.shoot_name}".`);
 
         let sequenceName = null;
         try {
@@ -2399,8 +2429,14 @@ async function learnFromEdit() {
         await project.save();
         await sleep(1500);   // let the file finish landing on the drive before the backend opens it
 
-        log("Comparing your edit with the plan…");
-        const result = await apiPost(`/post/jobs/${job.id}/learn-from-edit`, token, { sequence_name: sequenceName, project_path: project.path });
+        let result;
+        if (job) {
+            log("Comparing your edit with the plan…");
+            result = await apiPost(`/post/jobs/${job.id}/learn-from-edit`, token, { sequence_name: sequenceName, project_path: project.path });
+        } else {
+            log("Reading your edit…");
+            result = await apiPost("/post/learn-from-project", token, { sequence_name: sequenceName, project_path: project.path });
+        }
         for (const line of result.lines || []) {
             log(line);
         }
@@ -2435,6 +2471,19 @@ async function buildMyEdit() {
             log(`This is the Premiere project for "${prepared.shoot_name}".`);
             await assembleEdit();
             return;
+        }
+        if (project) {   // a project of his own with a plan learned from his cut in it (learning/transfer_cut.py): build that, here
+            let learned = null;
+            try {
+                learned = await apiPost("/post/project-plan", token, { project_path: project.path });
+            } catch (e) {
+                learned = null;
+            }
+            if (learned && learned.shots) {
+                log("This project isn't a P Corp shoot, but it has a plan learned from your own cut.");
+                await assembleEdit(learned);
+                return;
+            }
         }
 
         const { jobs } = await apiGet("/post/jobs?status=ingested", token);

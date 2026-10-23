@@ -3102,6 +3102,8 @@ async def post_job_edit_plan_latest(job_id: int, request: Request, _: None = Dep
 
 class AutosaveWatchRequest(BaseModel):
     enabled: bool | None = None     # switch the watch on or off
+    add_project: str | None = None     # also watch this .prproj, though it is not a POST shoot (its edits are logged as-is, with no plan)
+    remove_project: str | None = None  # stop watching a project added that way
     scan_now: bool = False          # run one pass now with a bigger budget (reads the backlog of old auto-saves faster)
     job_id: int | None = None       # with scan_now: only this shoot
 
@@ -3121,6 +3123,12 @@ async def post_autosave_watch_set(body: AutosaveWatchRequest, _: None = Depends(
     store = Store()
     if body.enabled is not None:
         store.set_enabled(body.enabled)
+    if body.add_project:
+        if not body.add_project.lower().endswith(".prproj") or not await on_drive(Path(body.add_project).is_file):
+            raise HTTPException(status_code=400, detail="That isn't a saved Premiere project (.prproj) I can find.")
+        store.add_project(body.add_project)
+    if body.remove_project:
+        store.remove_project(body.remove_project)
     ran = []
     if body.scan_now:
         async with _pooled_postgres_conn() as postgres_conn:
@@ -3186,6 +3194,72 @@ async def post_job_edit_plans_rename(job_id: int, body: PlanFileRequest, _: None
 class LearnFromEditRequest(BaseModel):
     sequence_name: str | None = None  # the sequence he cut (the plugin sends the active one); default: the saved project's sequence with the most footage shots
     project_path: str | None = None  # the saved .prproj the plugin has open; default: the job's stored Premiere project
+
+
+class LearnFromProjectRequest(BaseModel):
+    project_path: str                 # the saved .prproj the plugin has open
+    sequence_name: str | None = None  # the sequence he cut (default: the one with the most footage shots)
+    watch: bool = True                # also watch this project's auto-saves from now on
+
+
+@app.post("/post/learn-from-project")
+async def post_learn_from_project(body: LearnFromProjectRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Learn From My Edit for a project that is NOT a POST shoot (he started it himself): reads the saved sequence and records his cut as it is -- no plan to compare
+    with -- and, with `watch`, adds the project to the auto-save watch so later states are logged when they settle. A project that IS a shoot's goes through the
+    shoot's own route instead. Read-only on the project; never Frank-reachable."""
+    from app.post_autosave import Store
+    from app.post_learn import LearnError, learn_from_edit, learn_from_project
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    target = os.path.normpath(body.project_path)
+    shoot = next((j for j in await list_post_jobs(None, postgres_conn) if j.get("premiere_project_path") and os.path.normpath(j["premiere_project_path"]) == target), None)
+    from app.post_learn import NotACutYet
+    try:
+        result = await (learn_from_edit(shoot, body.sequence_name, body.project_path) if shoot else learn_from_project(body.project_path, body.sequence_name))
+    except NotACutYet as exc:   # nothing to learn yet, but he asked to learn from this project: keep watching it, so his cut is logged when it exists
+        result = {"sequence": body.sequence_name, "logged": False, "lines": [str(exc)]}
+    except LearnError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if shoot is None and body.watch:
+        new = Store().add_project(body.project_path)
+        result["watching"] = True
+        result["lines"].append("Watching this project's auto-saves from now on" + ("" if new else " (already was)") +
+                               ": when you stop changing a cut for 45 minutes it is logged by itself, as it is (clip lists and stringouts never are).")
+    await record_tool_call("post_learn_from_project_ui", {"project": os.path.basename(body.project_path), "sequence": result["sequence"], "shoot": shoot["id"] if shoot else None}, "ok", postgres_conn)
+    return result
+
+
+class ProjectPlanRequest(BaseModel):
+    project_path: str                 # the saved .prproj the plugin has open
+
+
+@app.post("/post/project-plan")
+async def post_project_plan(body: ProjectPlanRequest, _: None = Depends(verify_token)) -> dict:
+    """The latest learned plan for a project that is NOT a POST shoot (learning/transfer_cut.py: made from an edit he cut by hand in that project), for the
+    plugin's Build My Edit. 404 when there is none. Read-only."""
+    from learning.transfer_cut import load_project_plan
+    plan = await on_drive(load_project_plan, body.project_path)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="No learned plan for this project.")
+    return plan
+
+
+class ProjectPlanBuiltRequest(BaseModel):
+    project_path: str
+    sequence_name: str
+    placed: int
+
+
+@app.post("/post/project-plan/built")
+async def post_project_plan_built(body: ProjectPlanBuiltRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    """The plugin reports that it built a learned plan: which sequence, how many shots placed (kept with the plan, so the build can be checked and compared)."""
+    from app.post_edit_plan import edit_dir
+    from learning.transfer_cut import workspace
+    folder = edit_dir(workspace(body.project_path))
+    line = {"at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "sequence_name": body.sequence_name, "placed": body.placed}
+    await on_drive(lambda: (folder.mkdir(parents=True, exist_ok=True), open(folder / "builds.jsonl", "a").write(json.dumps(line) + "\n")), writing=True)
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    await record_tool_call("post_project_plan_built_ui", {"project": os.path.basename(body.project_path), **line}, "ok", postgres_conn)
+    return {"recorded": True}
 
 
 @app.post("/post/jobs/{job_id}/learn-from-edit")

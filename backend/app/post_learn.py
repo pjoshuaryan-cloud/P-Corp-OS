@@ -21,6 +21,7 @@ import os
 import re
 import statistics
 import time
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,10 @@ PLAN_NEWER_GRACE_SECONDS = 120.0   # a plan saved within this of the sequence's 
 
 class LearnError(RuntimeError):
     """Something the user can fix (no such sequence, project not saved yet, no plan): the message says what."""
+
+
+class NotACutYet(LearnError):
+    """The sequence is his clips laid end to end (each used whole), not an edit: nothing to learn from yet."""
 
 
 def _name(path: str | None) -> str:
@@ -260,6 +265,113 @@ def _write_log(job: dict[str, Any], sequence: str, plan_style: str | None, resul
     return path, aggregate()["edits"]
 
 
+# ---------------------------------------------------------------------------------------------- edits made WITHOUT a P Corp plan (2026-10-22)
+# A project he started himself (not a POST shoot, no plan) still shows his choices directly: which stretch of which clip, how long, how fast, in what order. It is
+# recorded as-is -- every shot "not in plan" -- under a stable NEGATIVE id per project file, so it can never be mistaken for a shoot number and two projects never
+# mix. It is real ground truth for where he cuts and his pace; it is not a vote on the planner's choices (there were none).
+
+def project_key(project_path: str) -> int:
+    """A stable negative id for a project that is not a POST shoot (the same file always gets the same id)."""
+    return -(zlib.crc32(os.path.normpath(project_path).encode("utf-8")) % 900_000_000 + 1)
+
+
+def analyse_unplanned(shots: list[Any]) -> dict[str, Any]:
+    """His cut on its own: the same rows and summary as `analyse`, with no plan to compare against (every shot 'not_in_plan'), plus each shot's media path so its
+    footage can be found again for later study."""
+    result = analyse({"shots": []}, shots, {})
+    result["warnings"] = [w for w in result["warnings"] if "saved plan" not in w]   # there is no plan, so "few of your clips are in the plan" means nothing
+    for row, s in zip(result["his_shots"], shots):
+        row["path"] = s.path
+        if getattr(s, "src_fps", None):
+            row["source_fps"] = s.src_fps
+    result["summary"]["no_plan"] = True
+    result["plan_basis"], result["plan_made_at"], result["stale_plan"], result["no_plan"] = "none", None, False, True
+    return result
+
+
+def lines_unplanned(project_path: str, sequence: str, result: dict[str, Any]) -> list[str]:
+    s = result["summary"]
+    out = [f"Read your edit \"{sequence}\" from {os.path.basename(project_path)}: {s['his_shots']} shots, {s['his_seconds']:.1f} s, from {s['his_clips']} clips.",
+           "This project isn't one of P Corp OS's shoots, so there's no plan to compare with: your cut is saved as-is (which part of each clip you used, how long, "
+           "how fast, in what order) for the learning data.",
+           f"Your pace: median shot {s['median_shot_seconds']:.2f} s; {s['retimed_shots']} of {s['his_shots']} shots sped up or slowed down."]
+    return out[:1] + result["warnings"] + out[1:]
+
+
+def write_unplanned_log(project_path: str, sequence: str, result: dict[str, Any], source: str = "button") -> tuple[Path, int]:
+    """The feedback record of an edit with no plan, plus its learning events in the central store (there is no job folder). The events are 'added' shots, never
+    votes. Like _write_log, the event copy only goes to the real store when the log itself does."""
+    FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+    pid = project_key(project_path)
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    record = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "job_id": pid, "shoot": Path(project_path).stem, "project_path": project_path, "sequence": sequence,
+              "plan_style": None, "source": source, **result}
+    path = FEEDBACK_DIR / f"project{-pid}_{stamp}.json"
+    n = 1
+    while path.exists():
+        n += 1
+        path = FEEDBACK_DIR / f"project{-pid}_{stamp}_{n}.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record, indent=1))
+    os.replace(tmp, path)
+    with open(FEEDBACK_DIR / "index.jsonl", "a") as fh:
+        fh.write(json.dumps({"ts": record["ts"], "job_id": pid, "sequence": sequence, "file": path.name, "source": source, "stale_plan": bool(result.get("stale_plan")),
+                             "no_plan": bool(result.get("no_plan", True)), "learned_plan": bool(result.get("learned_plan")),
+                             "project": os.path.basename(project_path), "summary": result["summary"]}) + "\n")
+    if FEEDBACK_DIR == _REAL_FEEDBACK_DIR:
+        from app import post_learning_events as le
+        try:
+            le.append_events(le.CENTRAL_EVENTS, le.from_learn_record(record))
+        except Exception as exc:   # noqa: BLE001 -- the feedback log above is the record of truth
+            le._log.warning("learning events for %s not recorded: %s", os.path.basename(project_path), exc)
+    return path, aggregate()["edits"]
+
+
+def is_clip_list(shots: list[Any]) -> bool:
+    """Mostly whole clips laid end to end (a stringout or selects reel), the same rule the auto-save watch uses: not a cut, and never logged as one."""
+    from app.post_autosave import WHOLE_CLIP_SHARE
+    shares = [(s.src_out - s.src_in) / s.src_duration for s in shots if s.src_duration]
+    return bool(shares) and statistics.median(shares) >= WHOLE_CLIP_SHARE
+
+
+async def learn_from_project(project_path: str, sequence_name: str | None = None) -> dict[str, Any]:
+    """Learn From My Edit for a project that is not a POST shoot: reads the saved sequence, records his cut as-is, returns what the plugin prints.
+    Raises NotACutYet (nothing written) when the sequence is his clips laid end to end."""
+    from app.ssd_guard import on_drive
+    sequence, shots = await on_drive(read_final_edit, project_path, sequence_name, timeout=120.0)
+    if built_at(sequence) is not None:   # a sequence P Corp built ("... - Edit <time>"), never his own cut: compare it with the plan it was built from
+        return await _learn_from_learned_build(project_path, sequence, shots)
+    if is_clip_list(shots):
+        raise NotACutYet(f"\"{sequence}\" is your clips laid end to end ({len(shots)} clips, each used whole), not a cut yet, so nothing was saved: a stringout would "
+                         "teach the system the wrong thing.")
+    result = analyse_unplanned(shots)
+    log_path, edits = await on_drive(write_unplanned_log, project_path, sequence, result, timeout=30.0)
+    report = lines_unplanned(project_path, sequence, result)
+    report.append(f"Saved to the feedback log ({edits} edit{'s' if edits != 1 else ''} logged so far).")
+    return {"sequence": sequence, "summary": result["summary"], "warnings": result["warnings"], "lines": report, "logged_to": str(log_path), "project_id": project_key(project_path)}
+
+
+async def _learn_from_learned_build(project_path: str, sequence: str, shots: list[Any]) -> dict[str, Any]:
+    """His version of a sequence P Corp built in his own project from a LEARNED plan (learning/transfer_cut.py): what he kept, changed and dropped of it -- the
+    score of the transfer test. Refused when there is no learned plan to compare with (a P Corp build is never logged as his cut)."""
+    from app.ssd_guard import on_drive
+    from learning.transfer_cut import load_project_plan
+    plan = await on_drive(load_project_plan, project_path)
+    if plan is None:
+        raise LearnError(f"\"{sequence}\" was built by P Corp OS, not cut by you, and there's no learned plan to compare it with, so nothing was saved.")
+    made = time.mktime(time.strptime(plan["made_at"], "%Y-%m-%dT%H:%M:%S")) if plan.get("made_at") else None
+    built = built_at(sequence)
+    basis = "matched" if made is not None and built is not None and made <= built + PLAN_NEWER_GRACE_SECONDS else "newer"
+    result = compare_with_plan(sequence, shots, plan, basis, made, {})
+    result["learned_plan"], result["no_plan"] = True, False
+    log_path, edits = await on_drive(write_unplanned_log, project_path, sequence, result, timeout=30.0)
+    report = lines(sequence, plan.get("style"), result)
+    report.append(f"This sequence was built by P Corp OS from what it learned from \"{(plan.get('learned_from') or {}).get('cut', 'your cut')}\": the numbers above are how much "
+                  "of it you kept. Saved to the feedback log.")
+    return {"sequence": sequence, "summary": result["summary"], "warnings": result["warnings"], "lines": report, "logged_to": str(log_path),
+            "project_id": project_key(project_path), "learned_plan": True}
+
+
 def aggregate() -> dict[str, Any]:
     """Everything logged so far, one row per (job, sequence) -- the latest click of an edit still being worked on replaces its earlier ones."""
     index = FEEDBACK_DIR / "index.jsonl"
@@ -272,7 +384,7 @@ def aggregate() -> dict[str, Any]:
                 continue
             latest[(row["job_id"], "".join(row["sequence"].split()).lower())] = row
     rows = [r["summary"] for r in latest.values()]
-    plan_rows = [r["summary"] for r in latest.values() if not r.get("stale_plan")]   # edits compared with a plan he did NOT build from say nothing about the plan
+    plan_rows = [r["summary"] for r in latest.values() if not r.get("stale_plan") and not r.get("no_plan") and not r.get("learned_plan")]   # learned transfers report themselves   # only edits compared with the plan they were built from say anything about the plan
     shots = sum(r["his_shots"] for r in rows)
     plan_shots = sum(r["his_shots"] for r in plan_rows)
     checked = sum(r["described_shots_checked"] for r in rows)
