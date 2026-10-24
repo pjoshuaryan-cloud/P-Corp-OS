@@ -45,6 +45,15 @@ def workspace(project_path: str) -> dict[str, Any]:
     return {"id": pid, "shoot_name": Path(project_path).stem, "profile": "joshx", "destination_root": str(root), "premiere_project_path": project_path, "frame_rate": 25}
 
 
+def project_moments(project_path: str) -> dict[str, Any]:
+    """The clip descriptions `prepare` made for a project of his ({} when there are none), without creating a workspace for a project that has none."""
+    from app.post_edit_plan import edit_dir
+    from app.post_learn import project_key
+    from app.post_moments import load_moments
+    root = DATA / str(-project_key(project_path))
+    return load_moments(edit_dir({"profile": "joshx", "destination_root": str(root)})) if root.exists() else {}
+
+
 def _file_id(name: str) -> int:
     digits = re.sub(r"\D", "", name)
     return int(digits) if digits else abs(hash(name)) % 10 ** 6
@@ -529,23 +538,30 @@ def _alignment(d: dict[str, Any], st: dict[str, Any]) -> dict[str, Any]:
 
 # ================================================================================================ look: his shot and vertical candidates, compared BY PICTURE
 LOOK_FILE = "visual_matches.json"
-LOOK_CANDIDATES = 6            # vertical moments shown next to each of his shots
-LOOK_NEIGHBOURS = 6            # clips either side of where the slot falls in the vertical shoot (and of the description match) that may be offered
+LOOK_CANDIDATES = 6            # vertical moments Claude ranks in detail for each of his shots
+LOOK_SCOPE = "shoot"           # 2026-10-23: offer the WHOLE vertical shoot. The first version ("window") offered clips near the slot's place in recording order;
+                               # 11 of the 13 clips he brought into the HAUS vertical were never shown to Claude, and the whole shoot holds all 13.
+LOOK_NEIGHBOURS = 6            # scope "window": clips either side of where the slot falls in the vertical shoot (and of the description match)
 LOOK_LONG_SIDE = 1024          # pixels on a frame's long side
-LOOK_MAX_USD = 1.20            # approved 2026-10-23 ("about $1"): no call is made that could take the run past this
+LOOK_MAX_USD = 1.20            # the first approval (2026-10-23, "about $1", spent $0.55). A run now spends only with its own cap (--max-usd); without one it estimates
 REUSE_GAP = 3                  # a clip doesn't come back within 3 slots of its last use, unless he did the same at that spot (picked by picture, it did:
                                # one clip 3 times in 5 slots, 8 others twice within 2-4 -- the vertical footage has fewer distinct looks than his)
 LOOK_MAX_TOKENS = 600          # room for a sentence of reasoning before the JSON (at 300, 8 of 35 answers ran out before it)
 DARK_FRAME_LUMA = 0.12         # a candidate frame darker than this (0..1) is not offered
 SOFT_FRAME_SHARE = 0.35        # nor one under 35% of the median sharpness of all candidate frames
+SHEET_COLS, SHEET_ROWS = 8, 4  # scope "shoot": every usable moment goes on numbered contact sheets of 32, and Claude shortlists LOOK_CANDIDATES from them first
+SHEET_THUMB = (192, 341)       # one 9:16 frame on a sheet (a full sheet is 1536 x 1364)
 FFMPEG = "/opt/homebrew/bin/ffmpeg"
-LOOK_PROMPT = (
-    "A hand-cut horizontal behind-the-scenes edit is being re-made as a vertical edit from SEPARATE vertical footage of the same shoot. The first image is one "
-    "shot from the editor's horizontal cut (it lasts {length:.2f} s in the edit). The numbered candidates are moments from the vertical footage. Rank ALL "
-    "candidates by how well each would stand in for the editor's shot in the vertical edit: first the same subject or person doing the same thing; then the "
-    "same kind of shot (wide or close, what is in the foreground, how the camera moves); then a similar look and energy. Ignore that the candidates are "
-    "vertical. Rank a candidate lower if it is blurred, badly framed (the subject cut off) or nearly empty. Reply with ONLY this JSON object, nothing "
-    'before or after it: {{"ranking": [every candidate number, best first], "why": "at most 12 words on why the first one"}}')
+_INTRO = ("A hand-cut horizontal behind-the-scenes edit is being re-made as a vertical edit from SEPARATE vertical footage of the same shoot. The first image is one "
+          "shot from the editor's horizontal cut (it lasts {length:.2f} s in the edit). ")
+_CRITERIA = ("by how well each would stand in for the editor's shot in the vertical edit: first the same subject or person doing the same thing; then the "
+             "same kind of shot (wide or close, what is in the foreground, how the camera moves); then a similar look and energy. Ignore that they are vertical. ")
+LOOK_PROMPT = (_INTRO + "The numbered candidates are moments from the vertical footage. Rank ALL candidates " + _CRITERIA
+               + "Rank a candidate lower if it is blurred, badly framed (the subject cut off) or nearly empty. Reply with ONLY this JSON object, nothing "
+               'before or after it: {{"ranking": [every candidate number, best first], "why": "at most 12 words on why the first one"}}')
+SHORTLIST_PROMPT = (_INTRO + "The contact sheet(s) after it show every usable moment of the vertical footage, each with its number in the top-left corner. Pick the "
+                    "{k} numbered moments that would best stand in for it, " + _CRITERIA + "Skip blurred, badly framed or nearly empty ones. Reply with ONLY this "
+                    'JSON object, nothing before or after it: {{"shortlist": [{k} numbers, best first]}}')
 
 
 def grab_frame(path: str, t: float, out: Path) -> bool:
@@ -570,35 +586,49 @@ def frame_quality(path: Path) -> tuple[float, float]:
     return float(a.mean()), float(lap.var())
 
 
-def look_candidates(i: int, n: int, s: dict[str, Any], profile: dict[str, Any], vclips: list[dict[str, Any]], near: int, fps: float) -> list[dict[str, Any]]:
-    """Up to LOOK_CANDIDATES + 3 vertical moments for his slot i of n, one per clip, from the clips around where the slot falls in the vertical shoot and around
-    the description match `near`: each clip's moment most like his shot (else its steadiest usable stretch); a cut inside or a dark window is left out."""
+def _clip_moment(c: dict[str, Any], profile: dict[str, Any], L: float) -> tuple[float, dict[str, Any] | None] | None:
+    """(start, moment) for a window of `L` seconds in clip c for his shot: on its moment most like his shot whose centred window is usable, else its steadiest
+    usable stretch; None when the clip can't give one (too short, no steadiness data, a cut inside, dark)."""
     from app import post_steady
+    if c["duration"] < L + 0.2 or not c.get("steady"):
+        return None
+    events = sorted((e for e in c.get("events") or [] if e.get("t") is not None and e.get("what")),
+                    key=lambda e: (moment_score(profile, e), float(e.get("punch", 0))), reverse=True)
+    start, moment = None, None
+    for e in events:
+        at = round(min(max(float(e["t"]) - L / 2.0, 0.0), max(c["duration"] - L - 0.04, 0.0)), 3)
+        if _valid(c, at, L):
+            start, moment = at, e
+            break
+    if start is None:
+        start = round(post_steady.window_for_slot({**c, "events": []}, L, [])["start"], 3)
+        moment = moment_at(c, start, start + L)
+    sw = post_steady.score_window(c["steady"], start, L)
+    return None if sw["cuts"] or sw["dark"] else (start, moment)
+
+
+def look_candidates(i: int, n: int, s: dict[str, Any], profile: dict[str, Any], vclips: list[dict[str, Any]], near: int, fps: float,
+                    scope: str = LOOK_SCOPE) -> list[dict[str, Any]]:
+    """Vertical moments for his slot i of n, one per clip (each clip's moment most like his shot): scope "shoot" = every usable clip of the vertical shoot,
+    best description match first; scope "window" = up to LOOK_CANDIDATES + 3 from the clips around where the slot falls in the vertical shoot and around the
+    description match `near` (always offered)."""
     L = s["frames"] / fps
-    centre = round(i / max(n - 1, 1) * (len(vclips) - 1))
-    lo, hi = max(0, min(centre, near) - LOOK_NEIGHBOURS), min(len(vclips) - 1, max(centre, near) + LOOK_NEIGHBOURS)
+    if scope == "shoot":
+        js = range(len(vclips))
+    else:
+        centre = round(i / max(n - 1, 1) * (len(vclips) - 1))
+        js = range(max(0, min(centre, near) - LOOK_NEIGHBOURS), min(len(vclips) - 1, max(centre, near) + LOOK_NEIGHBOURS) + 1)
     out = []
-    for j in range(lo, hi + 1):
+    for j in js:
         c = vclips[j]
-        if c["duration"] < L + 0.2 or not c.get("steady"):
-            continue
-        events = sorted((e for e in c.get("events") or [] if e.get("t") is not None and e.get("what")),
-                        key=lambda e: (moment_score(profile, e), float(e.get("punch", 0))), reverse=True)
-        start, moment = None, None
-        for e in events:
-            at = round(min(max(float(e["t"]) - L / 2.0, 0.0), max(c["duration"] - L - 0.04, 0.0)), 3)
-            if _valid(c, at, L):
-                start, moment = at, e
-                break
-        if start is None:
-            start = round(post_steady.window_for_slot({**c, "events": []}, L, [])["start"], 3)
-            moment = moment_at(c, start, start + L)
-        sw = post_steady.score_window(c["steady"], start, L)
-        if sw["cuts"] or sw["dark"]:
-            continue
-        out.append({"j": j, "name": c["name"], "start": start, "length": round(L, 4), "what": (moment or {}).get("what") or c.get("scene") or "",
-                    "score": round(moment_score(profile, moment) + 0.5 * similarity(profile, clip_profile(c)), 4)})
+        found = _clip_moment(c, profile, L)
+        if found is not None:
+            start, moment = found
+            out.append({"j": j, "name": c["name"], "start": start, "length": round(L, 4), "what": (moment or {}).get("what") or c.get("scene") or "",
+                        "score": round(moment_score(profile, moment) + 0.5 * similarity(profile, clip_profile(c)), 4)})
     out.sort(key=lambda x: -x["score"])
+    if scope == "shoot":
+        return out
     keep = out[:LOOK_CANDIDATES + 3]
     mine = next((x for x in out if x["j"] == near), None)
     if mine is not None and mine not in keep:   # the description match is always offered
@@ -606,22 +636,59 @@ def look_candidates(i: int, n: int, s: dict[str, Any], profile: dict[str, Any], 
     return keep
 
 
-def parse_ranking(text: str, k: int) -> tuple[list[int] | None, str | None]:
-    """Claude's {"ranking": [...], "why": "..."} -> (every candidate number 1..k exactly once, best first; why), or (None, None) when it isn't readable."""
+def contact_sheets(cands: list[dict[str, Any]], out_dir: Path, tag: str) -> list[str]:
+    """The candidates' frames on numbered contact sheets of SHEET_COLS x SHEET_ROWS, in candidate order; the numbers run from 1 across all sheets."""
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    per, (tw, th) = SHEET_COLS * SHEET_ROWS, SHEET_THUMB
+    font = ImageFont.load_default(size=44)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for first in range(0, len(cands), per):
+        chunk = cands[first:first + per]
+        sheet = Image.new("RGB", (SHEET_COLS * tw, -(-len(chunk) // SHEET_COLS) * th), (24, 24, 24))
+        draw = ImageDraw.Draw(sheet)
+        for k, c in enumerate(chunk):
+            x, y = (k % SHEET_COLS) * tw + 2, (k // SHEET_COLS) * th + 2
+            sheet.paste(ImageOps.fit(Image.open(c["frame"]).convert("RGB"), (tw - 4, th - 4)), (x, y))
+            label = str(first + k + 1)
+            draw.rectangle([x, y, x + 16 + 26 * len(label), y + 50], fill=(0, 0, 0))
+            draw.text((x + 6, y + 2), label, fill=(255, 230, 0), font=font)
+        path = out_dir / f"sheet_{tag}_{first // per + 1}.jpg"
+        sheet.save(path, quality=88)
+        paths.append(str(path))
+    return paths
+
+
+def _parse_json(text: str) -> dict[str, Any] | None:
     m = re.search(r"\{.*\}", text or "", re.DOTALL)
     try:
         data = json.loads(m.group(0)) if m else None
     except ValueError:
-        data = None
-    if not isinstance(data, dict) or not isinstance(data.get("ranking"), list):
-        return None, None
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _numbers(values: Any, k: int) -> list[int]:
     seen: list[int] = []
-    for x in data["ranking"]:
+    for x in values if isinstance(values, list) else []:
         if isinstance(x, (int, float)) and int(x) == x and 1 <= int(x) <= k and int(x) not in seen:
             seen.append(int(x))
+    return seen
+
+
+def parse_ranking(text: str, k: int) -> tuple[list[int] | None, str | None]:
+    """Claude's {"ranking": [...], "why": "..."} -> (every candidate number 1..k exactly once, best first; why), or (None, None) when it isn't readable."""
+    data = _parse_json(text)
+    seen = _numbers((data or {}).get("ranking"), k)
     if not seen:
         return None, None
     return seen + [x for x in range(1, k + 1) if x not in seen], str(data.get("why") or "")[:160]
+
+
+def parse_shortlist(text: str, n: int, k: int = LOOK_CANDIDATES) -> list[int] | None:
+    """Claude's {"shortlist": [...]} -> up to k distinct numbers within 1..n, best first, or None when it isn't readable."""
+    seen = _numbers((_parse_json(text) or {}).get("shortlist"), n)[:k]
+    return seen or None
 
 
 def _image_block(path: str) -> dict[str, Any]:
@@ -633,10 +700,18 @@ def _look_key(s: dict[str, Any], cands: list[dict[str, Any]]) -> str:
     return json.dumps([s["name"], round(s["source_in"], 3), s["frames"], [[c["name"], c["start"]] for c in cands]])
 
 
-def look(project_path: str) -> dict[str, Any]:
-    """Shows Claude a frame of each of his shots beside up to LOOK_CANDIDATES vertical candidates and keeps its ranking (visual_matches.json). Within
-    LOOK_MAX_USD: refuses to start if the estimate is over it, and stops making calls before one could take it past. Re-runs reuse every ranking whose
-    shot and candidates haven't changed."""
+def _image_tokens(path: str) -> int:
+    """An upper bound on what one image costs in input tokens (width x height / 750; the API may shrink a big image, which only costs less)."""
+    from PIL import Image
+    with Image.open(path) as im:
+        return int(im.width * im.height / 750) + 1
+
+
+def look(project_path: str, scope: str = LOOK_SCOPE, max_usd: float | None = None) -> dict[str, Any]:
+    """Shows Claude a frame of each of his shots beside vertical moments and keeps its ranking (visual_matches.json), in two stages for scope "shoot": a
+    shortlist of LOOK_CANDIDATES from numbered contact sheets of every usable moment, then the detailed ranking of those (scope "window": the ranking only).
+    Spends only with `max_usd`: without it, it prepares the frames and sheets and reports the estimate; with it, it refuses to start if the estimate is over
+    and makes no call that could take the run past it. Re-runs reuse every shortlist and ranking whose inputs haven't changed."""
     import statistics
     from dotenv import load_dotenv
     from app import post_moments
@@ -647,21 +722,23 @@ def look(project_path: str) -> dict[str, Any]:
     his, fps, folder = d["his"], d["fps"], d["folder"]
     frames_dir = folder / "look_frames"
     old = json.loads((folder / LOOK_FILE).read_text()) if (folder / LOOK_FILE).exists() else {}
+    cached = {int(k): v for k, v in (old.get("slots") or {}).items()}
     slots: dict[int, dict[str, Any]] = {}
     for i, s in enumerate(his):
-        cands = look_candidates(i, len(his), s, al["profiles"][i], al["vclips"], al["path"][i], fps)
+        pool = look_candidates(i, len(his), s, al["profiles"][i], al["vclips"], al["path"][i], fps, scope)
         mine = frames_dir / f"his_{Path(s['name']).stem}_{s['source_in']:.3f}_{s['frames']}f.jpg"
         ok = grab_frame(d["by_name"][s["name"]]["path"], (s["source_in"] + s["source_out"]) / 2.0, mine)
-        for c in cands:
-            c["frame"] = str(frames_dir / f"v_{Path(c['name']).stem}_{c['start']:.3f}_{c['length']:.3f}.jpg")
-            c["ok"] = grab_frame(d["by_name"][c["name"]]["path"], c["start"] + c["length"] / 2.0, Path(c["frame"]))
-        slots[i] = {"his_frame": str(mine) if ok else None, "candidates": cands}
-    quality = {c["frame"]: frame_quality(Path(c["frame"])) for sl in slots.values() for c in sl["candidates"] if c["ok"]}
+        for c in pool:   # named by clip and time (not length): a moment offered to many slots is grabbed once
+            mid = round((c["start"] + c["length"] / 2.0) * 25) / 25
+            c["frame"] = str(frames_dir / f"v_{Path(c['name']).stem}_at{mid:.2f}.jpg")
+            c["ok"] = grab_frame(d["by_name"][c["name"]]["path"], mid, Path(c["frame"]))
+        slots[i] = {"his_frame": str(mine) if ok else None, "pool": pool}
+    quality = {c["frame"]: frame_quality(Path(c["frame"])) for sl in slots.values() for c in sl["pool"] if c["ok"]}
     median = statistics.median(q[1] for q in quality.values()) if quality else 0.0
     dropped = 0
     for i, sl in slots.items():
         kept = []
-        for c in sl["candidates"]:
+        for c in sl["pool"]:
             if not c.pop("ok"):
                 continue
             luma, sharp = quality[c["frame"]]
@@ -670,73 +747,115 @@ def look(project_path: str) -> dict[str, Any]:
                 dropped += 1
                 continue
             kept.append(c)
-        sl["candidates"] = kept[:LOOK_CANDIDATES]
-        sl["key"] = _look_key(his[i], sl["candidates"])
-    cached = {int(k): v for k, v in (old.get("slots") or {}).items()}
-    tokens_per_image = (LOOK_LONG_SIDE * round(LOOK_LONG_SIDE * 9 / 16)) / 750.0
+        sl["pool"] = kept
+        if scope == "shoot" and len(kept) > LOOK_CANDIDATES:
+            sl["shortlist_key"] = _look_key(his[i], kept)
+            old_sl = cached.get(i, {})
+            if old_sl.get("shortlist_key") == sl["shortlist_key"] and old_sl.get("shortlist"):
+                sl["shortlist"], sl["sheets"] = old_sl["shortlist"], old_sl.get("sheets")
+        else:
+            sl["shortlist"] = list(range(1, min(len(kept), LOOK_CANDIDATES) + 1))
+    # ---- the estimate, before anything is spent
+    his_tokens = max((_image_tokens(sl["his_frame"]) for sl in slots.values() if sl["his_frame"]), default=800)
+    cand_tokens = max((_image_tokens(c["frame"]) for sl in slots.values() for c in sl["pool"]), default=800)
+    need_shortlist = [i for i, sl in slots.items() if sl["his_frame"] and "shortlist" not in sl]
+    for i in need_shortlist:
+        slots[i]["sheets"] = contact_sheets(slots[i]["pool"], frames_dir, f"{i + 1:02d}")
+    sheet_tokens = {i: sum(_image_tokens(p) for p in slots[i]["sheets"]) for i in need_shortlist}
 
-    def est_in(sl: dict[str, Any]) -> int:
-        return int(tokens_per_image * (1 + len(sl["candidates"])) + 600)
-    todo = [i for i, sl in slots.items() if sl["his_frame"] and len(sl["candidates"]) >= 2
-            and not (cached.get(i, {}).get("key") == sl["key"] and cached[i].get("ranking"))]
-    for i, sl in slots.items():
-        if i not in todo and cached.get(i, {}).get("key") == sl["key"]:
-            sl["ranking"], sl["why"] = cached[i].get("ranking"), cached[i].get("why")
-    estimate = sum(post_moments.usd(MODEL, est_in(slots[i]), LOOK_MAX_TOKENS)[0] for i in todo)
-    already = sum(float(json.loads(x).get("usd", 0)) for x in ((folder / post_moments.USAGE_FILE).read_text().splitlines() if (folder / post_moments.USAGE_FILE).exists() else [])
-                  if x.strip() and json.loads(x).get("operation") == "match_shots_by_picture")   # the cap is for the whole approval, not each run
-    budget = LOOK_MAX_USD - already
-    print(f"look: {len(his)} shots, {sum(len(sl['candidates']) for sl in slots.values())} candidate frames ({dropped} dark/soft left out); "
-          f"{len(todo)} call(s) to make, estimate ${estimate:.2f} (cap ${LOOK_MAX_USD:.2f}, ${already:.2f} already spent)", flush=True)
-    if estimate > budget:
-        raise RuntimeError(f"the estimate (${estimate:.2f}) is over what's left of the approved ${LOOK_MAX_USD:.2f} (${budget:.2f}); nothing was spent")
+    def ranking_cached(i: int) -> bool:
+        sl, old_sl = slots[i], cached.get(i, {})
+        if "shortlist" not in sl:
+            return False
+        cands = [sl["pool"][k - 1] for k in sl["shortlist"]]
+        return old_sl.get("key") == _look_key(his[i], cands) and bool(old_sl.get("ranking"))
+    stage1 = {i: post_moments.usd(MODEL, his_tokens + sheet_tokens[i] + 700, LOOK_MAX_TOKENS)[0] for i in need_shortlist}
+    rank_in = his_tokens + LOOK_CANDIDATES * cand_tokens + 600
+    stage2 = {i: post_moments.usd(MODEL, rank_in, LOOK_MAX_TOKENS)[0] for i, sl in slots.items() if sl["his_frame"] and not ranking_cached(i)
+              and len(sl["pool"]) >= 2}
+    estimate = sum(stage1.values()) + sum(stage2.values())
+    report = {"scope": scope, "shots": len(his), "pool_per_shot": [len(sl["pool"]) for sl in slots.values()], "dark_or_soft_left_out": dropped,
+              "shortlist_calls": len(stage1), "ranking_calls": len(stage2), "estimate_usd": round(estimate, 2), "max_usd": max_usd}
+    print(f"look ({scope}): {len(his)} shots, {min(report['pool_per_shot'])}-{max(report['pool_per_shot'])} usable moments per shot ({dropped} dark/soft left out); "
+          f"{len(stage1)} shortlist + {len(stage2)} ranking call(s), estimate up to ${estimate:.2f}" + (f" (cap ${max_usd:.2f})" if max_usd is not None else
+          " -- nothing spent: run again with --max-usd to make the calls"), flush=True)
+    if max_usd is None:
+        return report
+    if estimate > max_usd:
+        raise RuntimeError(f"the estimate (${estimate:.2f}) is over the cap (${max_usd:.2f}); nothing was spent")
     spent, usage = [0.0], {"in": 0, "out": 0, "calls": 0}
-    if todo:
-        load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-        from anthropic import AsyncAnthropic
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    from anthropic import AsyncAnthropic
 
-        async def one(i: int, client: Any, gate: asyncio.Semaphore) -> None:
-            sl, s = slots[i], his[i]
-            reserve = post_moments.usd(MODEL, est_in(sl), LOOK_MAX_TOKENS)[0]
-            async with gate:
-                if spent[0] + reserve > budget:
-                    sl["skipped"] = "budget"
-                    return
-                spent[0] += reserve
-                content: list[dict[str, Any]] = [{"type": "text", "text": "The editor's shot (horizontal):"}, _image_block(sl["his_frame"])]
-                for k, c in enumerate(sl["candidates"], start=1):
-                    content += [{"type": "text", "text": f"Candidate {k}:"}, _image_block(c["frame"])]
-                content.append({"type": "text", "text": LOOK_PROMPT.format(length=s["frames"] / fps)})
-                try:
-                    resp = await client.messages.create(model=MODEL, max_tokens=LOOK_MAX_TOKENS, messages=[{"role": "user", "content": content}])
-                except Exception as exc:   # noqa: BLE001 -- one failed call leaves that slot to the description match
-                    spent[0] -= reserve
-                    sl["error"] = str(exc)[:200]
-                    return
-                spent[0] += post_moments.usd(MODEL, resp.usage.input_tokens, resp.usage.output_tokens)[0] - reserve
-                usage["in"] += resp.usage.input_tokens
-                usage["out"] += resp.usage.output_tokens
-                usage["calls"] += 1
-                text = "".join(b.text for b in resp.content if b.type == "text")
-                sl["ranking"], sl["why"] = parse_ranking(text, len(sl["candidates"]))
-                if sl["ranking"] is None:
-                    sl["error"] = "unreadable answer: " + text[:200]
+    async def call(content: list[dict[str, Any]], reserve: float, client: Any, gate: asyncio.Semaphore) -> str | None:
+        async with gate:
+            if spent[0] + reserve > max_usd:
+                return None
+            spent[0] += reserve
+            try:
+                resp = await client.messages.create(model=MODEL, max_tokens=LOOK_MAX_TOKENS, messages=[{"role": "user", "content": content}])
+            except Exception as exc:   # noqa: BLE001 -- one failed call leaves that slot to the description match
+                spent[0] -= reserve
+                return f"ERROR {exc}"[:200]
+            spent[0] += post_moments.usd(MODEL, resp.usage.input_tokens, resp.usage.output_tokens)[0] - reserve
+            usage["in"] += resp.usage.input_tokens
+            usage["out"] += resp.usage.output_tokens
+            usage["calls"] += 1
+            return "".join(b.text for b in resp.content if b.type == "text")
 
-        async def ask_all() -> None:   # only the calls are async: load() and music rendering run their own event loops
-            client, gate = AsyncAnthropic(), asyncio.Semaphore(4)
-            await asyncio.gather(*(one(i, client, gate) for i in todo))
-        asyncio.run(ask_all())
+    async def shortlist(i: int, client: Any, gate: asyncio.Semaphore) -> None:
+        sl, s = slots[i], his[i]
+        content: list[dict[str, Any]] = [{"type": "text", "text": "The editor's shot (horizontal):"}, _image_block(sl["his_frame"])]
+        for n_sheet, path in enumerate(sl["sheets"], start=1):
+            content += [{"type": "text", "text": f"Vertical moments, sheet {n_sheet} of {len(sl['sheets'])}:"}, _image_block(path)]
+        content.append({"type": "text", "text": SHORTLIST_PROMPT.format(length=s["frames"] / fps, k=LOOK_CANDIDATES)})
+        text = await call(content, stage1[i], client, gate)
+        picked = parse_shortlist(text or "", len(sl["pool"])) if text and not text.startswith("ERROR") else None
+        if picked:
+            sl["shortlist"] = picked
+        else:
+            sl["error"] = "shortlist: " + ("budget" if text is None else text[:200])
+
+    async def rank(i: int, client: Any, gate: asyncio.Semaphore) -> None:
+        sl, s = slots[i], his[i]
+        cands = sl["candidates"]
+        content: list[dict[str, Any]] = [{"type": "text", "text": "The editor's shot (horizontal):"}, _image_block(sl["his_frame"])]
+        for k, c in enumerate(cands, start=1):
+            content += [{"type": "text", "text": f"Candidate {k}:"}, _image_block(c["frame"])]
+        content.append({"type": "text", "text": LOOK_PROMPT.format(length=s["frames"] / fps)})
+        text = await call(content, post_moments.usd(MODEL, his_tokens + len(cands) * cand_tokens + 600, LOOK_MAX_TOKENS)[0], client, gate)
+        if text is None or text.startswith("ERROR"):
+            sl["error"] = "ranking: " + ("budget" if text is None else text[:200])
+            return
+        sl["ranking"], sl["why"] = parse_ranking(text, len(cands))
+        if sl["ranking"] is None:
+            sl["error"] = "unreadable ranking: " + text[:200]
+
+    async def run_all() -> None:   # only the calls are async: load() and music rendering run their own event loops
+        client, gate = AsyncAnthropic(), asyncio.Semaphore(4)
+        await asyncio.gather(*(shortlist(i, client, gate) for i in need_shortlist))
+        todo = []
+        for i, sl in slots.items():
+            if "shortlist" not in sl:
+                continue
+            sl["candidates"] = [sl["pool"][k - 1] for k in sl["shortlist"]]
+            sl["key"] = _look_key(his[i], sl["candidates"])
+            old_sl = cached.get(i, {})
+            if old_sl.get("key") == sl["key"] and old_sl.get("ranking"):
+                sl["ranking"], sl["why"] = old_sl["ranking"], old_sl.get("why")
+            elif sl["his_frame"] and len(sl["candidates"]) >= 2:
+                todo.append(i)
+        await asyncio.gather(*(rank(i, client, gate) for i in todo))
+    asyncio.run(run_all())
     if usage["calls"]:
         line = post_moments.record_usage(folder, job_id=d["job"]["id"], operation="match_shots_by_picture", model=MODEL, usage=usage,
-                                          extra={"shots": len(his), "project": Path(project_path).name})
+                                          extra={"shots": len(his), "scope": scope, "project": Path(project_path).name})
         print(f"look: {usage['calls']} call(s), ${line['usd']:.2f} ({line['price_basis']})", flush=True)
-    out = {"cut_source": d["cut_source"], "model": MODEL, "made_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    out = {"cut_source": d["cut_source"], "model": MODEL, "scope": scope, "made_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
            "slots": {str(i): sl for i, sl in slots.items()}}
     (folder / LOOK_FILE).write_text(json.dumps(out, indent=1))
-    ranked = sum(1 for sl in slots.values() if sl.get("ranking"))
-    return {"shots": len(his), "ranked": ranked, "calls": usage["calls"], "usd": post_moments.usd(MODEL, usage["in"], usage["out"])[0],
-            "skipped": [i + 1 for i, sl in slots.items() if not sl.get("ranking")]}
-
+    return {**report, "ranked": sum(1 for sl in slots.values() if sl.get("ranking")), "calls": usage["calls"],
+            "usd": post_moments.usd(MODEL, usage["in"], usage["out"])[0], "skipped": [i + 1 for i, sl in slots.items() if not sl.get("ranking")]}
 
 def vertical_frame_size(vclips: list[dict[str, Any]]) -> tuple[int, int]:
     """The vertical footage's picture size as it plays (rotation applied): the frame his logo and end card are drawn for."""
@@ -871,13 +990,15 @@ def main() -> int:
     ap.add_argument("--project", default=HAUS)
     ap.add_argument("--no-describe", action="store_true")
     ap.add_argument("--no-steady", action="store_true")
+    ap.add_argument("--scope", choices=["shoot", "window"], default=LOOK_SCOPE, help="look: offer the whole vertical shoot (default) or only clips near the slot")
+    ap.add_argument("--max-usd", type=float, default=None, help="look: the most this run may spend; without it, look only prepares and estimates")
     a = ap.parse_args()
     if a.step == "prepare":
         asyncio.run(prepare(a.project, describe=not a.no_describe, steady=not a.no_steady))
     elif a.step == "study":
         print(json.dumps(study(a.project), indent=1))
     elif a.step == "look":
-        print(json.dumps(look(a.project), indent=1))
+        print(json.dumps(look(a.project, a.scope, a.max_usd), indent=1))
     else:
         plan = plan_vertical(a.project)
         print(f"vertical plan: {len(plan['shots'])} shots, {plan['duration_seconds']} s, music: {plan['music'].get('cut_path') or 'none'}; notes:")

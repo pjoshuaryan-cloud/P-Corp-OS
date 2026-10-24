@@ -318,3 +318,23 @@ about 9). The plan was re-made from that click:
   before creating anything. Fixed with one walker (`walkProject`, up to 6 bins deep; `findItemsByName` goes below one level only while a name is still
   missing, so P Corp projects are scanned exactly as before). Mock E16 reproduces his layout (failed before the fix, passes after). Also found in his
   saved project: `vertical` at 2160 x 3480 (height not yet 3840) and the new Adjustment Layer made at 3840 x 2180 (made with the horizontal open).
+
+## 11. After the HAUS score: three follow-ups (2026-10-23, uncommitted)
+
+1. **Clips from the whole shoot (`transfer_cut look --scope shoot`, now the default).** His score showed 11 of the 13 clips he brought into the
+   vertical were never shown to Claude: candidates came from around the slot's place in recording order (5 of the 13 were in that list before the
+   frame filters, 2 after); the whole shoot holds all 13. Now every usable moment (55-58 per shot on HAUS, one per clip, dark/soft frames left out)
+   goes on numbered contact sheets of 32 (`contact_sheets`); Claude shortlists 6 from his frame + the sheets, then ranks those 6 in detail as before.
+   A run spends only with `--max-usd`; without it, it prepares the frames and sheets and prints the estimate (HAUS: up to $1.31 for 35 shortlists +
+   35 rankings; the last run's actual cost was about two-thirds of its estimate). Frames are named by clip and time, so a moment offered to many slots is
+   grabbed once. NOT run with Claude yet: waiting for his OK on the spend.
+2. **Learn reads finishing.** Every Learn click (P Corp shoot, his own cut, a learned build) now records the flashes, zoom hits, shot effects,
+   punch-ins (his Transform or the plugin's Motion), sounds, images and titles on the sequence (`transfer_finish.found_finish`), and for a built
+   sequence how many of the planned ones are still where they were put, with the frames of those he removed/moved and added (`compare_finish`), in the
+   feedback record (`finishing`) and the panel's report. Dry-run on his HAUS build: flashes 0 of 2 kept, zoom hits 1 of 3, shot effects 0 of 7,
+   punch-ins 1 of 12, sounds 11 of 12, images 4 of 5. It never fails a click (an unreadable finishing is one line).
+3. **The description bug.** A learned build was compared with `{}` instead of the project's clip descriptions; now `transfer_cut.project_moments`
+   (no workspace is created for a project without one). His own cuts in such a project get the comparison too. On the HAUS build: 30 of his 33 shots
+   sit on a described moment (about 77% by chance), 10 on Claude's first choice (about 23% by chance).
+
+Suite: 1162 Python checks + 181 plugin checks, 0 failures; backend restarted onto it.

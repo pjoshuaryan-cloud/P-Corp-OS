@@ -180,15 +180,19 @@ plan = {"fps": 25.0, "duration_frames": 60, "made_at": time.strftime("%Y-%m-%dT%
 built_name = "HAUS (vertical, learned) - Edit " + time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 his_version = [prproj.Shot(t0=0.0, t1=0.8, src_in=1.0, src_out=1.8, path="/x/C2906.MP4", name="C2906.MP4", track=1, src_duration=8.0),     # kept
                prproj.Shot(t0=0.8, t1=1.6, src_in=4.0, src_out=4.8, path="/x/C2907.MP4", name="C2907.MP4", track=1, src_duration=8.0)]     # another moment; C2908 dropped
-saved = (pl.read_final_edit, tc.load_project_plan)
+saved = (pl.read_final_edit, tc.load_project_plan, tc.project_moments)
 pl.read_final_edit = lambda p, s: (built_name, his_version)
 tc.load_project_plan = lambda p: copy.deepcopy(plan)
+tc.project_moments = lambda p: {"2906": {"name": "C2906.MP4", "duration": 8.0, "events": [{"t": 1.4, "kind": "action", "punch": 8, "what": "chef plates the dish"}]}}
 try:
     out = asyncio.run(pl.learn_from_project(PROJ, built_name))
     s = out["summary"]
     check("Learn on the built vertical compares it with the learned plan: 1 kept, 1 moved to another moment, 1 dropped", out.get("learned_plan") and s["plan_shots_kept"] == 1
           and s["plan_shots_different_moment"] == 1 and s["plan_shots_dropped"] == 1, s)
     check("...and says it is the score of what P Corp learned", any("how much of it you kept" in x for x in out["lines"]), out["lines"])
+    check("...with his project's clip descriptions (it passed none: his HAUS click said no clip was described, though all 117 were)",
+          s["described_shots_checked"] == 1 and s["at_a_described_moment"] == 1 and any("Claude's described moments" in x for x in out["lines"]), s)
+    check("...and a finishing it can't read (no real project here) is one line, never a failed click", any(x.startswith("Couldn't read the finishing") for x in out["lines"]))
     idx = json.loads((pl.FEEDBACK_DIR / "index.jsonl").read_text().splitlines()[-1])
     check("...logged as a learned-plan comparison (not as his cut, not in the P Corp planner's agreement totals)", idx["learned_plan"] and not idx["no_plan"]
           and pl.aggregate()["edits_compared_with_their_own_plan"] == 0, idx)
@@ -199,7 +203,7 @@ try:
     except pl.LearnError as exc:
         check("a P Corp-built sequence with no learned plan is refused, never logged as his cut", "built by P Corp OS" in str(exc), str(exc))
 finally:
-    pl.read_final_edit, tc.load_project_plan = saved
+    pl.read_final_edit, tc.load_project_plan, tc.project_moments = saved
 
 store = pa.Store(TMP / "watch")
 pj = pa.project_job(PROJ)

@@ -77,6 +77,63 @@ check("...a clip last used 4 slots back is fine again", tc._picture_pick(look, 0
 check("...never a stretch of a clip already used", tc._picture_pick(look, 0, s, by, [], [], {1: [(0.9, 1.3)]})[2] == 2)
 check("...and a ranking made for a different version of his shot is ignored", tc._picture_pick(look, 0, {**s, "frames": 15}, by, [], [], {}) is None)
 
+# ---- whole-shoot candidates and contact sheets (2026-10-23) ---------------------------------------------------------------------------------------------------
+check("a shortlist is read: distinct numbers within the pool, at most 6, best first", tc.parse_shortlist('{"shortlist": [12, 3, 12, 99, 7, 1, 2, 4, 5]}', 40)
+      == [12, 3, 7, 1, 2, 4], tc.parse_shortlist('{"shortlist": [12, 3, 12, 99, 7, 1, 2, 4, 5]}', 40))
+check("...and an unreadable or empty one is None (that slot falls back to the description match)", tc.parse_shortlist("I think 12", 40) is None
+      and tc.parse_shortlist('{"shortlist": []}', 40) is None)
+sys.path.insert(0, str(Path(__file__).parent))
+from synthetic_clips import make_clips  # noqa: E402
+pool_clips = [c for c in make_clips() if c.get("steady")]
+slot = {"name": "H.MP4", "source_in": 1.0, "source_out": 1.6, "frames": 15}
+profile = {"what": "crew sets up the light", "scene": "kitchen", "kind": "action", "people": True, "tokens": set()}
+whole = tc.look_candidates(0, 35, slot, profile, pool_clips, 0, 25.0, "shoot")
+window = tc.look_candidates(0, 35, slot, profile, pool_clips, 0, 25.0, "window")
+usable = [c for c in pool_clips if tc._clip_moment(c, profile, 0.6) is not None]
+check("scope 'shoot' offers every usable clip of the shoot (one moment each); 'window' only those near the slot", len(whole) == len(usable) and len(window) < len(whole)
+      and {c["name"] for c in window} <= {c["name"] for c in whole}, (len(whole), len(usable), len(window)))
+frames40 = []
+for k in range(40):
+    fpath = TMP / f"cand{k}.jpg"
+    Image.new("RGB", (576, 1024), (40 + k * 5, 90, 140)).save(fpath)
+    frames40.append({"frame": str(fpath)})
+sheets = tc.contact_sheets(frames40, TMP / "sheets", "t")
+sizes = [Image.open(x).size for x in sheets]
+check("40 moments make 2 numbered contact sheets (32 + 8), 8 across", len(sheets) == 2 and sizes[0] == (8 * tc.SHEET_THUMB[0], 4 * tc.SHEET_THUMB[1])
+      and sizes[1] == (8 * tc.SHEET_THUMB[0], tc.SHEET_THUMB[1]), sizes)
+label = np.asarray(Image.open(sheets[1]).convert("RGB"))[2:52, 2:70]
+check("...each with its number in a dark box in the corner (yellow text drawn on sheet 2's first moment, number 33)", (label[:, :, 0] > 200).sum() > 50 and
+      (label[:, :, 2] < 80).sum() > 50)
+
+# ---- finishing as Learn reads it ------------------------------------------------------------------------------------------------------------------------------
+plan_f = {"fps": 25.0, "shots": [{"index": 1, "start_frame": 0}, {"index": 2, "start_frame": 20}, {"index": 3, "start_frame": 40}],
+          "music": {"cut_path": "/x/song.wav"}, "zooms": {"items": [{"start_frame": 20, "direction": "in"}]},
+          "accents": {"flashes": [{"start_frame": 19}], "zoom_hits": [{"start_frame": 39}],
+                      "shot_effects": [{"shot_index": 2, "effect": "AE.ADBE Black & White"}, {"shot_index": 3, "effect": "AE.Impact_Zoom_Blur_FX"}],
+                      "sfx": [{"start_frame": 18, "track": 3}], "logo": None},
+          "graphics": {"tracks": {"cards": 3}, "cards": [{"start_frame": 0}]}}
+planned = tf.planned_finish(plan_f)
+check("what a plan asked for, per kind (the music counts as a sound on A2 from 0; images on their own track)", planned["sounds"] == [(0, 2), (18, 3)]
+      and planned["images"] == [(0, 3)] and planned["shot_effects"] == [(20, "black & white"), (40, "zoom blur")] and planned["punch_ins"] == [(20, "in")], planned)
+f_now = {"shots": [{"start": 0.8, "effects": ["AE.ADBE Black & White"], "punch_in": [], "motion_zoom": [(0.0, 100.0), (0.6, 110.0)]},
+                   {"start": 1.6, "effects": [], "punch_in": [(0, 110.0), (0.4, 100.0)], "motion_zoom": []}],
+         "overlays": [{"kind": "flash", "start": 0.8}, {"kind": "zoom_hit", "start": 1.0}], "sounds": [{"start": 0.0, "track": 2}, {"start": 0.72, "track": 3}],
+         "images": [{"start": 0.0, "track": 3}], "titles": [{}], "layered_clips": []}
+found = tf.found_finish(f_now, 25.0)
+check("what a sequence carries, per kind (a punch-in by Motion -- the plugin's -- or by Transform -- his)", found["punch_ins"] == [(20, "in"), (40, "out")]
+      and found["flashes"] == [(20,)], found)
+cmp = tf.compare_finish(planned, found)
+check("kept within a frame, else removed/moved from and added/moved to: the flash 19 -> 20 is kept, the zoom hit 39 -> 25 moved, B&W kept, zoom blur removed",
+      cmp["flashes"]["kept"] == 1 and cmp["zoom_hits"] == {"planned": 1, "kept": 0, "removed_or_moved_from": [39], "added_or_moved_to": [25]}
+      and cmp["shot_effects"]["kept"] == 1 and cmp["shot_effects"]["removed_or_moved_from"] == [40] and cmp["punch_ins"]["added_or_moved_to"] == [40]
+      and cmp["sounds"]["kept"] == 2, cmp)
+lines_f = tf.finish_lines(found, f_now, cmp)
+check("...and says so in one line per side", "flashes 1 of 1" in lines_f[1] and "zoom hits 0 of 1" in lines_f[1] and "1 title" in lines_f[0], lines_f)
+check("with no plan it lists his finishing as learning data", tf.finish_lines(found, f_now, None)[0].startswith("Finishing in your edit (saved for the learning data)"))
+from app import post_learn as plearn  # noqa: E402
+rec, lines_bad = plearn.read_finishing("/nowhere/none.prproj", "x", None, 25.0, 10.0)
+check("reading the finishing never fails a Learn click: a missing project is one line, nothing recorded", rec is None and lines_bad[0].startswith("Couldn't read the finishing"))
+
 # ---- his real HAUS project, read-only (skipped when the drive isn't mounted) -----------------------------------------------------------------------------------
 if Path(tc.HAUS).exists():
     fps = 24000 / 1001

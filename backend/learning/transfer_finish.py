@@ -134,9 +134,11 @@ def read_finish(project_path: str, sequence: str, out_seconds: float) -> dict[st
                     found["titles"].append(base)
                 elif number == 1:
                     geometry = dict(next((p for m, p in comps if m == "AE.ADBE Geometry2"), {}))
+                    motion = dict(next((p for m, p in comps if m == "AE.ADBE Motion"), {}))
                     found["shots"].append({**base, "effects": [m for m in matches if m in (post_accents.ZOOM_BLUR, post_accents.BLACK_WHITE)],
                                            "params": post_reference._effect_params(item, ids),
-                                           "punch_in": [(t - src_in, v) for t, v in _animated(geometry.get("Scale"))]})
+                                           "punch_in": [(t - src_in, v) for t, v in _animated(geometry.get("Scale"))],     # his: Transform > Scale
+                                           "motion_zoom": [(t - src_in, v) for t, v in _animated(motion.get("Scale"))]})  # the plugin's: Motion > Scale
                 else:
                     found["layered_clips"].append({**base, "effects": matches})
     return found
@@ -293,3 +295,80 @@ def finish_for_plan(project_path: str, sequence: str, plan: dict[str, Any], fold
     graphics = {"frame_size": list(frame_size), "tracks": {"cards": GRAPHICS_TRACK}, "cards": [{k: c[k] for k in ("file", "start_frame", "frames")} for c in cards]} if cards else None
     return {"accents": accents, "zooms": {"items": zooms} if zooms else None, "graphics": graphics, "notes": notes,
             "counts": {**accents["counts"], "punch_ins": len(zooms), "images": len(cards), "sounds": len(sfx)}}
+
+
+# ================================================================================================ finishing as Learn From My Edit reads it (2026-10-23)
+# What a sequence carries besides its picture cut, as positions (frames) per kind, and -- for a sequence P Corp built from a plan -- how much of the planned
+# finishing he kept, removed or added. Read from the saved project like the picture cut; recorded with every Learn click so his finishing choices become data.
+FINISH_KINDS = ("flashes", "zoom_hits", "shot_effects", "punch_ins", "sounds", "images")
+_EFFECT_SHORT = {post_accents.ZOOM_BLUR: "zoom blur", post_accents.BLACK_WHITE: "black & white"}
+
+
+def found_finish(f: dict[str, Any], fps: float) -> dict[str, list[tuple]]:
+    """read_finish's result as {kind: [(start frame, detail), ...]} on the sequence's frame grid."""
+    fr = lambda t: round(t * fps)   # noqa: E731
+    punch = []
+    for s in f["shots"]:
+        keys = s["punch_in"] if len(s["punch_in"]) >= 2 else s.get("motion_zoom") or []
+        if len(keys) >= 2:
+            punch.append((fr(s["start"]), "in" if keys[-1][1] > keys[0][1] else "out"))
+    return {"flashes": sorted((fr(o["start"]),) for o in f["overlays"] if o["kind"] == "flash"),
+            "zoom_hits": sorted((fr(o["start"]),) for o in f["overlays"] if o["kind"] == "zoom_hit"),
+            "shot_effects": sorted((fr(s["start"]), _EFFECT_SHORT[e]) for s in f["shots"] for e in s["effects"]),
+            "punch_ins": sorted(punch),
+            "sounds": sorted((fr(s["start"]), s["track"]) for s in f["sounds"]),
+            "images": sorted((fr(i["start"]), i["track"]) for i in f["images"])}
+
+
+def planned_finish(plan: dict[str, Any]) -> dict[str, list[tuple]]:
+    """The same shape for what a plan asked the plugin to build (its accents, zooms, music and images)."""
+    acc = plan.get("accents") or {}
+    starts = {s["index"]: s["start_frame"] for s in plan.get("shots") or []}
+    g = plan.get("graphics") or {}
+    tracks = g.get("tracks") or {}
+    images = [(c["start_frame"], tracks.get("cards") or 2) for c in g.get("cards") or []]
+    if g.get("logo_bug"):
+        images.append((g["logo_bug"]["start_frame"], tracks.get("logo_bug") or 3))
+    images += [(c["start_frame"], tracks.get("captions") or 4) for c in (g.get("captions") or {}).get("burned_in") or []]
+    if acc.get("logo"):
+        images.append((acc["logo"]["start_frame"], acc["logo"]["track"]))
+    return {"flashes": sorted((x["start_frame"],) for x in acc.get("flashes") or []),
+            "zoom_hits": sorted((x["start_frame"],) for x in acc.get("zoom_hits") or []),
+            "shot_effects": sorted((starts[e["shot_index"]], _EFFECT_SHORT.get(e["effect"], e["effect"])) for e in acc.get("shot_effects") or [] if e["shot_index"] in starts),
+            "punch_ins": sorted((z["start_frame"], z["direction"]) for z in (plan.get("zooms") or {}).get("items") or []),
+            "sounds": sorted([(x["start_frame"], x["track"]) for x in acc.get("sfx") or []] + ([(0, 2)] if (plan.get("music") or {}).get("cut_path") else [])),
+            "images": sorted(images)}
+
+
+def compare_finish(planned: dict[str, list[tuple]], found: dict[str, list[tuple]], tolerance: int = 1) -> dict[str, dict[str, Any]]:
+    """Per kind: how many planned items are still there (same detail, start within `tolerance` frames), and the start frames of those he removed or moved
+    away from, and of those he added or moved to (a moved item shows on both sides)."""
+    out = {}
+    for kind in FINISH_KINDS:
+        want, have, used, kept, removed = planned.get(kind, []), found.get(kind, []), set(), 0, []
+        for p in want:
+            j = next((j for j, h in enumerate(have) if j not in used and h[1:] == p[1:] and abs(h[0] - p[0]) <= tolerance), None)
+            if j is None:
+                removed.append(p[0])
+            else:
+                used.add(j)
+                kept += 1
+        out[kind] = {"planned": len(want), "kept": kept, "removed_or_moved_from": removed, "added_or_moved_to": [h[0] for j, h in enumerate(have) if j not in used]}
+    return out
+
+
+def finish_lines(found: dict[str, list[tuple]], f: dict[str, Any], comparison: dict[str, dict[str, Any]] | None) -> list[str]:
+    """What the plugin prints about the finishing."""
+    n = {k: len(v) for k, v in found.items()}
+    fx = found["shot_effects"]
+    have = (f"{n['flashes']} flash(es), {n['zoom_hits']} zoom hit(s), zoom blur on {sum(1 for x in fx if x[1] == 'zoom blur')} shot(s), black & white on "
+            f"{sum(1 for x in fx if x[1] == 'black & white')}, {n['punch_ins']} punch-in(s), {n['sounds']} sound(s), {n['images']} image(s), {len(f['titles'])} title(s)")
+    if comparison is None:
+        return [f"Finishing in your edit (saved for the learning data): {have}."]
+    labels = {"flashes": "flashes", "zoom_hits": "zoom hits", "shot_effects": "shot effects", "punch_ins": "punch-ins", "sounds": "sounds", "images": "images"}
+    kept = ", ".join(f"{labels[k]} {c['kept']} of {c['planned']}" for k, c in comparison.items() if c["planned"])
+    changed = sum(len(c["removed_or_moved_from"]) for c in comparison.values())
+    added = sum(len(c["added_or_moved_to"]) for c in comparison.values())
+    return [f"Finishing now: {have}.",
+            (f"Of the finishing P Corp built, still where it was put: {kept}. You removed or moved {changed} and added or moved to {added} "
+             "(each one is in the feedback log)." if kept else "The plan had no finishing to compare with.")]
