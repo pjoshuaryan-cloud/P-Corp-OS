@@ -125,7 +125,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check("an empty or missing folder lists nothing", ph.list_plans(Path(tmp) / "nope", name_of) == [] and ph.list_plans(Path(tempfile.mkdtemp()), name_of) == [])
 
 # ---- plain style names --------------------------------------------------------------------------------------------------------------------
-check("the saved references have plain names", name_of("corporate-highlight-calm") == "Calm corporate highlight" and name_of("jd-sports-moa-draft-01") == "Fast streetwear reel" and name_of("your-usual-pace") == "Your usual pace" and len(FRIENDLY_STYLES) == 9)
+check("the saved references have plain names", name_of("corporate-highlight-calm") == "Calm corporate highlight" and name_of("jd-sports-moa-draft-01") == "Fast streetwear reel" and name_of("your-usual-pace") == "Your usual pace" and name_of("gq-miele-blend") == "GQ x Miele event reel" and len(FRIENDLY_STYLES) == 10)
 check("a style with no plain name falls back to its own title and a first-sentence description", friendly_style("new-style", "Some Client -- event", "A fast reel. With extras and more detail.") == ("Some Client -- event", "A fast reel"), friendly_style("new-style", "Some Client -- event", "A fast reel. With extras and more detail."))
 check("a style with nothing at all falls back to its slug", friendly_style("slug-only") == ("slug-only", ""))
 

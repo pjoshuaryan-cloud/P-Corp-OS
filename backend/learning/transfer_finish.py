@@ -78,6 +78,11 @@ def _animated(param: Any | None) -> list[tuple[float, float]]:
     return parse_keyframes(param.findtext("Keyframes")) if param is not None and (param.findtext("IsTimeVarying") or "").lower() == "true" else []
 
 
+def _scale_param(params: dict[str, Any]) -> Any | None:
+    """An effect's (uniform) scale setting. Premiere has saved it as "Scale" and -- in his HAUS project after a re-save on 2026-10-24 -- as "Scale Height"."""
+    return params.get("Scale") if params.get("Scale") is not None else params.get("Scale Height")
+
+
 def read_finish(project_path: str, sequence: str, out_seconds: float) -> dict[str, Any]:
     """Everything on his sequence up to `out_seconds` that isn't the picture cut itself, in seconds, with keyframe times made relative to each item's start."""
     root, ids = post_reference._load(project_path)
@@ -128,7 +133,7 @@ def read_finish(project_path: str, sequence: str, out_seconds: float) -> dict[st
                     except (IndexError, ValueError):
                         x, y = 0.5, 0.5
                     opacity = dict(next((p for m, p in comps if m == "AE.ADBE Opacity"), {})).get("Opacity")
-                    found["images"].append({**base, "scale": _start_value(motion.get("Scale")) or 100.0, "position": [x, y],
+                    found["images"].append({**base, "scale": _start_value(_scale_param(motion)) or 100.0, "position": [x, y],
                                             "opacity_keys": [(t - src_in, v) for t, v in _animated(opacity)]})
                 elif "AE.ADBE Text" in matches or (not base["path"] and name == "Graphic"):
                     found["titles"].append(base)
@@ -137,8 +142,8 @@ def read_finish(project_path: str, sequence: str, out_seconds: float) -> dict[st
                     motion = dict(next((p for m, p in comps if m == "AE.ADBE Motion"), {}))
                     found["shots"].append({**base, "effects": [m for m in matches if m in (post_accents.ZOOM_BLUR, post_accents.BLACK_WHITE)],
                                            "params": post_reference._effect_params(item, ids),
-                                           "punch_in": [(t - src_in, v) for t, v in _animated(geometry.get("Scale"))],     # his: Transform > Scale
-                                           "motion_zoom": [(t - src_in, v) for t, v in _animated(motion.get("Scale"))]})  # the plugin's: Motion > Scale
+                                           "punch_in": [(t - src_in, v) for t, v in _animated(_scale_param(geometry))],     # his: Transform > Scale
+                                           "motion_zoom": [(t - src_in, v) for t, v in _animated(_scale_param(motion))]})  # the plugin's: Motion > Scale
                 else:
                     found["layered_clips"].append({**base, "effects": matches})
     return found

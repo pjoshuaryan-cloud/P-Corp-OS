@@ -340,6 +340,11 @@ def profile_from_references(slugs: list[str], name: str | None = None) -> StyleP
             raise ValueError("Your usual pace is a complete style of its own: it can't be pooled with other references.")
         return usual_pace_profile()
     ensure_inferred_styles(slugs)
+    blends = [sl for sl in slugs if load_reference(sl).get("rhythm_weights")]
+    if blends:
+        if len(slugs) > 1:
+            raise ValueError(f"'{blends[0]}' is a blended style of its own: it can't be pooled with other references.")
+        return _blend_profile(load_reference(blends[0]), name)
     highlight = any((load_reference(sl).get("tags") or {}).get("edit_type") == "corporate_highlight" for sl in slugs)
     if highlight and len(slugs) > 1:
         raise ValueError("The corporate highlight style is a complete style of its own: it can't be pooled with other references.")
@@ -396,6 +401,44 @@ def profile_from_references(slugs: list[str], name: str | None = None) -> StyleP
     return profile
 
 
+def _blend_profile(rec: dict, name: str | None = None) -> StyleProfile:
+    """A blended style (post_edit_types.INFERRED_STYLES with `rhythm_weights` and `beat_from`, 2026-10-24): the shot rhythm and its shape over the edit pooled
+    from `rhythm_weights` (each reference counted as many times as its weight -- any reference with a measured shot rhythm, also one cut on the action
+    rather than the beat), the beat timing (share of cuts on hits, cut lead) from `beat_from` (music-driven references only). Flagged inferred: no single
+    edit was measured like this."""
+    rhythm = [(load_reference(slug), int(w)) for slug, w in rec["rhythm_weights"].items()]
+    beat = [load_reference(slug) for slug in rec.get("beat_from") or []]
+    for b in beat:
+        if edit_type_of(b) != "music_montage":
+            raise ValueError(f"'{b['slug']}' isn't cut to the music, so it can't set when a blended style's cuts land.")
+    lengths: list[float] = []
+    bins: list[list[float]] = [[] for _ in range(PACING_BINS)]
+    ends: list[float] = []
+    durations: list[float] = []
+    for r, weight in rhythm:
+        shots = sorted(r["edit"]["shots"], key=lambda s: s["start"])
+        total = r["edit"]["duration_seconds"] or 1.0
+        for _ in range(weight):
+            durations.append(total)
+            for s in shots:
+                lengths.append(s["end"] - s["start"])
+                bins[min(PACING_BINS - 1, int(s["start"] / total * PACING_BINS))].append(s["end"] - s["start"])
+            if shots and shots[-1]["end"] - shots[-1]["start"] >= 1.5:
+                ends.append(shots[-1]["end"] - shots[-1]["start"])
+    snaps = [b["music_sync"]["cuts_within_40ms_of_a_strong_hit"] for b in beat if (b.get("music_sync") or {}).get("cuts_within_40ms_of_a_strong_hit") is not None]
+    leads = [b["music_sync"]["cut_lead_ms"] / 1000.0 for b in beat if (b.get("music_sync") or {}).get("cut_lead_ms") is not None]
+    overall = mean(lengths)
+    ranked = sorted(lengths)
+    p90 = ranked[min(len(ranked) - 1, int(0.90 * len(ranked)))]
+    return StyleProfile(
+        name=name or rec["slug"], source_slugs=[rec["slug"]], target_duration_seconds=round(mean(durations), 1), shot_lengths=lengths,
+        pacing_curve=[round(mean(b) if b else overall, 3) for b in bins], end_card_seconds=round(mean(ends), 2) if ends else 0.0,
+        hit_snap_rate=round(mean(snaps), 2) if snaps else 0.8, max_shot_seconds=max(2.5, round(2.6 * p90, 2)), accents=accent_style_from_records(beat),
+        cut_lead_seconds=round(float(median(leads)), 3) if leads else 0.0, inferred=True, edit_type="music_montage",
+        notes=[f"Blended style: shot rhythm from {', '.join(f'{s} (x{w})' for s, w in rec['rhythm_weights'].items())}; cuts on the music like {', '.join(rec.get('beat_from') or [])}."],
+    )
+
+
 def available_styles(buildable_only: bool = True, **tag_filters) -> list[dict]:
     """Saved references a job can take its style from (optionally filtered by tags such as genre). By default only the ones
     the planner can build from; pass buildable_only=False to see every saved reference (talking head, corporate...)."""
@@ -418,6 +461,8 @@ FRIENDLY_STYLES: dict[str, tuple[str, str]] = {
     "fashion-event-converse-kenzo": ("Fashion event highlight", "A music-driven launch-event highlight."),
     "furniture-expo-decorex": ("Expo and product highlight", "A music-driven vertical reel for an expo or showroom."),
     "food-promo-inferred": ("Food and drink promo (estimated)", "Rhythm blended from your drink, furniture and fashion edits."),
+    "gq-miele-blend": ("GQ x Miele event reel", "On the beat like your Miele Decorex edit, with the Moet x Don C reel's pace: quick open, steady middle, faster build, "
+                       "slow logo ending. Each shot starts on the action."),
     "corporate-distribution-company": ("Corporate story with narration", "Calm b-roll paced by a voice-over script."),
     "talking-head-beancounter": ("Talking head, several cameras", "Switches camera angle at the pauses in the dialogue."),
 }

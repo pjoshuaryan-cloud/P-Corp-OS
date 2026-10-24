@@ -338,3 +338,22 @@ about 9). The plan was re-made from that click:
    sit on a described moment (about 77% by chance), 10 on Claude's first choice (about 23% by chance).
 
 Suite: 1162 Python checks + 181 plugin checks, 0 failures; backend restarted onto it.
+
+## 12. GQ Best Dressed x Miele style (2026-10-24, uncommitted)
+
+His direction: the Miele Decorex edit is the brand's style; of three Instagram reels the third (Jack Botti's Moet & Chandon x Don C "overnight cut",
+instagram.com/reel/Cs7dE-pJm2U) is the priority; cut "both on beat and on action".
+- **The reel, read like the other exported references** (Instagram's end card from 60.3 s trimmed; its moving @JACKBOTTI watermark is not an overlay):
+  92 shots in 60.3 s, median 0.55 s (p10 0.20, p90 1.07); fast open (0-5 s median 0.37), steadier middle (~0.65), build (40-55 s ~0.43), slow end
+  (title over the last shot, logo card on black 58.7-60.3 s); 88 hard cuts, 3 dissolves, 1 two-frame flash; opens product first (bottle push-in), host,
+  a 4-panel stacked collage. Claude labels ($0.055, 62 of 92 shots): about two-thirds people, 15% product; medium/close mostly. The cuts do NOT follow
+  the beat (15% on strong hits vs 5% chance; Decorex 83%) -- they follow the action: 35 of 75 shots busiest in their first frames vs 13 in their last
+  (Decorex 9 vs 6, and its shots move 2.7x less). Saved as `moet-just-don-jackbotti`, new edit type `action_montage` (reference only; the automatic
+  reading's "narrated b-roll" would have offered it as a narrated-story style).
+- **`gq-miele-blend` ("GQ x Miele event reel" in Plan Edit):** a new kind of inferred style, a BLEND (`rhythm_weights` + `beat_from`,
+  `post_style._blend_profile`): shot rhythm and its shape pooled from the Moet reel (x2) and Decorex (x1) -> median 0.58 s, faster in tenths 8-9, slowest
+  in the last tenth, 1.57 s closing hold; cuts on the hits like Decorex (83%, 70 ms lead); default length 52.8 s (target_seconds overrides). "On the
+  action" is the music-montage planner's existing event window (each shot starts 0.12 s before Claude's described moment) -- needs Describe clips.
+- Test: `gq_miele_style_test.py` (14 checks, incl. a real-planner dry run: >= 75% cuts on hits, every event-led shot starts within 0.25 s of its
+  moment). Also: Premiere re-saved HAUS on 2026-10-24 with Transform's "Scale" as "Scale Height" -- `transfer_finish._scale_param` reads both.
+- NOT built: split-screen collages, the end title (text), a logo card image for a music montage. Suite 1176 Python checks, 0 failures.

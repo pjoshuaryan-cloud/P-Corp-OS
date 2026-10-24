@@ -53,6 +53,15 @@ EDIT_TYPES: dict[str, dict[str, Any]] = {
             "a separate microphone recording: the dialogue is the first camera's own audio unless you pick another camera",
         ],
     },
+    "action_montage": {   # 2026-10-24: the Moet x Don C reel -- a music-bed event montage whose cuts follow the action, not the beat
+        "label": "Event montage cut on the action",
+        "buildable": False,
+        "how": "Cuts where something happens in the picture, over a music bed that doesn't set the cut points (the music sits underneath). Used for its shot rhythm and shape inside a blended style (e.g. GQ x Miele); not offered on its own.",
+        "missing": [
+            "cutting on the action instead of the beat: the planner's cuts follow the music; a blend takes this edit's rhythm and lets each shot start on its described moment",
+            "split-screen collages (the plugin can't build them)",
+        ],
+    },
     "superseded": {
         "label": "superseded test reference",
         "buildable": False,
@@ -90,6 +99,20 @@ INFERRED_STYLES: dict[str, dict[str, Any]] = {
         "style": "Calm, beat-synced corporate highlight: cuts on the music's hits at a slower pace than a reel, steadiest moments only, slow zooms on static footage, opening and closing brand cards. Built from Josh's direction (2026-10-14) and the corporate reference's shot rhythm; there is no measured corporate highlight to music yet.",
         "target_seconds": 40,
         "pace_note": True,
+    },
+    "gq-miele-blend": {   # 2026-10-24, GQ Best Dressed x Miele: his Decorex Miele edit is the brand's style, Jack Botti's Moet x Don C reel the priority look
+        "composite_of": ["moet-just-don-jackbotti", "furniture-expo-decorex"],
+        "rhythm_weights": {"moet-just-don-jackbotti": 2, "furniture-expo-decorex": 1},   # the priority reel counts double in the shot rhythm and its shape
+        "beat_from": ["furniture-expo-decorex"],   # cuts on the music's hits like his Miele edit (the Moet reel is cut on the action: 34% on any hit, 1.5x chance)
+        "edit_type": "music_montage",
+        "genre": "brand event highlight",
+        "client": "GQ Best Dressed x Miele",
+        "event": "luxury event reel, on the beat and on the action",
+        "format": "9:16 vertical reel",
+        "style": ("Blended at Josh's direction: the shot rhythm and shape of the Moet x Don C reel (quick open, steady middle, faster build, slow logo ending; counted "
+                  "double) with your Miele Decorex edit; cuts on the music's hits like your Decorex edit; each shot starts just before the moment Claude described, "
+                  "so the action begins at the cut."),
+        "added_by": "Claude, 2026-10-24 (blended from two measured edits at Josh's direction, not measured as one edit)",
     },
 }
 
@@ -192,7 +215,8 @@ def write_inferred_styles(only: list[str] | None = None) -> list[str]:
             if _write_usual_pace_record(slug, spec):
                 written.append(slug)
             continue
-        parts = [pr.load_reference(x) for x in spec["composite_of"]]
+        weights = spec.get("rhythm_weights") or {x: 1 for x in spec["composite_of"]}   # a blend counts its priority reference more than once
+        parts = [pr.load_reference(x) for x, w in weights.items() for _ in range(int(w))]
         scale = CALM_PACE if spec.get("pace_note") else 1.0  # a calm style's card shows its CALM shot lengths, not the reference's
         lengths = sorted((sh["end"] - sh["start"]) * scale for r in parts for sh in r["edit"]["shots"])
         n = len(lengths)
@@ -201,8 +225,10 @@ def write_inferred_styles(only: list[str] | None = None) -> list[str]:
         summary = {"shot_count": n if not spec.get("target_seconds") else max(1, round(spec["target_seconds"] / max(median(lengths), 0.1))), "duration_seconds": duration,
                    "shot_length_seconds": {"mean": round(mean(lengths), 2), "median": q(0.5), "p10": q(0.1), "p90": q(0.9), "min": round(lengths[0], 2), "max": round(lengths[-1], 2)}}
         tags = {"genre": spec.get("genre", "food and drink promo"), "client": spec["client"], "event": spec["event"], "format": spec["format"], "style": spec["style"],
-                "edit_type": spec["edit_type"], "inferred": True, "composite_of": spec["composite_of"], "added_by": "Claude, 2026-10-14 (inferred, not measured)" if spec.get("pace_note") else "Claude, 2026-10-13 (inferred, not measured)"}
-        record = {"slug": slug, "tags": tags, "summary": summary, "music_sync": None, "composite_of": spec["composite_of"]}
+                "edit_type": spec["edit_type"], "inferred": True, "composite_of": spec["composite_of"],
+                "added_by": spec.get("added_by") or ("Claude, 2026-10-14 (inferred, not measured)" if spec.get("pace_note") else "Claude, 2026-10-13 (inferred, not measured)")}
+        record = {"slug": slug, "tags": tags, "summary": summary, "music_sync": None, "composite_of": spec["composite_of"],
+                  **{k: spec[k] for k in ("rhythm_weights", "beat_from") if k in spec}}
         (pr.REFERENCE_DIR / f"{slug}.json").write_text(json.dumps(record, indent=1))
         written.append(slug)
     return written
