@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import PCorpKit
 
@@ -38,11 +39,16 @@ struct PostView: View {
                         errorText(error)
                     }
 
-                    Button(isAddingShoot ? "Cancel" : "+ New POST Job") {
-                        isAddingShoot.toggle()
-                        if isAddingShoot { Task { await client.fetchSources(); await client.fetchProfiles() } }
+                    HStack(spacing: 8) {
+                        Button(isAddingShoot ? "Cancel" : "+ New POST Job") {
+                            isAddingShoot.toggle()
+                            if isAddingShoot { Task { await client.fetchSources(); await client.fetchProfiles() } }
+                        }
+                        .buttonStyle(.bordered)
+                        // A shot list comes before the shoot, so it can't wait for a job or a Premiere project to exist.
+                        Button("Coverage Plans") { NSWorkspace.shared.open(BackendHost.pageURL(path: "/static/coverage.html")) }
+                            .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
 
                     if isAddingShoot {
                         newShootForm

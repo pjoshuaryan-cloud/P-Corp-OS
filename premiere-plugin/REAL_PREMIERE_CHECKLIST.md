@@ -120,3 +120,12 @@ Reload the plugin first: the manifest changed. The first Log This Shoot may ask 
 5. Transcribe Dialogue or Build My Edit in that project sees each clip once.
 6. On a P Corp shoot, reject a clip the current plan uses, then Plan Again in P Corp OS: the clip is gone and the plan's notes say so. In Review Moments, an older plan's shot using it is marked "rejected in Shoot Log".
 Don't delete a clip from a search bin: that deletes it from the project.
+
+## 6. Coverage (2026-11-02)
+Rebuild the desktop app first so the Coverage Plans button shows. This costs a little: the page shows the price before each paid step.
+1. POST > Coverage Plans > New plan. Paste a brief with at least one must-have you know you didn't shoot, then Draft shot list. Read it: every shot should come from the brief, with no invented times.
+2. Change a shot, then Approve list and open Shot list PDF. The boxes sit level with their rows.
+3. On the Report tab, link a logged and tagged shoot, then Check. The shot you skipped says Missing and is listed at the top. Look at the frames on the Covered shots: do they really show the shot?
+4. Click Covered on a Missing shot: the count changes. Click again: it goes back. Report PDF matches the page.
+5. Reject a clip that's a shot's only proof on the Shoot Log page: back on Coverage, that shot says Weak, with no charge.
+6. More > Apply Shoot Log. Shoot Log > By Moment has one search bin per moment, holding the clips the check tied to it. The rejected clip isn't in any of them. Apply again: nothing doubles.

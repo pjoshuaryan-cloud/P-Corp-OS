@@ -1214,7 +1214,7 @@ def _is_slow_route(method: str, path: str) -> bool:
     # (Claude-calling) route in this app is a POST, so gating on that is
     # safe, not just a narrow fix for this one collision.
     # The Shoot Log and static pages never touch the cloud database, so they don't hold a connection (a page of thumbnails would tie up the pool) and keep working with no signal.
-    if path.startswith(("/post/shoot-log", "/static/")):
+    if path.startswith(("/post/shoot-log", "/post/coverage", "/static/")):
         return True
     if method != "POST":
         return False
@@ -3428,6 +3428,196 @@ async def post_shoot_log_applied(key: str, body: ShootLogAppliedRequest, _: None
     await on_drive(sl.record_applied, ctx, body.report, timeout=30.0, writing=True)
     await _shoot_log_audit("post_shoot_log_applied_ui", {"shoot": ctx["name"], **body.report})
     return {"ok": True}
+
+
+# ------------------------------------------------------------------------------------------------ coverage (app/post_coverage.py)
+class CoverageNewRequest(BaseModel):
+    name: str
+    client: str | None = None
+    log_key: str | None = None
+
+
+class CoverageDetailsRequest(BaseModel):
+    name: str | None = None
+    client: str | None = None
+
+
+class CoverageItemRequest(BaseModel):
+    moment: str | None = None
+    time: str | None = None
+    description: str | None = None
+    shot_size: str | None = None
+    priority: str | None = None
+    owner: str | None = None
+
+
+class CoverageDraftRequest(BaseModel):
+    text: str = ""
+    files: list[dict] = []
+
+
+class CoverageApproveRequest(BaseModel):
+    approved: bool = True
+
+
+class CoverageLinkRequest(BaseModel):
+    log_key: str | None = None
+
+
+class CoverageCheckRequest(BaseModel):
+    recheck: bool = False
+    max_usd: float | None = None
+
+
+class CoverageOverrideRequest(BaseModel):
+    item: str
+    status: str
+
+
+def _coverage_call(fn, *args, **kwargs):
+    """Runs a plan operation, turning what it refuses into a 400 that says why."""
+    from app.post_shoot_log import ShootLogError
+    try:
+        return fn(*args, **kwargs)
+    except ShootLogError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _coverage_client() -> AsyncAnthropic:
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
+    return AsyncAnthropic(api_key=api_key)
+
+
+async def _coverage_credit(client: AsyncAnthropic) -> None:
+    from app import post_coverage
+    from app.post_moments import MomentsError, VisionUnavailableError, check_credit
+    try:
+        await check_credit(client, post_coverage.MODEL)
+    except VisionUnavailableError as exc:
+        raise HTTPException(status_code=402, detail=str(exc))
+    except MomentsError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/post/coverage")
+async def post_coverage_overview(_: None = Depends(verify_token)) -> dict:
+    """Every coverage plan, and the logged shoots a plan can be linked to."""
+    from app import post_coverage
+    return post_coverage.overview()
+
+
+@app.post("/post/coverage")
+async def post_coverage_new(body: CoverageNewRequest, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    return _coverage_call(post_coverage.new_plan, body.name, body.client, body.log_key)
+
+
+@app.get("/post/coverage/{plan_id}")
+async def post_coverage_view(plan_id: str, _: None = Depends(verify_token)) -> dict:
+    """Everything the coverage page shows."""
+    from app import post_coverage
+    from app.post_shoot_log import ShootLogError
+    try:
+        return await on_drive(post_coverage.view, plan_id, timeout=30.0)
+    except ShootLogError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/post/coverage/{plan_id}/details")
+async def post_coverage_details(plan_id: str, body: CoverageDetailsRequest, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    return _coverage_call(post_coverage.rename, plan_id, body.name, body.client)
+
+
+@app.post("/post/coverage/{plan_id}/items")
+async def post_coverage_add_item(plan_id: str, body: CoverageItemRequest, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    return _coverage_call(post_coverage.add_item, plan_id, body.model_dump(exclude_none=True))
+
+
+@app.post("/post/coverage/{plan_id}/items/{item_id}")
+async def post_coverage_update_item(plan_id: str, item_id: str, body: CoverageItemRequest, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    return _coverage_call(post_coverage.update_item, plan_id, item_id, body.model_dump(exclude_none=True))
+
+
+@app.delete("/post/coverage/{plan_id}/items/{item_id}")
+async def post_coverage_delete_item(plan_id: str, item_id: str, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    _coverage_call(post_coverage.delete_item, plan_id, item_id)
+    return {"ok": True}
+
+
+@app.post("/post/coverage/{plan_id}/approve")
+async def post_coverage_approve(plan_id: str, body: CoverageApproveRequest, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    return _coverage_call(post_coverage.approve, plan_id, body.approved)
+
+
+@app.post("/post/coverage/{plan_id}/link")
+async def post_coverage_link(plan_id: str, body: CoverageLinkRequest, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    return _coverage_call(post_coverage.link_log, plan_id, body.log_key)
+
+
+@app.post("/post/coverage/{plan_id}/draft")
+async def post_coverage_draft(plan_id: str, body: CoverageDraftRequest, _: None = Depends(verify_token)) -> dict:
+    """Drafts the shot list from a brief: an explicit click that spends money and sends the brief to Anthropic. Never Frank-reachable."""
+    from app import post_coverage
+    _coverage_call(post_coverage.load_plan, plan_id)
+    _coverage_call(post_coverage.brief_blocks, body.text, body.files)
+    client = _coverage_client()
+    await _coverage_credit(client)
+    job = _coverage_call(post_coverage.start_draft, plan_id, client, body.text, body.files)
+    await _shoot_log_audit("post_coverage_draft_ui", {"plan": plan_id, "files": [Path(str(f.get("name"))).name for f in body.files]})
+    return {"job": job}
+
+
+@app.post("/post/coverage/{plan_id}/check")
+async def post_coverage_check(plan_id: str, body: CoverageCheckRequest, _: None = Depends(verify_token)) -> dict:
+    """Checks the footage against the shot list: an explicit click that spends money, stopped by a limit. Frames go to Anthropic. Never Frank-reachable."""
+    from app import post_coverage
+    _coverage_call(post_coverage.load_plan, plan_id)
+    client = _coverage_client()
+    await _coverage_credit(client)
+    started = _coverage_call(post_coverage.start_check, plan_id, client, body.recheck, body.max_usd)
+    await _shoot_log_audit("post_coverage_check_ui", {"plan": plan_id, "started": started["started"], "estimate": started.get("estimate")})
+    return started
+
+
+@app.post("/post/coverage/{plan_id}/stop")
+async def post_coverage_stop(plan_id: str, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    return {"job": post_coverage.request_stop(plan_id)}
+
+
+@app.post("/post/coverage/{plan_id}/override")
+async def post_coverage_override(plan_id: str, body: CoverageOverrideRequest, _: None = Depends(verify_token)) -> dict:
+    """A person's verdict on a shot. Goes in its own file and always wins over the check."""
+    from app import post_coverage
+    _coverage_call(post_coverage.add_override, plan_id, body.item, body.status)
+    return {"ok": True}
+
+
+def _coverage_pdf_response(data: bytes, name: str) -> Response:
+    safe = re.sub(r"[^A-Za-z0-9 ._-]", "", name).strip() or "coverage"
+    return Response(data, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{safe}.pdf"'})
+
+
+@app.get("/post/coverage/{plan_id}/report.pdf")
+async def post_coverage_report_pdf(plan_id: str, _: None = Depends(verify_token)) -> Response:
+    from app import post_coverage
+    data = await on_drive(_coverage_call, post_coverage.report_pdf, plan_id, timeout=60.0)
+    return _coverage_pdf_response(data, f"Coverage report - {post_coverage.load_plan(plan_id)['name']}")
+
+
+@app.get("/post/coverage/{plan_id}/shot-list.pdf")
+async def post_coverage_shot_list_pdf(plan_id: str, _: None = Depends(verify_token)) -> Response:
+    from app import post_coverage
+    data = await on_drive(_coverage_call, post_coverage.shot_list_pdf, plan_id, timeout=60.0)
+    return _coverage_pdf_response(data, f"Shot list - {post_coverage.load_plan(plan_id)['name']}")
 
 
 class ProjectPlanRequest(BaseModel):

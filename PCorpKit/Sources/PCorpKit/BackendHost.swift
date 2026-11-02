@@ -80,6 +80,17 @@ public enum BackendHost {
         return components.url!
     }
 
+    /// A page to open in the browser. The token goes after a "#", so it is never sent to a server or logged; the page keeps it and clears it from the address bar.
+    public static func pageURL(path: String) -> URL {
+        var components = URLComponents(string: "\(scheme)://\(hostAndPort)\(path)")!
+        if let token = AuthToken.current, !token.isEmpty {
+            // percentEncodedFragment, not fragment: the plain setter would encode the "%" signs a second time.
+            let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+            components.percentEncodedFragment = "token=" + (token.addingPercentEncoding(withAllowedCharacters: unreserved) ?? token)
+        }
+        return components.url!
+    }
+
     /// The WebSocket equivalent -- only ever used for /ws today.
     public static func wsURL(path: String) -> URL {
         var components = URLComponents(string: "\(wsScheme)://\(hostAndPort)\(path)")!

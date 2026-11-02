@@ -387,12 +387,38 @@ Josh's "Shoot Logger" spec asked for a separate Electron app. He asked for it to
 
 **Background previews** (added after he said the long part of the review was waiting for clips to play): once the checks finish, previews are made in the background, in recording order, without holding up tagging or the page. Rejected clips are skipped. A click on a clip that isn't ready makes it straight away, and the background job can be paused. It pauses itself if the drive is nearly full or clips stop reading. On Birkenstock: 46 previews, 35 MB, under 11 minutes alongside everything else. A ready clip's first frame came in 0.03 s, against 12 s for one that wasn't ready.
 
-An open question: 0 previews existed before that run, so none was made during his review. Leaving a clip doesn't cancel its preview (tested: it saved after the request dropped), and the route answers byte-range requests with a Safari-playable H.264 file, so either Play wasn't pressed or it doesn't work in his Safari. Not tested in Safari itself.
+An open question: 0 previews existed before that run, so none was made during his review. Leaving a clip doesn't cancel its preview (tested: it saved after the request dropped), and the route answers byte-range requests with a Safari-playable H.264 file, so either Play wasn't pressed or it didn't work in his browser. Since background previews went in, he says clips play straight away, so this no longer needs chasing.
 
 **Rejected clips stay out of Plan Edit:** new plans, variant sets, the opening-clip list and Describe's count and spend all leave out clips rejected in the Shoot Log, by him or by the checks. The plan's notes name what was left out. Review keeps them findable, so a plan made before the rejection still loads: the shot is marked "rejected in Shoot Log", and no swap or Regenerate ever offers one. Opening and closing shots are left alone by Regenerate, as always. An interview's cameras are chosen by hand, so they aren't filtered. Selects don't steer anything, and Assemble Rough Cut still uses every clip on his timeline. A shoot with no log, or with nothing rejected, plans byte for byte as before. Tested with the real planners on synthetic clips (`shoot_log_plan_test.py`), not yet on a real POST shoot with a log, because Birkenstock isn't a POST shoot.
 
 **Tags are still unmeasured.** He changed no tag: he only chose Select or Reject, so 140 of 140 "kept" says nothing about accuracy. The page now shows a count of tags changed instead of a percentage.
 
-**Not verified yet:** whether the tags are right, logging time against a timed baseline, a long real shoot, a shoot from a POST job rather than a project, previews playing in Safari. The review page was checked by eye on a copy of the log through a throwaway server, with a made-up token.
+**Not verified yet:** whether the tags are right, logging time against a timed baseline, a long real shoot, a shoot from a POST job rather than a project. The review page was checked by eye on a copy of the log through a throwaway server, with a made-up token.
 
 Offline: the page and routes hold no database connection, and a project of his needs none, but the backend itself still needs Render Postgres to start.
+
+## 14. Coverage: shot list and report (Shoot Logger Phase 2, 2026-11-02)
+
+Phase 2 of the same spec: a brief, run sheet or storyboard goes in and an editable must-have shot list comes out; after tagging, the footage is checked against the list, and a PDF goes to a producer or client. `backend/app/post_coverage.py`, a `coverage` section in `shoot_log_config.json`, `backend/app/static/coverage.html`, routes under `/post/coverage`. Reached from a Coverage Plans button in the desktop POST screen and a Coverage link on the Shoot Log review page.
+
+**How it decides:**
+- A plan exists before there's any footage, so plans live in their own folder (`coverage/<plan_id>/` under the Shoot Log's data) and are linked to one logged shoot later. One plan per shoot.
+- The brief is treated as information, never as instructions. A time is only recorded if the brief states it.
+- The check has two stages, because a wrong "covered" is the costly mistake. First, numbered contact sheets, the log and the list give a generous shortlist (up to 8 clips a shot). Then a strict closer look at all 4 frames of up to 5 of those clips, one shot at a time. An answer that skips a clip it was shown is thrown out.
+- The verdict is worked out in code, not by Claude. Covered needs a "yes" in a clip that isn't rejected. Weak is a "yes" only in rejected clips, or a "partly". Missing is everything else that was checked. A shot with no answer, an error, or wording changed since the check is "not checked", never "missing".
+- Rejecting a clip later changes the verdict with no new call. His own calls sit in their own file and always win. The report PDF says how many results a person confirmed.
+- Spending follows Tag: an explicit click, a price shown first, and a limit that counts calls already in flight.
+- Apply adds a By Moment group of search bins, sent by the server, so the plugin didn't change. The words are `moment001` and so on: stable and never reused, because an existing search bin keeps its query. Rejected clips get none, and neither does a shot marked missing. Empty until a check has run.
+
+**Checked with no spend:** 119 checks with a stand-in for Claude (`premiere-plugin/e2e/coverage_test.py`), including a must-have with nothing in the footage coming out Missing and listed at the top of the report. The page and both PDFs were read by eye on a copy of the Birkenstock log, through a throwaway server with a made-up token and a hand-written report. That found four bugs the checks couldn't: the shot list's text box picked up the report's `.shot` layout, the tick boxes sat a row too high because reportlab reset their size to zero, a moment's heading was stranded at the foot of a page, and tables stuck out 6 points past the text.
+
+**The spec's done test, on real footage** (Birkenstock, 48 clips, real Claude on a copy of the log, so his real log has no test plan on it; he approved about 30¢). The answers and pass marks were written down before the first paid call, from the same 4 frames per clip the check sees. The brief was written for the test: 14 shots, of which 9 are in the footage, 1 is ambiguous, and 4 aren't: the Mayor's speech (the deliberately skipped must-have) and three near misses (a barista at a coffee cart, the whole team posed, a drone shot).
+- Draft: 6 s, 1.0¢ (965 tokens in, 813 out). All 14 shots with the right priorities, no invented times, nothing from a line about invoices, and an instruction planted in the brief was ignored.
+- Check: 16 s, 10.9¢ (43,002 in, 2,271 out, 13 calls), against an estimate of 14¢ and a limit of 21¢.
+- The Mayor came out Missing, listed under must-haves not found on the page and in the PDF. All three near misses came out Missing. No wrong Covered.
+- The 9 present shots: 7 Covered, 2 Weak. Every Covered holds up by eye. Both Weak are stricter than I would have been: the keyring is there but small in frame on a shot asked for close, and a bean bag in the air in 1594 wasn't among the 5 clips it looked at closely. The ambiguous mall wide came out Weak.
+- By Moment on the copy: 5 search bins. The moment holding only the Mayor gets none, and rejected clip 1589 carries no moment word.
+
+Reading that report found a bug: a Covered row's second frame could be a clip that only partly matched (the Matis row showed a cake box with no branding), and with a rejected clip among the matches the PDF's frames and names could disagree. Page and PDF now share one `proof` list.
+
+**Not verified yet:** one shoot, with a brief written for the test, so no real client brief and no uploaded PDF. These absences were clean, so a real shot that falls between the sampled frames could still come out Missing. By Moment bins haven't been seen in real Premiere, though they use the same call as By Subject.

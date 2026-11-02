@@ -261,11 +261,15 @@ with tempfile.TemporaryDirectory() as tmp:
         return {"state": "running"}
     async def fine(client, model):
         return None
-    real_credit, real_start, real_key = post_moments.check_credit, post_moments.start_run, main._require_api_key
-    post_moments.check_credit, post_moments.start_run, main._require_api_key = fine, fake_start, lambda: "test"
+    audited = []
+    async def fake_audit(name, *_):
+        audited.append(name)
+    real_credit, real_start, real_key, real_audit = post_moments.check_credit, post_moments.start_run, main._require_api_key, main.record_tool_call
+    post_moments.check_credit, post_moments.start_run, main._require_api_key, main.record_tool_call = fine, fake_start, lambda: "test", fake_audit
     r = web.post("/post/jobs/9/find-moments", json={})
     check("Describe doesn't pay for rejected clips", r.status_code == 200 and "C0002.MP4" not in started.get("names", ["C0002.MP4"]) and len(started["names"]) == len(CLIPS) - 2, (r.status_code, r.text[:200]))
-    post_moments.check_credit, post_moments.start_run, main._require_api_key = real_credit, real_start, real_key
+    check("the route's audit line stays out of the real audit file", audited == ["post_job_find_moments_ui"], audited)
+    post_moments.check_credit, post_moments.start_run, main._require_api_key, main.record_tool_call = real_credit, real_start, real_key, real_audit
     pe.load_job_clips = real_status_load
     main.get_post_job = real_job
     main.app.dependency_overrides.pop(main.verify_token, None)

@@ -119,6 +119,7 @@
   <span class="previews" id="previews" hidden><span id="previewsText"></span> <button id="previewsBtn" class="link"></button></span>
   <div class="spacer"></div>
   <div class="stats" id="stats"></div>
+  <a class="button" id="coverageBtn" hidden></a>
   <button class="primary" id="tagBtn" hidden></button>
   <a class="button" id="csvBtn" hidden>CSV</a>
   <button id="tokenBtn" title="Change the saved token">Token</button>
@@ -216,6 +217,9 @@ function renderHeader() {
   tag.hidden = running || !e.clips;
   tag.textContent = c.tagged ? `Tag ${e.clips} more · about $${e.usd.toFixed(2)}` : `Tag ${e.clips} clips · about $${e.usd.toFixed(2)}`;
   const csv = $("csvBtn"); csv.hidden = !c.clips; csv.href = withToken(`/post/shoot-log/${key}/export.csv`);
+  const cov = $("coverageBtn"), line = data.coverage; cov.hidden = !c.clips; cov.href = `/static/coverage.html?log=${encodeURIComponent(key)}${line ? "&plan=" + line.id : ""}`;
+  cov.textContent = !line ? "Coverage" : line.must_missing ? `Coverage: ${line.must_missing} must-have${line.must_missing === 1 ? "" : "s"} missing` : line.unchecked ? `Coverage: ${line.unchecked} to check` : "Coverage: all must-haves found";
+  cov.style.color = line && line.must_missing ? "var(--bad)" : "";
   $("applyHint").textContent = data.applied_at ? `Last applied to Premiere ${data.applied_at.replace("T", " ")}. Click Apply Shoot Log again to bring in new choices.` : "When you're done, click Apply Shoot Log in Premiere. You can apply as often as you like.";
   renderPreviews();
   const stack = $("bar").offsetHeight;

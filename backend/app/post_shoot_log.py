@@ -551,6 +551,11 @@ def tag_estimate(count: int) -> dict[str, Any]:
     return {"clips": count, "usd": round(usd, 2), "cap_usd": cap, "basis": est.get("list_price_basis", est["assumption"])}
 
 
+def _coverage_line(ctx: dict[str, Any], clips: list[dict[str, Any]]) -> dict[str, Any] | None:
+    from app import post_coverage  # local import: post_coverage imports this module
+    return post_coverage.summary_for_log(ctx, clips)
+
+
 def view(ctx: dict[str, Any]) -> dict[str, Any]:
     """Everything the review page shows."""
     log = load_log(ctx)
@@ -569,7 +574,7 @@ def view(ctx: dict[str, Any]) -> dict[str, Any]:
     todo = tag_candidates(log, folded)
     return {"key": ctx["key"], "name": ctx["name"], "project_path": ctx["project_path"], "is_shoot": ctx.get("is_shoot", False), "clips": clips, "counts": counts, "gammas": gammas,
             "kept": tags_kept([log["clips"][c] for c in log["order"] if c in log["clips"]], folded), "review_minutes": review_minutes(lines), "run": run_state(ctx["key"]), "estimate": tag_estimate(len(todo)),
-            "spent": post_moments.usage_summary(folder_of(ctx)), "vocabulary": VOCAB, "labels": CONFIG["labels"], "applied_at": load_applied(ctx).get("at"), "thumb_count": len(CONFIG["thumbs"]["positions"]), "preview_seconds": CONFIG["preview"]["seconds"], "previews": preview_state(ctx)}
+            "spent": post_moments.usage_summary(folder_of(ctx)), "vocabulary": VOCAB, "labels": CONFIG["labels"], "applied_at": load_applied(ctx).get("at"), "thumb_count": len(CONFIG["thumbs"]["positions"]), "preview_seconds": CONFIG["preview"]["seconds"], "previews": preview_state(ctx), "coverage": _coverage_line(ctx, clips)}
 
 
 # ================================================================================================================================================= running it
@@ -929,15 +934,21 @@ def search_bin_groups(clips: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def apply_plan(ctx: dict[str, Any]) -> dict[str, Any]:
     """What Apply Shoot Log does in Premiere, clip by clip, matched by media path. `previous` is what the last Apply wrote, so it can tell his own edits in Premiere from its own."""
+    from app import post_coverage  # local import: post_coverage imports this module
     data = view(ctx)
     applied = load_applied(ctx).get("clips", {})
     conf = CONFIG["apply"]
+    moment_words, moment_bins = post_coverage.moments_for_log(ctx, data["clips"])
     clips = []
     for c in data["clips"]:
         events = [] if c["status"] == "reject" else (c.get("moments") or {}).get("events") or []
-        clips.append({"id": c["id"], "name": c["name"], "path": c["path"], "status": c["status"], "note": log_note_words(c), "description": (c.get("tags") or {}).get("description") or "",
+        words = [] if c["status"] == "reject" else moment_words.get(c["id"], [])   # a rejected clip carries no search words
+        clips.append({"id": c["id"], "name": c["name"], "path": c["path"], "status": c["status"], "note": " ".join(filter(None, [log_note_words(c), *words])), "description": (c.get("tags") or {}).get("description") or "",
                       "previous": applied.get(c["id"], {}), "markers": [{"t": e["t"], "seconds": conf["marker_seconds"], "comment": e.get("what") or e.get("kind") or ""} for e in events[:conf["markers_per_clip"]]]})
-    return {"key": ctx["key"], "name": ctx["name"], "bins": {"parent": PARENT_BIN, "selects": SELECTS_BIN, "rejects": REJECTS_BIN, "groups": search_bin_groups(data["clips"])},
+    groups = search_bin_groups(data["clips"])
+    if moment_bins:
+        groups.append({"bin": "By Moment", "search": moment_bins})
+    return {"key": ctx["key"], "name": ctx["name"], "bins": {"parent": PARENT_BIN, "selects": SELECTS_BIN, "rejects": REJECTS_BIN, "groups": groups},
             "note_prefix": LOG_NOTE_PREFIX, "clips": clips, "counts": data["counts"]}
 
 

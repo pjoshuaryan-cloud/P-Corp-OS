@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coverage</title>
+<style>
+  :root {
+    --bg: #131519; --panel: #1b1e24; --panel-2: #22262e; --line: #2d323c; --text: #e8eaed; --muted: #8b93a1;
+    --accent: #3fc1b0; --accent-ink: #06201c; --warn: #e5a443; --bad: #e0675b; --good: #62c98a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  header.bar { position: sticky; top: 0; z-index: 5; background: rgba(19,21,25,.96); backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); padding: 12px 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+  header .title { font-size: 15px; font-weight: 650; }
+  .spacer { flex: 1; }
+  button, select, input, textarea, a.button { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); padding: 6px 11px; border-radius: 7px; }
+  button, a.button { cursor: pointer; text-decoration: none; white-space: nowrap; }
+  button:hover, a.button:hover { border-color: #46505f; }
+  :is(button, select, input, textarea, a.button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 650; }
+  button:disabled { opacity: .55; cursor: default; }
+  button.link { background: none; border: 0; color: var(--accent); padding: 0; }
+  button.quiet { color: var(--muted); }
+  main { padding: 18px 20px 80px; max-width: 1180px; margin: 0 auto; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+  .tabs button.on { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 650; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  h2 { font-size: 13px; margin: 0 0 8px; font-weight: 650; }
+  .muted { color: var(--muted); font-size: 12.5px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+  textarea { width: 100%; min-height: 110px; resize: vertical; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 4px 6px 6px; border-bottom: 1px solid var(--line); }
+  td { padding: 4px 6px; vertical-align: top; }
+  td input, td select { width: 100%; padding: 4px 7px; font-size: 13px; background: transparent; border-color: transparent; }
+  td input:hover, td select:hover { border-color: var(--line); }
+  td input:focus, td select:focus { background: var(--panel-2); }
+  tr.moment td { padding: 14px 6px 4px; font-weight: 650; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .must input.shotname { font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+  .tile b { display: block; font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .covered { color: var(--good); } .weak { color: var(--warn); } .missing { color: var(--bad); } .unchecked { color: var(--muted); }
+  .alert { border-color: var(--bad); } .alert li { margin: 2px 0; }
+  .alert ul { margin: 6px 0 0; padding-left: 18px; }
+  .ok { border-color: var(--good); }
+  .progress { flex: 1 1 240px; min-width: 200px; max-width: 420px; font-size: 12.5px; color: var(--muted); }
+  .track { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin-top: 5px; }
+  .fill { height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+  .moment-h { font-size: 12px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 18px 0 6px; }
+  .shot { display: grid; grid-template-columns: 92px minmax(0, 1fr) minmax(0, 300px) 214px; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); align-items: start; }
+  .pill { font-size: 11.5px; font-weight: 650; }
+  .what b { font-weight: 600; }
+  .frames { display: flex; gap: 6px; flex-wrap: wrap; }
+  .frames a { display: block; }
+  .frames img { height: 84px; border-radius: 5px; display: block; background: #000; }
+  .frames .cap { font-size: 10.5px; color: var(--muted); max-width: 130px; margin-top: 2px; overflow-wrap: anywhere; }
+  .verdict { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+  .verdict button { font-size: 11.5px; padding: 3px 8px; }
+  .verdict button.on.covered { background: var(--good); border-color: var(--good); color: #08230f; }
+  .verdict button.on.weak { background: var(--warn); border-color: var(--warn); color: #2a1a02; }
+  .verdict button.on.missing { background: var(--bad); border-color: var(--bad); color: #2a0906; }
+  .yours { font-size: 10.5px; color: var(--accent); width: 100%; text-align: right; }
+  #toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; z-index: 9; max-width: 80vw; }
+  #toast[hidden] { display: none; }
+  #toast.bad { border-color: var(--bad); }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 20px; max-width: 480px; }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog h2 { font-size: 16px; }
+  dialog p { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  dialog input { width: 100%; margin: 0 0 10px; }
+  .actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+  @media (max-width: 860px) { .shot { grid-template-columns: 1fr; } .verdict { justify-content: flex-start; } .yours { text-align: left; } }
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="title">Coverage</div>
+  <select id="planPick" aria-label="Choose a plan"></select>
+  <button id="newBtn">New plan</button>
+  <div class="progress" id="progress" hidden><span id="progressText"></span><div class="track"><div class="fill" id="fill"></div></div></div>
+  <button id="stopBtn" hidden>Stop</button>
+  <div class="spacer"></div>
+  <a class="button" id="logLink" hidden>Shoot Log</a>
+  <button id="tokenBtn" title="Change the saved token">Token</button>
+</header>
+<main id="main"><div class="empty">Loading…</div></main>
+<div id="toast" role="status" hidden></div>
+<dialog id="newDialog">
+  <h2>New coverage plan</h2>
+  <p>Make it before the shoot, or after: a plan doesn't need any footage yet.</p>
+  <input id="newName" placeholder="Shoot name" aria-label="Shoot name">
+  <input id="newClient" placeholder="Client (optional)" aria-label="Client">
+  <div class="actions"><button id="newCancel">Cancel</button><button id="newSave" class="primary">Make plan</button></div>
+</dialog>
+<dialog id="tokenDialog">
+  <h2>P Corp OS token</h2>
+  <p>Paste the same token you gave the Premiere plugin. It stays in this browser only.</p>
+  <input id="tokenInput" type="password" autocomplete="off" placeholder="Paste token" aria-label="Token">
+  <div class="actions"><button id="tokenSave" class="primary">Save</button></div>
+</dialog>
+<dialog id="confirmDialog">
+  <h2 id="confirmTitle"></h2>
+  <p id="confirmBody"></p>
+  <div class="actions"><button id="confirmNo">Cancel</button><button id="confirmYes" class="primary"></button></div>
+</dialog>
+<script>
+const TOKEN_KEY = "pcorp_review_token";
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+let token = null; try { token = localStorage.getItem(TOKEN_KEY); } catch (e) {}
+// The app opens this page with the token after a "#" (a fragment is never sent to any server). Keep it, then take it out of the address bar.
+{ const m = location.hash.match(/(?:^#|&)token=([^&]+)/);
+  if (m) { token = decodeURIComponent(m[1]); try { localStorage.setItem(TOKEN_KEY, token); } catch (e) {} history.replaceState(null, "", location.pathname + location.search); } }
+
+const logParam = params.get("log");
+let planId = params.get("plan"), data = null, overview = null, tab = logParam ? "report" : "list", poll = null, lastFinish = null, pendingFiles = [];
+
+function askToken() { return new Promise((resolve) => { const d = $("tokenDialog"); $("tokenInput").value = ""; d.showModal(); $("tokenSave").onclick = () => { token = $("tokenInput").value.trim(); try { localStorage.setItem(TOKEN_KEY, token); } catch (e) {} d.close(); resolve(); }; }); }
+function withToken(path) { return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token); }
+async function api(path, options) {
+  if (!token) await askToken();
+  const res = await fetch(withToken(path), options);
+  if (res.status === 403) { token = null; await askToken(); return api(path, options); }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `Request failed (${res.status})`);
+  return body;
+}
+const post = (path, payload) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload || {}) });
+function toast(text, bad) { const t = $("toast"); t.textContent = text; t.hidden = false; t.classList.toggle("bad", !!bad); clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, bad ? 8000 : 4000); }
+function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; }
+const usd = (n) => (n < 1 ? `${Math.max(1, Math.round(n * 100))}¢` : `$${n.toFixed(2)}`);
+const label = (v) => (v === "any" ? "Any" : (data.labels[v] || v));
+function confirmAction(title, body, yes) { return new Promise((resolve) => { const d = $("confirmDialog"); $("confirmTitle").textContent = title; $("confirmBody").textContent = body; $("confirmYes").textContent = yes; d.showModal(); $("confirmYes").onclick = () => { d.close(); resolve(true); }; $("confirmNo").onclick = () => { d.close(); resolve(false); }; }); }
+
+function renderPick() {
+  const s = $("planPick"); s.textContent = "";
+  if (!overview.plans.length) { const o = el("option", "", "No plans yet"); s.appendChild(o); s.disabled = true; return; }
+  s.disabled = false;
+  for (const p of overview.plans) { const o = el("option", "", p.client ? `${p.name} / ${p.client}` : p.name); o.value = p.id; o.selected = p.id === planId; s.appendChild(o); }
+}
+function renderHeader() {
+  const job = data && data.job, running = job && job.state === "running";
+  $("progress").hidden = !running; $("stopBtn").hidden = !running;
+  if (running) { $("progressText").textContent = job.total ? `${job.stage}: ${job.done} of ${job.total}` : job.stage; $("fill").style.width = job.total ? `${(100 * job.done) / job.total}%` : "12%"; }
+  const log = $("logLink"), key = (data && data.log && data.log.key) || logParam;
+  log.hidden = !key; if (key) log.href = `/static/shoot_log.html?log=${encodeURIComponent(key)}`;
+}
+function render() {
+  const main = $("main"); main.textContent = "";
+  if (!data) {
+    const box = el("div", "empty");
+    box.append(el("p", "", logParam ? "This shoot has no coverage plan yet." : "Start with a plan: paste a brief or run sheet and Claude drafts the shot list."));
+    const b = el("button", "primary", "New plan"); b.onclick = openNew; box.appendChild(b);
+    if (logParam && overview.plans.some((p) => !p.log_key)) {
+      const pick = el("select"); pick.style.marginLeft = "8px"; pick.appendChild(el("option", "", "Or link an existing plan…"));
+      for (const p of overview.plans.filter((x) => !x.log_key)) { const o = el("option", "", p.name); o.value = p.id; pick.appendChild(o); }
+      pick.onchange = async () => { if (!pick.value) return; try { await post(`/post/coverage/${pick.value}/link`, { log_key: logParam }); planId = pick.value; tab = "report"; load(); } catch (e) { toast(e.message, true); } };
+      box.appendChild(pick);
+    }
+    main.appendChild(box);
+    return;
+  }
+  const tabs = el("div", "tabs");
+  for (const [k, text] of [["list", `Shot list (${data.rows.length})`], ["report", "Report"]]) { const b = el("button", tab === k ? "on" : "", text); b.onclick = () => { tab = k; render(); }; tabs.appendChild(b); }
+  main.appendChild(tabs);
+  (tab === "list" ? renderList : renderReport)(main);
+}
+
+// ---- the shot list -------------------------------------------------------------------------------------------------------------------------------------------
+function renderBrief(main) {
+  const card = el("div", "card"), hasList = data.rows.length > 0;
+  card.appendChild(el("h2", "", hasList ? "Draft again from a brief" : "Draft the list from a brief"));
+  card.appendChild(el("div", "muted", "Paste the brief, run sheet or storyboard notes, or add files. About 1¢ for a one-page brief, more for a long PDF. The brief goes to Anthropic. A person still has to read and approve the list."));
+  const text = el("textarea"); text.placeholder = "Paste it here"; text.value = data.brief_text || ""; text.setAttribute("aria-label", "Brief"); text.style.margin = "10px 0";
+  card.appendChild(text);
+  const row = el("div", "row"), file = el("input"); file.type = "file"; file.multiple = true; file.accept = ".pdf,.docx,.xlsx,.csv,.png,.jpg,.jpeg,.webp"; file.setAttribute("aria-label", "Brief files");
+  const go = el("button", "primary", hasList ? "Draft again" : "Draft shot list");
+  go.onclick = async () => {
+    const files = [];
+    for (const f of file.files) {
+      const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = rej; r.readAsDataURL(f); });
+      files.push({ name: f.name, media_type: f.type, data: b64 });
+    }
+    if (!text.value.trim() && !files.length) { toast("Paste a brief or add a file first.", true); return; }
+    if (hasList && !(await confirmAction("Replace this list?", "The new draft replaces the shots here, including any you've edited. The old list is kept in the plan's folder.", "Draft again"))) return;
+    go.disabled = true;
+    try { await post(`/post/coverage/${planId}/draft`, { text: text.value, files }); load(); } catch (e) { toast(e.message, true); go.disabled = false; }
+  };
+  row.append(file, go);
+  if (data.brief_files.length) row.appendChild(el("span", "muted", `Last used: ${data.brief_files.join(", ")}`));
+  card.appendChild(row);
+  main.appendChild(card);
+}
+async function saveItem(id, fields, input) {
+  try { await post(`/post/coverage/${planId}/items/${id}`, fields); await load(); }
+  catch (e) { toast(e.message, true); if (input) load(); }
+}
+function field(row, name, cls) {
+  const i = el("input", cls || ""); i.value = row[name] || ""; i.setAttribute("aria-label", name); i.onchange = () => saveItem(row.id, { [name]: i.value }, i); return i;
+}
+function choice(row, name, values, text) {
+  const s = el("select"); s.setAttribute("aria-label", name);
+  for (const v of values) { const o = el("option", "", text(v)); o.value = v; o.selected = row[name] === v; s.appendChild(o); }
+  s.onchange = () => saveItem(row.id, { [name]: s.value }); return s;
+}
+function renderList(main) {
+  const empty = !data.rows.length;
+  if (empty) renderBrief(main);
+  const card = el("div", "card"), head = el("div", "row");
+  head.appendChild(el("h2", "", data.plan.approved_at ? `Approved ${data.plan.approved_at.slice(0, 10)}` : (empty ? "Or add shots yourself" : "Draft: read it through, then approve")));
+  head.appendChild(el("div", "spacer"));
+  head.lastChild.style.flex = "1";
+  const add = el("button", "", "Add a shot");
+  add.onclick = async () => { const last = data.rows[data.rows.length - 1]; try { await post(`/post/coverage/${planId}/items`, { description: "New shot", moment: last ? last.moment : "General", priority: "must" }); await load(); } catch (e) { toast(e.message, true); } };
+  head.appendChild(add);
+  if (!empty) {
+    const pdf = el("a", "button", "Shot list PDF"); pdf.href = withToken(`/post/coverage/${planId}/shot-list.pdf`); head.appendChild(pdf);
+    const ok = el("button", data.plan.approved_at ? "" : "primary", data.plan.approved_at ? "Undo approval" : "Approve list");
+    ok.onclick = async () => { try { await post(`/post/coverage/${planId}/approve`, { approved: !data.plan.approved_at }); load(); } catch (e) { toast(e.message, true); } };
+    head.appendChild(ok);
+  }
+  card.appendChild(head);
+  if (!empty) {
+    const wrap = el("div", "scroll"), table = el("table"), thead = el("tr");
+    for (const [h, w] of [["Shot", "40%"], ["Moment", "14%"], ["Time", "7%"], ["Size", "14%"], ["Priority", "13%"], ["Who", "9%"], ["", "3%"]]) { const th = el("th", "", h); th.style.width = w; thead.appendChild(th); }
+    table.appendChild(thead);
+    const moments = [...new Set(data.rows.map((r) => r.moment))];
+    const list = el("datalist"); list.id = "momentList"; for (const m of moments) { const o = el("option"); o.value = m; list.appendChild(o); } card.appendChild(list);
+    for (const m of moments) {
+      const mr = el("tr", "moment"), td = el("td", "", m); td.colSpan = 7; mr.appendChild(td); table.appendChild(mr);
+      for (const r of data.rows.filter((x) => x.moment === m)) {
+        const tr = el("tr", r.priority === "must" ? "must" : ""), cell = (n) => { const t = el("td"); t.appendChild(n); tr.appendChild(t); };
+        cell(field(r, "description", "shotname")); const mi = field(r, "moment"); mi.setAttribute("list", "momentList"); cell(mi); cell(field(r, "time"));
+        cell(choice(r, "shot_size", data.shot_sizes, label)); cell(choice(r, "priority", Object.keys(data.priorities), (v) => data.priorities[v])); cell(field(r, "owner"));
+        const del = el("button", "quiet", "×"); del.title = "Remove this shot"; del.setAttribute("aria-label", "Remove this shot"); del.style.padding = "2px 8px";
+        del.onclick = async () => { try { await api(`/post/coverage/${planId}/items/${r.id}`, { method: "DELETE" }); load(); } catch (e) { toast(e.message, true); } };
+        cell(del); table.appendChild(tr);
+      }
+    }
+    wrap.appendChild(table); card.appendChild(wrap);
+  }
+  main.appendChild(card);
+  if (!empty) renderBrief(main);
+}
+
+// ---- the report ----------------------------------------------------------------------------------------------------------------------------------------------
+function renderLinkPicker(main) {
+  const card = el("div", "card"); card.appendChild(el("h2", "", "Link the shoot"));
+  card.appendChild(el("div", "muted", "Pick the shoot this list is for. It needs Log This Shoot run first, and ideally Tag too."));
+  const s = el("select"); s.style.marginTop = "10px"; s.setAttribute("aria-label", "Logged shoot"); s.appendChild(el("option", "", overview.logs.length ? "Choose a logged shoot…" : "No logged shoots yet"));
+  for (const l of overview.logs) { const o = el("option", "", l.name); o.value = l.key; o.selected = l.key === logParam; s.appendChild(o); }
+  s.onchange = async () => { if (!s.value) return; try { await post(`/post/coverage/${planId}/link`, { log_key: s.value }); load(); } catch (e) { toast(e.message, true); } };
+  card.appendChild(s); main.appendChild(card);
+}
+function renderReport(main) {
+  if (!data.rows.length) { main.appendChild(el("div", "empty", "Add shots to the list first.")); return; }
+  if (!data.log) { renderLinkPicker(main); return; }
+  const sum = data.summary, c = sum.counts, tiles = el("div", "tiles");
+  for (const k of ["covered", "weak", "missing", "unchecked"]) { const t = el("div", "tile"), b = el("b", k, String(c[k])); t.append(b, el("span", "muted", { covered: "Covered", weak: "Weak", missing: "Missing", unchecked: "Not checked" }[k])); tiles.appendChild(t); }
+  main.appendChild(tiles);
+  if (sum.must_missing.length) {
+    const a = el("div", "card alert"); a.appendChild(el("h2", "missing", `${sum.must_missing.length} must-have${sum.must_missing.length === 1 ? "" : "s"} not found`));
+    const ul = el("ul"); for (const d of sum.must_missing) ul.appendChild(el("li", "", d)); a.appendChild(ul); main.appendChild(a);
+  } else if (!c.unchecked) { main.appendChild(el("div", "card ok covered", "Every must-have was found. Each one shows the clip that proves it, so look before you rely on it.")); }
+  const act = el("div", "card row"), running = data.job && data.job.state === "running", est = data.estimate;
+  act.appendChild(el("span", "muted", `${data.log.name}: ${data.log.clips} clips, ${data.log.tagged} tagged.`));
+  if (data.log.tagged < data.log.clips) act.appendChild(el("span", "weak", "Tag the clips first for a better check."));
+  const gap = el("div"); gap.style.flex = "1"; act.appendChild(gap);
+  const check = async (recheck, e) => {
+    if (!(await confirmAction(`Check ${e.shots} shot${e.shots === 1 ? "" : "s"} against the footage?`, `Up to about ${usd(e.usd)}, and it stops by itself at ${usd(e.cap_usd)}. Frames from the clips are sent to Anthropic.`, "Check footage"))) return;
+    try { const r = await post(`/post/coverage/${planId}/check`, { recheck }); if (!r.started) toast(r.message); load(); } catch (err) { toast(err.message, true); }
+  };
+  if (!running && est.shots) { const b = el("button", "primary", `Check ${est.shots} shot${est.shots === 1 ? "" : "s"} · up to ${usd(est.usd)}`); b.onclick = () => check(false, est); act.appendChild(b); }
+  if (!running && !est.shots) { const b = el("button", "", `Check all again · up to ${usd(data.estimate_all.usd)}`); b.onclick = () => check(true, data.estimate_all); act.appendChild(b); }
+  const pdf = el("a", "button", "Report PDF"); pdf.href = withToken(`/post/coverage/${planId}/report.pdf`); act.appendChild(pdf);
+  main.appendChild(act);
+  const moments = [...new Set(data.rows.map((r) => r.moment))];
+  for (const m of moments) {
+    const rows = data.rows.filter((r) => r.moment === m); main.appendChild(el("div", "moment-h", m + (rows.find((r) => r.time) ? `  ${rows.find((r) => r.time).time}` : "")));
+    for (const r of rows) main.appendChild(shotRow(r));
+  }
+}
+function shotRow(r) {
+  const row = el("div", "shot"), names = { covered: "Covered", weak: "Weak", missing: "Missing", unchecked: "Not checked" };
+  row.appendChild(el("div", `pill ${r.status}`, names[r.status]));
+  const what = el("div", "what"); what.appendChild(el(r.priority === "must" ? "b" : "span", "", r.description));
+  what.appendChild(el("div", "muted", [data.priorities[r.priority], r.shot_size !== "any" ? label(r.shot_size) : null, r.owner || null].filter(Boolean).join(" · ")));
+  if (r.reason && !r.yours) what.appendChild(el("div", "muted", r.reason));
+  row.appendChild(what);
+  const frames = el("div", "frames");
+  for (const e of r.proof) {
+    const box = el("div"), a = el("a"), img = el("img"); a.href = `/static/shoot_log.html?log=${encodeURIComponent(data.log.key)}`; a.title = e.note || e.name;
+    img.loading = "lazy"; img.alt = e.name; img.src = withToken(`/post/shoot-log/${data.log.key}/thumb/${e.clip}/1`); a.appendChild(img); box.appendChild(a);
+    box.appendChild(el("div", "cap", `${e.name.replace(/\.[^.]+$/, "")}${e.status === "select" ? ", select" : e.status === "reject" ? ", rejected" : ""}${e.note ? ": " + e.note : ""}`));
+    frames.appendChild(box);
+  }
+  row.appendChild(frames);
+  const verdict = el("div", "verdict");
+  for (const s of ["covered", "weak", "missing"]) {
+    const b = el("button", `${s}${r.yours && r.status === s ? " on" : ""}`, names[s]);
+    b.onclick = async () => { try { await post(`/post/coverage/${planId}/override`, { item: r.id, status: r.yours && r.status === s ? "auto" : s }); load(); } catch (e) { toast(e.message, true); } };
+    verdict.appendChild(b);
+  }
+  if (r.yours) verdict.appendChild(el("div", "yours", "Your call. Click it again to undo."));
+  row.appendChild(verdict);
+  return row;
+}
+
+// ---- loading -------------------------------------------------------------------------------------------------------------------------------------------------
+function openNew() { $("newName").value = ""; $("newClient").value = ""; $("newDialog").showModal(); $("newName").focus(); }
+$("newBtn").onclick = openNew;
+$("newCancel").onclick = () => $("newDialog").close();
+$("newSave").onclick = async () => {
+  try { const p = await post("/post/coverage", { name: $("newName").value, client: $("newClient").value, log_key: logParam || null }); $("newDialog").close(); planId = p.id; tab = "list"; load(); }
+  catch (e) {
+    if (logParam && /linked|hasn't been logged/.test(e.message)) { toast(e.message, true); return; }
+    toast(e.message, true);
+  }
+};
+$("planPick").onchange = () => { planId = $("planPick").value; lastFinish = null; load(); };
+$("tokenBtn").onclick = async () => { await askToken(); load(); };
+$("stopBtn").onclick = async () => { try { await post(`/post/coverage/${planId}/stop`); } catch (e) { toast(e.message, true); } };
+
+async function load() {
+  try {
+    overview = await api("/post/coverage");
+    if (!planId && logParam) { const linked = overview.plans.find((p) => p.log_key === logParam); if (linked) planId = linked.id; }
+    if (!planId && !logParam && overview.plans.length) planId = overview.plans[0].id;
+    data = planId ? await api(`/post/coverage/${planId}`) : null;
+  } catch (e) { $("main").textContent = e.message; return; }
+  renderPick(); renderHeader();
+  const focused = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) && $("main").contains(document.activeElement);
+  if (!focused || !data || !data.job || data.job.state !== "running") render();
+  const job = data && data.job;
+  if (job && job.finished_at && job.finished_at !== lastFinish) { if (lastFinish !== null || job.state !== "done") toast(job.message || "Finished.", job.state === "failed"); lastFinish = job.finished_at; }
+  if (job && job.state === "running") { if (!poll) poll = setInterval(load, 2000); }
+  else if (poll) { clearInterval(poll); poll = null; }
+}
+load();
+</script>
+</body>
+</html>

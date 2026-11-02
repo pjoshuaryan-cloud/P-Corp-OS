@@ -36,5 +36,17 @@
     "slog3": "curves=all='0/0 0.093/0.02 0.41/0.45 0.6/0.82 0.87/1 1/1',eq=saturation=1.35"
   },
   "tagging": { "concurrency": 4, "tries": 2, "max_tokens": 1100, "cap_multiple": 2.0, "hard_cap_usd": 25.0 },
-  "apply": { "markers_per_clip": 3, "marker_seconds": 0.5 }
+  "apply": { "markers_per_clip": 3, "marker_seconds": 0.5 },
+  "coverage": {
+    "_about": "Phase 2 (app/post_coverage.py). A wrongly 'covered' must-have is the costly mistake, so Claude shortlists generously from contact sheets, then looks closely and strictly.",
+    "priorities": { "must": "Must have", "should": "Should have", "nice": "Nice to have" },
+    "sheet": { "columns": 6, "rows": 9, "cell": [240, 160], "frames": [1, 2] },
+    "shortlist_clips": 8,
+    "look_clips": 5,
+    "concurrency": 4,
+    "tries": 2,
+    "draft_max_tokens": 6000,
+    "cap_multiple": 1.5,
+    "hard_cap_usd": 10.0
+  }
 }
