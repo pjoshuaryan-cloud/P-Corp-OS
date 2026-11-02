@@ -118,4 +118,5 @@ Reload the plugin first: the manifest changed. The first Log This Shoot may ask 
 3. More > Apply Shoot Log. In the Project panel: Shoot Log > Selects and Rejects hold your choices; By Subject and By Shot Size are search bins; Log Note shows `[Shoot Log] ...`; selects have Good ticked; clips have markers.
 4. Change a choice on the page and Apply again: the clip moves, the note is replaced, no bins or markers are doubled.
 5. Transcribe Dialogue or Build My Edit in that project sees each clip once.
+6. On a P Corp shoot, reject a clip the current plan uses, then Plan Again in P Corp OS: the clip is gone and the plan's notes say so. In Review Moments, an older plan's shot using it is marked "rejected in Shoot Log".
 Don't delete a clip from a search bin: that deletes it from the project.

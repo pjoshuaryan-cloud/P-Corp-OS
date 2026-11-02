@@ -82,7 +82,7 @@ class Picker:
         self.diversity = diversity
         self.avoid = avoid or {}
         self.preferences = preferences or {}
-        self.pool = [c for c in clips if c.get("steady")]
+        self.pool = [c for c in clips if c.get("steady") and not c.get("rejected")]
         self.order = {c["file_id"]: i for i, c in enumerate(clips)}
         self.denominator = max(len(clips) - 1, 1)
         self.chosen: list[dict[str, Any]] = []
@@ -310,7 +310,7 @@ def valid_alternative(plan: dict[str, Any], clips: list[dict[str, Any]], slot_in
     job's own, long enough, the stretch lies inside it and has no cut. Returns the stretch's steadiness record, or None."""
     shot = next((s for s in plan["shots"] if s["index"] == slot_index), None)
     clip = next((c for c in clips if c["file_id"] == file_id), None)
-    if shot is None or clip is None or not clip.get("steady"):
+    if shot is None or clip is None or not clip.get("steady") or clip.get("rejected"):
         return None
     length = shot["duration_frames"] / plan["fps"]
     seconds = min(clip["duration"], clip["steady"]["seconds"])

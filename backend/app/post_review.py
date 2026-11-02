@@ -58,7 +58,7 @@ def _is_steady_plan(plan: dict[str, Any], clips: list[dict]) -> bool:
 
 
 def _picker_alternatives(plan: dict[str, Any], clips: list[dict]) -> dict[int, list[dict[str, Any]]]:
-    key = (tuple((s["file_id"], round(s["source_in"], 3), s["duration_frames"]) for s in plan["shots"]), tuple(sorted(c["file_id"] for c in clips if c.get("steady"))))
+    key = (tuple((s["file_id"], round(s["source_in"], 3), s["duration_frames"]) for s in plan["shots"]), tuple(sorted(c["file_id"] for c in clips if c.get("steady") and not c.get("rejected"))))
     if key not in _ALTERNATIVES_CACHE:
         if len(_ALTERNATIVES_CACHE) >= 4:
             _ALTERNATIVES_CACHE.pop(next(iter(_ALTERNATIVES_CACHE)))
@@ -200,6 +200,8 @@ def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
         seen = {current["id"]}
 
         def add(c: dict, min_gap: float = 0.0) -> None:
+            if by_id.get(c["file_id"], {}).get("rejected") and c["file_id"] != shot["file_id"]:   # this one place covers every kind of swap on offer
+                return
             gap = max(length + 0.1, min_gap)
             if c["id"] not in seen and not any(abs(c["source_in"] - a["source_in"]) < gap and c["file_id"] == a["file_id"] for a in [current, *alts]):
                 seen.add(c["id"]); alts.append(c)
@@ -243,7 +245,7 @@ def build_review(plan: dict[str, Any], clips: list[dict]) -> dict[str, Any]:
             "cut_at_seconds": round(shot["start_frame"] / fps, 2), "approved": shot["index"] in approved,
             "current": current, "alternatives": alts,
             "speed": speed, "can_slow": can_slow or speed != 1.0, "slow_note": slow_note,
-            "locked": shot["index"] in locked,
+            "locked": shot["index"] in locked, "rejected": bool(clip and clip.get("rejected")),
             "why": post_candidate_moments.explain_choice(shot["candidate"]) if shot.get("candidate") else None,
         })
     return {"fps": fps, "style": plan.get("style"), "duration_seconds": plan["duration_seconds"], "slots": slots,

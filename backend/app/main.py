@@ -3509,7 +3509,7 @@ _EDIT_REVIEW_LOCK = asyncio.Lock()  # one decision at a time: each one reads, ch
 
 async def _review_context(job_id: int, request: Request):
     """(job, plan, clips-with-moments) for the review routes; HTTP errors for the usual misses."""
-    from app.post_edit_plan import attach_moments, load_job_clips, load_saved_plan
+    from app.post_edit_plan import attach_moments, load_job_clips, load_saved_plan, mark_rejected
     postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
     job = await get_post_job(job_id, postgres_conn)
     if job is None:
@@ -3518,6 +3518,7 @@ async def _review_context(job_id: int, request: Request):
     if plan is None:
         raise HTTPException(status_code=404, detail=f"Job #{job_id} has no edit plan yet -- plan one first.")
     clips = await on_drive(attach_moments, await load_job_clips(job_id, postgres_conn), job)
+    await on_drive(mark_rejected, clips, job, timeout=30.0)
     if plan.get("mode") in ("highlight", "story"):
         from app.post_steady import analyse_clips  # a corporate plan's swaps come from the steadiness analysis (cached per job, so this is a read, not a re-analysis)
         await analyse_clips(clips, job)
@@ -3923,12 +3924,13 @@ class FindMomentsRequest(BaseModel):
 async def post_job_moments_status(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
     """How many of the job's clips have a description (what the clip shows + its best moments), what describing the rest
     would cost at most, and the state of a run in progress. No Claude call."""
-    from app.post_edit_plan import describe_status, load_job_clips
+    from app.post_edit_plan import describe_status, load_job_clips, split_rejected
     postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
     job = await get_post_job(job_id, postgres_conn)
     if job is None:
         raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
-    return await on_drive(describe_status, job, await load_job_clips(job_id, postgres_conn))
+    clips = (await on_drive(split_rejected, await load_job_clips(job_id, postgres_conn), job, timeout=30.0))[0]
+    return await on_drive(describe_status, job, clips)
 
 
 @app.get("/post/jobs/{job_id}/find-moments/run")
@@ -3945,7 +3947,7 @@ async def post_job_find_moments(job_id: int, body: FindMomentsRequest, _: None =
     one-token call, at most `max_clips` clips are sent, finished clips are kept if it stops, and it can be cancelled.
     Desktop-triggered only, never Frank-reachable."""
     from anthropic import AsyncAnthropic
-    from app.post_edit_plan import edit_dir, load_job_clips
+    from app.post_edit_plan import edit_dir, load_job_clips, split_rejected
     from app.post_moments import MomentsError, check_credit, estimate_cost, load_moments, missing_clips, start_run
     from app.post_shot_composition import VisionUnavailableError
     api_key = _require_api_key()
@@ -3956,6 +3958,7 @@ async def post_job_find_moments(job_id: int, body: FindMomentsRequest, _: None =
         if not job.get("media_analyzed_at"):
             raise HTTPException(status_code=400, detail=f"Job #{job_id} needs Analyze Media run first.")
         clips = await load_job_clips(job_id, postgres_conn)
+    clips = (await on_drive(split_rejected, clips, job, timeout=30.0))[0]   # no point paying to describe a clip he has rejected
     folder = edit_dir(job)
     missing = missing_clips(clips, await on_drive(load_moments, folder))
     if not missing:

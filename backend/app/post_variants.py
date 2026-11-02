@@ -327,7 +327,7 @@ async def plan_variants_for_job(job_id: int, *, count: int = 3, styles: list[str
     from app import post_music, post_style
     from app.post_db import get_post_job
     from app.post_edit_plan import (EditPlanError, MUSIC_FADE_OUT_SECONDS, _fps_from_job, attach_moments, bring_song_into_project, choose_music_window, edit_dir,
-                                    find_logo, load_job_clips, music_dir)
+                                    find_logo, load_job_clips, music_dir, split_rejected)
     from app.post_steady import analyse_clips
     from app.ssd_guard import on_drive
     job = await get_post_job(job_id, postgres_conn=postgres_conn)
@@ -341,6 +341,9 @@ async def plan_variants_for_job(job_id: int, *, count: int = 3, styles: list[str
     clips = await load_job_clips(job_id, postgres_conn)
     if not clips:
         raise VariantError("This job has no analysed video clips to cut from.")
+    clips = (await on_drive(split_rejected, clips, job, timeout=30.0))[0]
+    if not clips:
+        raise VariantError("Every clip in this shoot is rejected in the Shoot Log, so there's nothing to cut from.")
     await on_drive(attach_moments, clips, job)
     counts = await analyse_clips(clips, job, only_cached=quick)
     profile = post_style.usual_pace_profile()

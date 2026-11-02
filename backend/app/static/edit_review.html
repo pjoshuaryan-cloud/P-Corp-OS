@@ -67,6 +67,7 @@
   .why { color: var(--muted); font-size: 12px; border-left: 2px solid var(--line); padding-left: 8px; }
   button.lock.on { color: var(--accent-ink); background: var(--warn); border-color: var(--warn); font-weight: 650; }
   .pill.lockpill { color: var(--warn); }
+  .pill.rejpill { color: var(--bad); }
   .card.locked { border-color: #6b5326; }
   .reasons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding-top: 4px; border-top: 1px dashed var(--line); }
   .reasons .q { color: var(--muted); font-size: 12px; margin-right: 2px; }
@@ -168,6 +169,7 @@ function cardFor(slot) {
   head.innerHTML = `<span class="n">Shot ${slot.index}</span><span class="meta">${slot.seconds.toFixed(2)} s · cut at ${slot.cut_at_seconds.toFixed(2)} s</span>`;
   if (slot.role !== "body") { const p = document.createElement("span"); p.className = "pill role"; p.textContent = slot.role === "opener" ? "opener" : "closing card"; head.appendChild(p); }
   if (slot.speed && slot.speed < 1) { const p = document.createElement("span"); p.className = "pill slowpill"; p.textContent = "slow motion"; head.appendChild(p); }
+  if (slot.rejected) { const p = document.createElement("span"); p.className = "pill rejpill"; p.textContent = "rejected in Shoot Log"; p.title = "You rejected this clip after this plan was made. Swap it, or plan again to leave it out."; head.appendChild(p); }
   if (slot.locked) { const p = document.createElement("span"); p.className = "pill lockpill"; p.textContent = "locked"; head.appendChild(p); }
   if (slot.approved) { const p = document.createElement("span"); p.className = "pill ok"; p.textContent = "reviewed"; head.appendChild(p); }
   card.appendChild(head);

@@ -384,6 +384,32 @@ async def load_job_clips(job_id: int, postgres_conn: Any = None, order_names: li
     return clips
 
 
+def split_rejected(clips: list[dict], job: dict) -> tuple[list[dict], list[dict]]:
+    """(clips to cut from, clips rejected in the Shoot Log). A shoot with no log gets its clips back untouched, so its plans are exactly what they were. Selects aren't used: the back-test on his
+    real edits found nothing that predicts them, and a pool of only his selects would change every plan. Rejects are the one clear instruction."""
+    from app.post_shoot_log import normal_path, rejected_paths
+    gone = rejected_paths(job)
+    if not gone:
+        return clips, []
+    kept: list[dict] = []
+    left_out: list[dict] = []
+    for clip in clips:
+        (left_out if normal_path(clip["path"]) in gone else kept).append(clip)
+    return kept, left_out
+
+
+def mark_rejected(clips: list[dict], job: dict) -> list[dict]:
+    """For review: a clip rejected after the plan was made has to stay findable so its shot still shows, so it is flagged instead of removed, and never offered as a swap. In place."""
+    for clip in split_rejected(clips, job)[1]:
+        clip["rejected"] = True
+    return clips
+
+
+def rejected_note(left_out: list[dict]) -> str:
+    names = ", ".join(c["name"] for c in left_out[:8]) + (f" and {len(left_out) - 8} more" if len(left_out) > 8 else "")
+    return f"Left out {len(left_out)} clip(s) rejected in the Shoot Log: {names}."
+
+
 def attach_moments(clips: list[dict], job: dict) -> list[dict]:
     """Adds probed events / scene / people (post_moments cache) to each clip that has them. In place."""
     from app.post_moments import load_moments
@@ -441,9 +467,16 @@ async def plan_for_job(
     clips = await load_job_clips(job_id, postgres_conn, order_names)
     if not clips:
         raise EditPlanError("This job has no analysed video clips to cut from.")
+    left_out: list[dict] = []
+    if profile.dialogue is None:  # an interview's cameras are chosen by hand, and that choice stands
+        clips, left_out = await on_drive(split_rejected, clips, job, timeout=30.0)
+        if not clips:
+            raise EditPlanError("Every clip in this shoot is rejected in the Shoot Log, so there's nothing to cut from. Bring some back on its review page, then plan again.")
     if use_moments:
         await on_drive(attach_moments, clips, job)
     if bookend_file_id is not None and bookend_file_id not in {c["file_id"] for c in clips}:
+        if bookend_file_id in {c["file_id"] for c in left_out}:
+            raise EditPlanError("That opening clip is rejected in the Shoot Log. Choose another, or bring it back on the review page.")
         raise EditPlanError(f"File {bookend_file_id} isn't one of this job's clips, so it can't open and close the edit.")
     if profile.dialogue is not None:  # a multicam interview: cameras lined up by sound, angle switched at quiet gaps over one dialogue track
         from app.post_edit_dialogue import plan_dialogue_for_job
@@ -493,6 +526,9 @@ async def plan_for_job(
     else:
         plan = build_plan(profile=profile, hits=analysis["hits"], music_in=music_in, duration=duration, fps=fps,
                           clips=clips, bookend_file_id=bookend_file_id, seed=seed)
+    if left_out:
+        plan["notes"].append(rejected_note(left_out))
+        plan["checks"]["left_out_rejected"] = [c["name"] for c in left_out]
     music_in = apply_music_lead(plan, profile, music_in)
     out_dir = edit_dir(job)
     await on_drive(_make_dirs, out_dir, mdir, writing=True)
@@ -680,6 +716,7 @@ async def edit_options(job: dict, postgres_conn: Any = None) -> dict[str, Any]:
 def _options_from_drive(job: dict, clips: list[dict]) -> dict[str, Any]:
     from app import post_music
     from app.post_style import available_styles
+    clips = split_rejected(clips, job)[0]   # the opening-clip list and the Describe count: a rejected clip isn't on offer and isn't worth paying to describe
     attach_moments(clips, job)
     mdir = music_dir(job)
     return {

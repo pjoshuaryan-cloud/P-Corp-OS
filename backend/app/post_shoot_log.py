@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Callable
 
@@ -471,6 +472,24 @@ def add_override(ctx: dict[str, Any], clip_id: str, field: str, value: Any) -> d
     with open(folder_of(ctx) / "overrides.jsonl", "a") as fh:
         fh.write(json.dumps(line) + "\n")
     return line
+
+
+def normal_path(path: str) -> str:
+    """So a path from Premiere and the same path from the database compare equal: macOS can spell an accented file name two ways."""
+    return unicodedata.normalize("NFC", os.path.normpath(path))
+
+
+def rejected_paths(job: dict[str, Any]) -> set[str]:
+    """The clips this POST shoot's log has rejected, by him or because they can't be used. Empty when the shoot has no log. A log started with no signal is filed under the project rather
+    than the shoot, so that is looked up too; paths are compared because such a log has its own clip ids."""
+    ctx = find_context(f"j{job['id']}")
+    if ctx is None and job.get("premiere_project_path"):
+        ctx = context_for_project(job["premiere_project_path"])
+    if ctx is None:
+        return set()
+    log = load_log(ctx)
+    folded = fold_overrides(load_overrides(ctx))
+    return {normal_path(c["path"]) for cid, c in log["clips"].items() if effective_clip(c, folded.get(cid, {}))["status"] == "reject"}
 
 
 def fold_overrides(lines: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
