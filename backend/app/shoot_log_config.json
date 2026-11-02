@@ -30,7 +30,7 @@
     "near_duplicate": 0.89
   },
   "thumbs": { "positions": [0.1, 0.35, 0.6, 0.85], "height": 480, "concurrency": 4 },
-  "preview": { "height": 480, "seconds": 45 },
+  "preview": { "height": 480, "seconds": 45, "click_threads": 8, "background_threads": 4, "background_concurrency": 2, "min_free_gb": 2, "give_up_after_failures": 3 },
   "viewing_curve": {
     "_note": "Only for the review page and the frames Claude sees, so flat Log can be judged. The footage itself is never changed.",
     "slog3": "curves=all='0/0 0.093/0.02 0.41/0.45 0.6/0.82 0.87/1 1/1',eq=saturation=1.35"

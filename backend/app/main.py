@@ -3384,6 +3384,25 @@ async def post_shoot_log_preview(key: str, clip_id: int, _: None = Depends(verif
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/post/shoot-log/{key}/previews")
+async def post_shoot_log_previews(key: str, _: None = Depends(verify_token)) -> dict:
+    from app import post_shoot_log as sl
+    return await on_drive(sl.preview_state, await _shoot_log_context(key), timeout=30.0)
+
+
+@app.post("/post/shoot-log/{key}/previews/start")
+async def post_shoot_log_previews_start(key: str, _: None = Depends(verify_token)) -> dict:
+    """Starts or resumes making previews in the background. Free, and never touches the footage."""
+    from app import post_shoot_log as sl
+    return sl.start_previews(await _shoot_log_context(key))
+
+
+@app.post("/post/shoot-log/{key}/previews/pause")
+async def post_shoot_log_previews_pause(key: str, _: None = Depends(verify_token)) -> dict:
+    from app import post_shoot_log as sl
+    return sl.pause_previews(await _shoot_log_context(key))
+
+
 @app.get("/post/shoot-log/{key}/export.csv")
 async def post_shoot_log_csv(key: str, _: None = Depends(verify_token)) -> Response:
     from app import post_shoot_log as sl

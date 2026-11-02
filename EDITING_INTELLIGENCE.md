@@ -385,8 +385,12 @@ Josh's "Shoot Logger" spec asked for a separate Electron app. He asked for it to
 
 **His real run on Birkenstock** (11:32 to 11:35, read from the log and his saved project): 18 selects, 2 rejects, 28 of 48 clips reviewed, 2.3 minutes between his first and last choice (time spent looking before the first choice isn't counted). Apply: 20 clips moved, 48 noted, 138 markers, 12 search bins, all in the saved `.prproj`. He says the bins help, and the review felt a bit long but definitely faster than usual; there's no timed baseline.
 
+**Background previews** (added after he said the long part of the review was waiting for clips to play): once the checks finish, previews are made in the background, in recording order, without holding up tagging or the page. Rejected clips are skipped. A click on a clip that isn't ready makes it straight away, and the background job can be paused. It pauses itself if the drive is nearly full or clips stop reading. On Birkenstock: 46 previews, 35 MB, under 11 minutes alongside everything else. A ready clip's first frame came in 0.03 s, against 12 s for one that wasn't ready.
+
+An open question: 0 previews existed before that run, so none was made during his review. Leaving a clip doesn't cancel its preview (tested: it saved after the request dropped), and the route answers byte-range requests with a Safari-playable H.264 file, so either Play wasn't pressed or it doesn't work in his Safari. Not tested in Safari itself.
+
 **Tags are still unmeasured.** He changed no tag: he only chose Select or Reject, so 140 of 140 "kept" says nothing about accuracy. The page now shows a count of tags changed instead of a percentage.
 
-**Not verified yet:** whether the tags are right, logging time against a timed baseline, a long real shoot, a shoot from a POST job rather than a project. The review page was checked by eye on a copy of the log through a throwaway server, with a made-up token.
+**Not verified yet:** whether the tags are right, logging time against a timed baseline, a long real shoot, a shoot from a POST job rather than a project, previews playing in Safari. The review page was checked by eye on a copy of the log through a throwaway server, with a made-up token.
 
 Offline: the page and routes hold no database connection, and a project of his needs none, but the backend itself still needs Render Postgres to start.

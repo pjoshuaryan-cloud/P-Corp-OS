@@ -2,6 +2,7 @@
 
   log:     the plugin sends the project's clips. This reads camera data (Sony's sidecar XML names the real gamma, ffprobe can't: it says bt709 on S-Log3), makes viewing
            frames, reads each clip for its checks (post_steady, the same read Plan Edit needs, so it is only done once) and writes a pass/check/reject for each clip.
+  preview: free and in the background once the checks are done, so a clip plays at once in review. Pausable, and clicking a clip that isn't ready makes it straight away.
   tag:     an explicit click that spends money: Claude sees frames from each clip and answers in a fixed vocabulary. A failed clip never stops the run; if Claude can't be
            reached the run stops, keeps what it has, and the same click carries on when there's signal.
   review:  static/shoot_log.html. His choices go in an append-only file of their own and always win; Claude's answers are never overwritten.
@@ -22,6 +23,7 @@ import io
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -423,6 +425,17 @@ def thumb_path(ctx: dict[str, Any], clip_id: str, i: int) -> Path:
     return folder_of(ctx) / "thumbs" / f"{clip_id}_{i}.jpg"
 
 
+def preview_path(ctx: dict[str, Any], clip_id: str) -> Path:
+    return folder_of(ctx) / "previews" / f"{clip_id}.mp4"
+
+
+def previews_made(ctx: dict[str, Any]) -> set[str]:
+    try:
+        return {p.stem for p in (folder_of(ctx) / "previews").iterdir() if p.suffix == ".mp4" and not p.name.endswith(".part.mp4")}
+    except OSError:
+        return set()
+
+
 # ================================================================================================================================================= his choices
 def validate_override(field: str, value: Any) -> Any:
     """The value to store, or ShootLogError saying what's wrong."""
@@ -525,6 +538,9 @@ def view(ctx: dict[str, Any]) -> dict[str, Any]:
     lines = load_overrides(ctx)
     folded = fold_overrides(lines)
     clips = [effective_clip(log["clips"][cid], folded.get(cid, {})) for cid in log["order"] if cid in log["clips"]]
+    made = previews_made(ctx)
+    for c in clips:
+        c["preview_ready"] = c["id"] in made
     gammas: dict[str, int] = {}
     for c in clips:
         gammas[c.get("gamma") or "unknown"] = gammas.get(c.get("gamma") or "unknown", 0) + 1
@@ -534,7 +550,7 @@ def view(ctx: dict[str, Any]) -> dict[str, Any]:
     todo = tag_candidates(log, folded)
     return {"key": ctx["key"], "name": ctx["name"], "project_path": ctx["project_path"], "is_shoot": ctx.get("is_shoot", False), "clips": clips, "counts": counts, "gammas": gammas,
             "kept": tags_kept([log["clips"][c] for c in log["order"] if c in log["clips"]], folded), "review_minutes": review_minutes(lines), "run": run_state(ctx["key"]), "estimate": tag_estimate(len(todo)),
-            "spent": post_moments.usage_summary(folder_of(ctx)), "vocabulary": VOCAB, "labels": CONFIG["labels"], "applied_at": load_applied(ctx).get("at"), "thumb_count": len(CONFIG["thumbs"]["positions"]), "preview_seconds": CONFIG["preview"]["seconds"]}
+            "spent": post_moments.usage_summary(folder_of(ctx)), "vocabulary": VOCAB, "labels": CONFIG["labels"], "applied_at": load_applied(ctx).get("at"), "thumb_count": len(CONFIG["thumbs"]["positions"]), "preview_seconds": CONFIG["preview"]["seconds"], "previews": preview_state(ctx)}
 
 
 # ================================================================================================================================================= running it
@@ -669,6 +685,7 @@ async def _run_local(ctx: dict[str, Any], run: dict[str, Any]) -> None:
             _finish(run, "stopped", "Stopped. Everything done so far is kept; click Log This Shoot to carry on.")
         else:
             _finish(run, "done", f"Logged {len(readable)} clips. {counts['analysed']} read now, {counts['cached']} already read.")
+            start_previews(ctx)
     except DriveNotResponding as exc:
         _finish(run, "stopped", exc.message)
     except Exception as exc:  # a background task must never die silently
@@ -760,28 +777,111 @@ def start_tagging(ctx: dict[str, Any], client: Any, cap_usd: float | None = None
     return {"started": True, "estimate": estimate, "run": run_state(ctx["key"])}
 
 
-_PREVIEW_LIMIT = asyncio.Semaphore(2)
+_PREVIEW_CLICKS = asyncio.Semaphore(2)   # clips he has asked to play; the background job has its own slots, so a click never queues behind it
+_PREVIEW_LOCKS: dict[str, asyncio.Lock] = {}
+_PREVIEW_JOBS: dict[str, dict[str, Any]] = {}
 
 
-async def render_preview(ctx: dict[str, Any], clip: dict[str, Any]) -> Path:
-    """A small watchable copy with sound, made once when he first plays the clip, in the same viewing curve as the frames."""
-    out = folder_of(ctx) / "previews" / f"{clip['id']}.mp4"
+async def render_preview(ctx: dict[str, Any], clip: dict[str, Any], *, threads: int | None = None, slots: asyncio.Semaphore | None = None) -> Path:
+    """A small watchable copy with sound, in the same viewing curve as the frames. Made once. If the background job is on this very clip, a click waits for that one instead of starting a second."""
+    out = preview_path(ctx, clip["id"])
     if await on_drive(out.exists):
         return out
     await on_drive(lambda: out.parent.mkdir(parents=True, exist_ok=True), writing=True)
-    tmp = out.with_suffix(".part.mp4")
     conf = CONFIG["preview"]
-    async with _PREVIEW_LIMIT:
+    async with _PREVIEW_LOCKS.setdefault(str(out), asyncio.Lock()):
         if await on_drive(out.exists):
             return out
-        proc = await asyncio.create_subprocess_exec(post_media.FFMPEG_PATH, "-hide_banner", "-v", "error", "-y", "-threads", "8", "-t", str(conf["seconds"]), "-i", clip["path"],
-                                                    "-vf", viewing_filter(clip.get("profile") or "unknown", conf["height"]) + ",fps=25,format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-                                                    "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-movflags", "+faststart", str(tmp), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
-        _, err = await proc.communicate()
-    if proc.returncode != 0 or not await on_drive(tmp.exists):
-        raise ShootLogError(f"Couldn't make the preview: {err.decode(errors='replace')[:160]}")
-    await on_drive(tmp.replace, out, writing=True)
+        tmp = out.with_suffix(".part.mp4")
+        async with (slots or _PREVIEW_CLICKS):
+            proc = await asyncio.create_subprocess_exec(post_media.FFMPEG_PATH, "-hide_banner", "-v", "error", "-y", "-threads", str(threads or conf["click_threads"]), "-t", str(conf["seconds"]), "-i", clip["path"],
+                                                        "-vf", viewing_filter(clip.get("profile") or "unknown", conf["height"]) + ",fps=25,format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+                                                        "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-movflags", "+faststart", str(tmp), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            _, err = await proc.communicate()
+        if proc.returncode != 0 or not await on_drive(tmp.exists):
+            raise ShootLogError(f"Couldn't make the preview: {err.decode(errors='replace')[:160]}")
+        await on_drive(tmp.replace, out, writing=True)
     return out
+
+
+def previews_wanted(ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    """Clips worth a preview, in recording order: readable, and not rejected by him or by the checks. Clips with a quality flag still get one: those are the ones he needs to see."""
+    log = load_log(ctx)
+    folded = fold_overrides(load_overrides(ctx))
+    out = []
+    for cid in log["order"]:
+        clip = log["clips"].get(cid)
+        if clip and "duration" in clip and not clip.get("probe_error") and effective_clip(clip, folded.get(cid, {}))["status"] != "reject":
+            out.append(clip)
+    return out
+
+
+def preview_state(ctx: dict[str, Any]) -> dict[str, Any]:
+    wanted = previews_wanted(ctx)
+    made = previews_made(ctx)
+    job = _PREVIEW_JOBS.get(ctx["key"]) or {}
+    ready = sum(c["id"] in made for c in wanted)
+    state = job.get("state") or "idle"
+    if state == "running" and job.get("stop"):
+        state = "pausing"
+    return {"state": state, "ready": ready, "total": len(wanted), "message": job.get("message"), "ready_ids": sorted(c["id"] for c in wanted if c["id"] in made)}
+
+
+async def _run_previews(ctx: dict[str, Any], job: dict[str, Any]) -> None:
+    conf = CONFIG["preview"]
+    slots = asyncio.Semaphore(conf["background_concurrency"])
+    failures = [0]
+
+    async def worker(queue: list[dict[str, Any]]) -> None:
+        while queue and not job["stop"]:
+            clip = queue.pop(0)
+            # He may have rejected it since the list was made; no point making a preview he won't watch.
+            if clip["id"] not in {c["id"] for c in await on_drive(previews_wanted, ctx, timeout=30.0)}:
+                continue
+            free = await on_drive(lambda: shutil.disk_usage(folder_of(ctx).parent).free)
+            if free < conf["min_free_gb"] * 1e9:
+                job["stop"], job["message"] = True, f"Paused: less than {conf['min_free_gb']} GB free on the drive."
+                return
+            try:
+                await render_preview(ctx, clip, threads=conf["background_threads"], slots=slots)
+                failures[0] = 0
+            except (ShootLogError, OSError) as exc:
+                failures[0] += 1
+                print(f"[post_shoot_log] preview of {clip['name']} failed: {str(exc)[:160]}")
+                if failures[0] >= conf["give_up_after_failures"]:
+                    job["stop"], job["message"] = True, "Paused: clips aren't reading. Is the card or drive still connected?"
+                    return
+
+    try:
+        made = await on_drive(previews_made, ctx)
+        queue = [c for c in await on_drive(previews_wanted, ctx, timeout=30.0) if c["id"] not in made]
+        await asyncio.gather(*(worker(queue) for _ in range(conf["background_concurrency"])))
+        job["state"] = "paused" if job["stop"] else "done"
+    except DriveNotResponding as exc:
+        job.update(state="paused", message=exc.message)
+    except Exception as exc:  # a background task must never die silently
+        job.update(state="failed", message=f"{type(exc).__name__}: {str(exc)[:200]}")
+        print(f"[post_shoot_log] {ctx['key']} previews: {job['message']}")
+
+
+def start_previews(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Starts or resumes making previews in the background. Safe to call at any time: only one job per shoot, and it skips what's already made. It never touches the footage."""
+    job = _PREVIEW_JOBS.get(ctx["key"])
+    if job is not None and job["state"] == "running":
+        job["stop"] = False
+        return preview_state(ctx)
+    job = {"state": "running", "stop": False, "message": None}
+    _PREVIEW_JOBS[ctx["key"]] = job
+    job["task"] = asyncio.get_running_loop().create_task(_run_previews(ctx, job))
+    return preview_state(ctx)
+
+
+def pause_previews(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Clips already being made finish; no new ones start. A clip he clicks is still made."""
+    job = _PREVIEW_JOBS.get(ctx["key"])
+    if job is not None and job["state"] == "running":
+        job["stop"] = True
+    return preview_state(ctx)
 
 
 # ================================================================================================================================================= out to Premiere and elsewhere

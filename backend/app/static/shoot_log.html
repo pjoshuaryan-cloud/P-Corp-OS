@@ -17,6 +17,7 @@
   .spacer { flex: 1; }
   .stats { display: flex; gap: 14px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .stats b { color: var(--text); font-weight: 650; }
+  .previews { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .progress { flex: 1 1 240px; min-width: 200px; max-width: 420px; font-size: 12.5px; color: var(--muted); }
   .progress .track { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin-top: 5px; }
   .progress .fill { height: 100%; width: 0; background: var(--accent); transition: width .25s; }
@@ -115,6 +116,7 @@
   <div><div class="title" id="title">Shoot Log</div><div class="sub" id="sub">Loading…</div></div>
   <div class="progress" id="progress" hidden><span id="progressText"></span><div class="track"><div class="fill" id="progressFill"></div></div></div>
   <button id="stopBtn" hidden>Stop</button>
+  <span class="previews" id="previews" hidden><span id="previewsText"></span> <button id="previewsBtn" class="link"></button></span>
   <div class="spacer"></div>
   <div class="stats" id="stats"></div>
   <button class="primary" id="tagBtn" hidden></button>
@@ -215,9 +217,41 @@ function renderHeader() {
   tag.textContent = c.tagged ? `Tag ${e.clips} more · about $${e.usd.toFixed(2)}` : `Tag ${e.clips} clips · about $${e.usd.toFixed(2)}`;
   const csv = $("csvBtn"); csv.hidden = !c.clips; csv.href = withToken(`/post/shoot-log/${key}/export.csv`);
   $("applyHint").textContent = data.applied_at ? `Last applied to Premiere ${data.applied_at.replace("T", " ")}. Click Apply Shoot Log again to bring in new choices.` : "When you're done, click Apply Shoot Log in Premiere. You can apply as often as you like.";
+  renderPreviews();
   const stack = $("bar").offsetHeight;
   document.documentElement.style.setProperty("--bar-height", `${stack}px`);
   document.documentElement.style.setProperty("--stack-height", `${stack + $("filters").offsetHeight}px`);
+}
+
+function renderPreviews() {
+  const p = data.previews, box = $("previews");
+  box.hidden = !p || !p.total || (p.ready >= p.total && p.state !== "running");
+  if (box.hidden) return;
+  const running = p.state === "running";
+  $("previewsText").textContent = `Previews ${p.ready} of ${p.total}${p.state === "pausing" ? ", pausing" : running ? "" : ", paused"}${p.message ? ". " + p.message : ""}`;
+  const b = $("previewsBtn"); b.textContent = running ? "Pause" : "Resume"; b.hidden = p.state === "pausing";
+}
+let previewTimer = null;
+function applyPreviews(p) {
+  data.previews = p;
+  const ready = new Set(p.ready_ids);
+  for (const c of data.clips) c.preview_ready = ready.has(c.id);
+  renderPreviews();
+  const c = data.clips.find((x) => x.id === focusId), play = document.querySelector("#detail .play");
+  if (c && c.preview_ready && play && !play.disabled) play.textContent = "Play";
+  const busy = p.state === "running" || p.state === "pausing";
+  if (busy && !previewTimer) previewTimer = setInterval(async () => { try { applyPreviews(await api(`/post/shoot-log/${key}/previews`)); } catch (e) { /* the next tick tries again */ } }, 4000);
+  if (!busy && previewTimer) { clearInterval(previewTimer); previewTimer = null; }
+}
+$("previewsBtn").onclick = async () => {
+  try { applyPreviews(await post(`/post/shoot-log/${key}/previews/${data.previews.state === "running" ? "pause" : "start"}`)); } catch (e) { toast(e.message, true); }
+};
+let previewsNudged = false;
+async function nudgePreviews() {   // after a restart nothing is making them, so opening the page carries on. A pause he asked for stays paused.
+  const p = data.previews;
+  if (previewsNudged || !p || p.state !== "idle" || p.ready >= p.total || (data.run && data.run.state === "running")) { if (p) applyPreviews(p); return; }
+  previewsNudged = true;
+  try { applyPreviews(await post(`/post/shoot-log/${key}/previews/start`)); } catch (e) { /* Play still makes one when clicked */ }
 }
 
 function passes(c) {
@@ -256,7 +290,7 @@ function card(c) {
   for (let i = 0; i < count; i++) ticks.appendChild(el("i", i === 1 ? "on" : ""));
   pic.appendChild(ticks);
   pic.addEventListener("mousemove", (ev) => {
-    const r = pic.getBoundingClientRect(), i = Math.min(count - 1, Math.floor(((ev.clientX - r.left) / r.width) * count));
+    const r = pic.getBoundingClientRect(), i = Math.max(0, Math.min(count - 1, Math.floor(((ev.clientX - r.left) / r.width) * count)));
     if (img.dataset.i !== String(i)) { img.dataset.i = i; img.src = thumb(c, i); [...ticks.children].forEach((t, k) => t.classList.toggle("on", k === i)); }
   });
   n.appendChild(pic);
@@ -298,6 +332,7 @@ function markFocus() {
 }
 
 async function setField(c, field, value) {
+  c = data.clips.find((x) => x.id === c.id) || c;   // a poll may have replaced the list while this panel was open
   const before = JSON.stringify(c);
   if (field === "status") c.status = value; else { c.tags = c.tags || {}; c.tags[field] = value; }
   if (!c.yours.includes(field)) c.yours.push(field);
@@ -318,6 +353,7 @@ function recount() {
   renderHeader();
 }
 function setStatus(c, status) {
+  c = data.clips.find((x) => x.id === c.id) || c;
   const hiddenNow = $("fStatus").value !== "";
   setField(c, "status", status);
   const n = document.querySelector(`.card[data-id="${c.id}"]`);
@@ -350,7 +386,7 @@ function renderDetail() {
   const x = el("button", "x", "Close"); x.onclick = closeDetail; head.appendChild(x);
   d.appendChild(head);
   const player = el("div", "player"), big = el("img"); big.alt = c.name; big.src = thumb(c, frameIndex); player.appendChild(big);
-  const play = el("button", "play", "Play"); play.onclick = () => startVideo(c); player.appendChild(play);
+  const play = el("button", "play", c.preview_ready ? "Play" : "Play (making its preview)"); play.onclick = () => startVideo(c); player.appendChild(play);
   d.appendChild(player);
   const frames = el("div", "frames");
   for (let i = 0; i < data.thumb_count; i++) {
@@ -410,7 +446,7 @@ function startVideo(c, at) {
   let v = player.querySelector("video");
   if (!v) {
     const img = player.querySelector("img"), play = player.querySelector(".play");
-    play.textContent = `First play takes up to ${Math.ceil(Math.min(c.duration || 0, data.preview_seconds))} s…`; play.disabled = true;
+    play.textContent = c.preview_ready ? "Loading…" : `Making its preview, up to ${Math.ceil(Math.min(c.duration || 0, data.preview_seconds))} s…`; play.disabled = true;
     v = el("video"); v.controls = true; v.playsInline = true; v.src = withToken(`/post/shoot-log/${key}/preview/${c.id}`);
     v.addEventListener("loadeddata", () => { img.hidden = true; play.hidden = true; if (at !== undefined) v.currentTime = at; v.play().catch(() => {}); }, { once: true });
     v.addEventListener("error", () => { play.textContent = "Couldn't make a preview"; }, { once: true });
@@ -475,6 +511,7 @@ async function load() {
   const sig = signature();
   if (sig !== lastSig) { lastSig = sig; renderGrid(); if (detailOpen && !$("detail").contains(document.activeElement)) renderDetail(); }
   renderHeader();
+  nudgePreviews();
   const run = data.run;
   if (run && run.finished_at && run.finished_at !== lastRunEnd) { if (lastRunEnd !== null || run.state !== "done") toast(run.message || "Finished.", run.state === "failed"); lastRunEnd = run.finished_at; }
   if (run && run.state === "running") { if (!polling) polling = setInterval(load, 2000); }

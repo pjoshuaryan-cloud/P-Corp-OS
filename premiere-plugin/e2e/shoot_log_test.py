@@ -158,6 +158,13 @@ async def finish(key):
     return sl.run_state(key)
 
 
+async def previews_done(key):
+    job = sl._PREVIEW_JOBS.get(key)
+    while job and job["state"] == "running":
+        await asyncio.sleep(0.05)
+    return job
+
+
 async def whole_run(tmp):
     media = Path(tmp) / "media"
     media.mkdir()
@@ -181,8 +188,12 @@ async def whole_run(tmp):
         check("a second start while running is refused", True)
     state = await finish(ctx["key"])
     check("the free part finishes", state["state"] == "done", state)
+    await previews_done(ctx["key"])
     data = sl.view(ctx)
     by = {c["name"]: c for c in data["clips"]}
+    check("previews are made in the background once the checks finish, without being asked", data["previews"]["total"] == 4 and data["previews"]["ready"] == 4 and all(by[f"C{i}.MP4"]["preview_ready"] for i in range(4)), data["previews"])
+    check("no preview for a broken or black clip", not by["BROKEN.MP4"]["preview_ready"] and not by["BLACK.MP4"]["preview_ready"])
+    check("nothing half-made is left behind", not list((Path(ctx["folder"]) / "previews").glob("*.part.mp4")))
     check("camera data comes from the sidecar when there is one", by["C0.MP4"]["gamma"] == "rec709" and by["C0.MP4"]["camera"] == "ILCE-7SM3" and by["C1.MP4"]["gamma"] is None and by["C1.MP4"]["profile"] == "unknown", by["C0.MP4"])
     check("the clip's facts are read", by["C0.MP4"]["width"] == 320 and by["C0.MP4"]["fps"] == 25.0 and abs(by["C0.MP4"]["duration"] - 2.4) < 0.1 and by["C0.MP4"]["vertical"] is False, by["C0.MP4"])
     check("a broken file is rejected, saying why, and doesn't stop the run", by["BROKEN.MP4"]["status"] == "reject" and "Couldn't be read" in by["BROKEN.MP4"]["checks"]["reject_reason"], by["BROKEN.MP4"])
@@ -191,8 +202,64 @@ async def whole_run(tmp):
     check("four viewing frames per clip", all(sl.thumb_path(ctx, by[f"C{i}.MP4"]["id"], k).exists() for i in range(4) for k in range(4)))
     check("the estimate counts only clips worth tagging", data["estimate"]["clips"] == 4 and data["estimate"]["usd"] > 0 and data["estimate"]["cap_usd"] >= data["estimate"]["usd"], data["estimate"])
     steady_before = (Path(ctx["folder"]).parent / "steadiness.json").stat().st_mtime
+    made_before = {p.name: p.stat().st_mtime for p in (Path(ctx["folder"]) / "previews").iterdir()}
     sl.start_logging(ctx, incoming)
     state = await finish(ctx["key"])
+    await previews_done(ctx["key"])
+    check("running it again remakes no previews", {p.name: p.stat().st_mtime for p in (Path(ctx["folder"]) / "previews").iterdir()} == made_before)
+
+    # Pausing, resuming, a click while the job is busy, and a card pulled out.
+    pv = Path(ctx["folder"]) / "previews"
+    ids_now = {c["name"]: c["id"] for c in sl.view(ctx)["clips"]}
+    for f in pv.iterdir():
+        f.unlink()
+    sl.start_previews(ctx)
+    paused = sl.pause_previews(ctx)
+    check("a pause says so at once", paused["state"] == "pausing", paused)
+    await previews_done(ctx["key"])
+    check("a pause holds: the job stops short of the end", sl.preview_state(ctx)["state"] == "paused" and sl.preview_state(ctx)["ready"] < 4, sl.preview_state(ctx))
+    clicked = sl.load_log(ctx)["clips"][ids_now["C3.MP4"]]
+    already = (await sl.render_preview(ctx, clicked)).exists()
+    check("a clicked clip is still made while paused", already)
+    resumed = sl.start_previews(ctx)
+    again_start = sl.start_previews(ctx)
+    check("starting twice doesn't start a second job", resumed["state"] == "running" and again_start["state"] == "running")
+    await previews_done(ctx["key"])
+    check("resuming finishes the rest", sl.preview_state(ctx)["ready"] == 4, sl.preview_state(ctx))
+    for f in pv.iterdir():
+        f.unlink()
+    target = sl.load_log(ctx)["clips"][ids_now["C0.MP4"]]
+    both = await asyncio.gather(sl.render_preview(ctx, target), sl.render_preview(ctx, target))
+    check("two requests for the same clip make one file, not a corrupt one", both[0] == both[1] and both[0].stat().st_size > 0 and not list(pv.glob("*.part.mp4")))
+    sl.add_override(ctx, ids_now["C1.MP4"], "status", "reject")
+    sl.start_previews(ctx)
+    await previews_done(ctx["key"])
+    check("a clip he has rejected gets no preview", not sl.preview_path(ctx, ids_now["C1.MP4"]).exists() and sl.preview_state(ctx)["total"] == 3 and sl.preview_state(ctx)["ready"] == 3, sl.preview_state(ctx))
+    sl.add_override(ctx, ids_now["C1.MP4"], "status", "none")
+    real_disk = sl.shutil.disk_usage
+    sl.shutil.disk_usage = lambda p: type("D", (), {"free": 1_000_000})()
+    sl.start_previews(ctx)
+    await previews_done(ctx["key"])
+    low = sl.preview_state(ctx)
+    check("a nearly full drive pauses it and says why", low["state"] == "paused" and "GB free" in low["message"], low)
+    sl.shutil.disk_usage = real_disk
+    for f in pv.iterdir():
+        f.unlink()
+    log_gone = sl.load_log(ctx)
+    for c in log_gone["clips"].values():
+        c["path"] = "/nowhere/" + c["name"]
+    sl._save_log(ctx, log_gone)
+    sl.start_previews(ctx)
+    await previews_done(ctx["key"])
+    gone = sl.preview_state(ctx)
+    check("a card pulled out pauses it and says what to check, instead of failing clip after clip", gone["state"] == "paused" and "connected" in gone["message"], gone)
+    log_back = sl.load_log(ctx)
+    for cid, c in log_back["clips"].items():
+        c["path"] = str(media / c["name"])
+    sl._save_log(ctx, log_back)
+    sl.start_previews(ctx)
+    await previews_done(ctx["key"])
+    check("with the card back, it carries on", sl.preview_state(ctx)["ready"] == sl.preview_state(ctx)["total"], sl.preview_state(ctx))
     check("running it again reads nothing new", "0 read now" in state["message"] and (Path(ctx["folder"]).parent / "steadiness.json").stat().st_mtime == steady_before, state["message"])
 
     client = FakeClient()
@@ -252,7 +319,7 @@ async def whole_run(tmp):
         check("a choice on an unknown clip is refused", True)
     lines = (Path(ctx["folder"]) / "overrides.jsonl").read_text().splitlines()
     log_ai = sl.load_log(ctx)["clips"][ids["C0.MP4"]]["tags"]["shot_size"]
-    check("his choices are in their own file and Claude's answer is untouched", len(lines) == 4 and log_ai == "wide")
+    check("his choices are in their own file and Claude's answer is untouched", [json.loads(l)["value"] for l in lines[-4:]][:2] == ["select", "close"] and log_ai == "wide", lines[-4:])
     data = sl.view(ctx)
     check("the counts follow his choices", data["counts"]["selects"] == 1 and data["counts"]["rejects"] == 3 and data["counts"]["reviewed"] == 3, data["counts"])
     plan = sl.apply_plan(ctx)
@@ -298,6 +365,10 @@ with tempfile.TemporaryDirectory() as tmp:
     check("a viewing frame comes back as an image", web.get(f"/post/shoot-log/{key}/thumb/{ids['C3.MP4']}/0?token=t").headers["content-type"] == "image/jpeg")
     check("a frame that doesn't exist is a 404", web.get(f"/post/shoot-log/{key}/thumb/1/0?token=t").status_code == 404)
     check("a clip id has to be a number, so a path can't get through", web.get(f"/post/shoot-log/{key}/thumb/..%2F..%2Fx/0?token=t").status_code in (404, 422))
+    r = web.get(f"/post/shoot-log/{key}/previews?token=t")
+    check("the preview state has its own light route, so reviewing isn't disturbed by polling", r.status_code == 200 and "ready_ids" in r.json() and "clips" not in r.json(), r.text[:200])
+    check("preview routes need the token", web.post(f"/post/shoot-log/{key}/previews/start?token=wrong").status_code == 403 and web.post(f"/post/shoot-log/{key}/previews/pause?token=wrong").status_code == 403)
+    check("pausing with nothing running is harmless", web.post(f"/post/shoot-log/{key}/previews/pause?token=t").status_code == 200)
     check("a preview comes back as video", web.get(f"/post/shoot-log/{key}/preview/{ids['C0.MP4']}?token=t").headers["content-type"] == "video/mp4")
     check("a preview only for clips in the log", web.get(f"/post/shoot-log/{key}/preview/5?token=t").status_code == 404)
     r = web.get(f"/post/shoot-log/{key}/export.csv?token=t")
