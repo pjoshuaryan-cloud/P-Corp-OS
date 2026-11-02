@@ -56,6 +56,8 @@ const roughCutButton = document.getElementById("roughCutButton");
 const editButton = document.getElementById("editButton");
 const learnButton = document.getElementById("learnButton");
 const buildButton = document.getElementById("buildButton");
+const logShootButton = document.getElementById("logShootButton");
+const applyLogButton = document.getElementById("applyLogButton");
 const moreToggle = document.getElementById("moreToggle");
 const morePanel = document.getElementById("morePanel");
 const settingsButton = document.getElementById("settingsButton");
@@ -951,6 +953,16 @@ const MAX_BIN_DEPTH = 6;
 
 /** Breadth-first over the bins, level by level: calls visit(item, parent) for every item; stops after level `minDepth` once done() says so; a bin is
  * opened only if enter(item) says so. */
+/** A search bin only shows clips that really live elsewhere, so walking into one would count each of them again (proven in real Premiere 2026-11-02: 8 clips came back as 19, and a
+ * clip's "parent" could be the search bin). It looks like any other bin to the API (same class, same .type); only its Media Type says otherwise. */
+async function isSearchBin(item) {
+    try {
+        return /Column\.Intrinsic\.MediaType>\s*Search Bin\s*</.test(String(await ppro.Metadata.getProjectMetadata(item)));
+    } catch (e) {
+        return false;
+    }
+}
+
 async function walkProject(project, visit, done, minDepth = 1, enter = async () => true) {
     let nulls = 0;  // empty entries Premiere returned in place of items it couldn't wrap
     const rootItem = await project.getRootItem();
@@ -972,7 +984,7 @@ async function walkProject(project, visit, done, minDepth = 1, enter = async () 
                 if (!item) { nulls += 1; continue; }
                 await visit(item, bin);
                 const sub = ppro.FolderItem.cast(item);
-                if (sub && (await enter(item))) next.push(sub);
+                if (sub && (await enter(item)) && !(await isSearchBin(item))) next.push(sub);
             }
         }
         if (depth >= minDepth && done()) break;
@@ -2521,6 +2533,221 @@ buildButton.addEventListener("click", () => {
 });
 
 /** Everything except Build and Learn lives behind "More", closed by default. */
+// ---------------------------------------------------------------------------------------------------- the Shoot Log (backend/app/post_shoot_log.py)
+const PROJECT_METADATA_NS = "http://ns.adobe.com/premierePrivateProjectMetaData/1.0/";
+const LOG_NOTE_COLUMN = "Column.Intrinsic.LogNote";
+const DESCRIPTION_COLUMN = "Column.PropertyText.Description";
+const GOOD_COLUMN = "Column.PropertyBool.Good";
+const SHOOT_LOG_BATCH = 20;
+const SHOOT_LOG_PAUSE_MS = 150;
+
+/** Every real camera file in the project once, as {name, path, item, parent}: no sequences, no subclips (a subclip has its source's path under another name). Raw items, never cast. */
+async function shootClips(project) {
+    const byPath = new Map();
+    await walkProject(project, async (raw, parent) => {
+        const clip = ppro.ClipProjectItem.cast(raw);
+        if (!clip) return;
+        let path = "";
+        try { path = await clip.getMediaFilePath(); } catch (e) { return; }
+        if (!path) return;
+        const name = await itemName(raw);
+        const seen = byPath.get(path);
+        if (!seen || (name === path.split("/").pop() && seen.name !== name)) byPath.set(path, { name, path, item: raw, parent });
+    }, () => false);
+    return [...byPath.values()];
+}
+
+async function logThisShoot() {
+    reset();
+    logShootButton.disabled = true;
+    try {
+        const token = ensureToken();
+        if (!token) return;
+        const project = await ppro.Project.getActiveProject();
+        if (!project) { log("Open a project first."); return; }
+        const clips = await shootClips(project);
+        if (!clips.length) { log("This project has no clips yet. Import the shoot, then click again."); return; }
+        const started = await apiPost("/post/shoot-log/start", token, { project_path: project.path, clips: clips.map((c) => ({ name: c.name, path: c.path })) });
+        log(`Logging ${started.clips} clips from "${project.name}". Your project and footage aren't changed by this.`);
+        if (started.skipped && started.skipped.length) log(`Left out ${started.skipped.length} that aren't video.`);
+        const url = `${BACKEND_BASE}${started.review_path}`;
+        log(`Review page: ${url}`);
+        try {
+            await require("uxp").shell.openExternal(`${url}#token=${encodeURIComponent(token)}`, "Open the Shoot Log review page");
+        } catch (e) {
+            log("Couldn't open your browser from here, so paste that link in and give it your token once.");
+        }
+        log("Review there, then come back and click Apply Shoot Log.");
+    } catch (e) {
+        log(`Failed: ${e.message || e}`);
+    } finally {
+        logShootButton.disabled = false;
+    }
+}
+
+/** The bin called `name` inside `parent`, made if it isn't there, so running Apply again never doubles a bin. */
+async function ensureBin(project, parent, name) {
+    const find = async () => {
+        for (const item of await parent.getItems()) {
+            if (item && (await itemName(item)) === name && !(await isSearchBin(item))) return ppro.FolderItem.cast(item);
+        }
+        return null;
+    };
+    const existing = await find();
+    if (existing) return existing;
+    await transact(project, `P Corp POST -- Shoot Log bin ${name}`, (compound) => compound.addAction(parent.createBinAction(name, true)));
+    for (let i = 0; i < 10; i++) {
+        await sleep(200);
+        const made = await find();
+        if (made) return made;
+    }
+    throw new Error(`Couldn't make the "${name}" bin.`);
+}
+
+/** Log Note with this run's words in place of the last run's, and anything else in it kept (his own notes, or text the camera put there). */
+function shootLogNote(existing, prefix, words) {
+    const at = (existing || "").indexOf(prefix);
+    const kept = (at >= 0 ? existing.slice(0, at) : existing || "").trim();
+    return [kept, words ? `${prefix} ${words}` : ""].filter(Boolean).join(" ");
+}
+
+async function applyShootLog() {
+    reset();
+    applyLogButton.disabled = true;
+    const keepAlive = [];
+    try {
+        const token = ensureToken();
+        if (!token) return;
+        const project = await ppro.Project.getActiveProject();
+        if (!project) { log("Open a project first."); return; }
+        const plan = await apiPost("/post/shoot-log/apply-plan", token, { project_path: project.path });
+        const decided = plan.clips.filter((c) => c.note || c.status !== "none");
+        if (!decided.length) { log("Nothing to apply yet: no clip has tags or a choice. Tag or review them on the review page first."); return; }
+        const { XMPMeta } = require("uxp").xmp;
+        log(`Applying the log to "${project.name}". This is one step at a time and can take a while on a big shoot.`);
+
+        const inProject = new Map((await shootClips(project)).map((c) => [c.path, c]));
+        keepAlive.push(inProject);
+        const clips = [];
+        for (const c of plan.clips) {
+            const found = inProject.get(c.path);
+            if (found) clips.push({ ...c, item: found.item, parent: found.parent });
+        }
+        const missing = plan.clips.length - clips.length;
+
+        const root = await project.getRootItem();
+        const logBin = await ensureBin(project, root, plan.bins.parent);
+        const selects = await ensureBin(project, logBin, plan.bins.selects);
+        const rejects = await ensureBin(project, logBin, plan.bins.rejects);
+        keepAlive.push(logBin, selects, rejects);
+        const parentNames = new Map();
+        for (const c of clips) parentNames.set(c.id, await itemName(c.parent));
+
+        // Selects and Rejects. A clip he has un-chosen since the last Apply goes back to the top of the project; a clip with no choice otherwise stays where he keeps it.
+        const moves = [];
+        for (const c of clips) {
+            const here = parentNames.get(c.id);
+            const target = c.status === "select" ? selects : c.status === "reject" ? rejects : (here === plan.bins.selects || here === plan.bins.rejects) ? root : null;
+            const targetName = c.status === "select" ? plan.bins.selects : c.status === "reject" ? plan.bins.rejects : null;
+            if (target && here !== targetName) moves.push({ c, target });
+        }
+        for (let i = 0; i < moves.length; i += SHOOT_LOG_BATCH) {
+            const batch = moves.slice(i, i + SHOOT_LOG_BATCH);
+            await transact(project, "P Corp POST -- Shoot Log moves", (compound) => {
+                for (const { c, target } of batch) compound.addAction(c.parent.createMoveItemAction(c.item, target));
+            });
+            await sleep(SHOOT_LOG_PAUSE_MS);
+        }
+
+        // Notes on each clip: stored in the project, not written into the camera files (checked 2026-11-02: checksums and dates unchanged). Search bins read Log Note, not Description.
+        let notes = 0;
+        for (let i = 0; i < clips.length; i += SHOOT_LOG_BATCH) {
+            const prepared = [];
+            for (const c of clips.slice(i, i + SHOOT_LOG_BATCH)) {
+                const xmp = new XMPMeta(await ppro.Metadata.getProjectMetadata(c.item));
+                const read = (column) => (xmp.doesPropertyExist(PROJECT_METADATA_NS, column) ? String(xmp.getProperty(PROJECT_METADATA_NS, column).value || "") : "");
+                const fields = [];
+                const oldNote = read(LOG_NOTE_COLUMN), newNote = shootLogNote(oldNote, plan.note_prefix, c.note);
+                if (newNote !== oldNote) { xmp.setProperty(PROJECT_METADATA_NS, LOG_NOTE_COLUMN, newNote); fields.push(LOG_NOTE_COLUMN); }
+                const oldDescription = read(DESCRIPTION_COLUMN);
+                if (c.description && c.description !== oldDescription && (!oldDescription || oldDescription === c.previous.description)) { xmp.setProperty(PROJECT_METADATA_NS, DESCRIPTION_COLUMN, c.description); fields.push(DESCRIPTION_COLUMN); }
+                const good = read(GOOD_COLUMN).toLowerCase() === "true";
+                if (c.status === "select" && !good) { xmp.setProperty(PROJECT_METADATA_NS, GOOD_COLUMN, "true"); fields.push(GOOD_COLUMN); }
+                else if (c.status !== "select" && good && c.previous.status === "select") { xmp.setProperty(PROJECT_METADATA_NS, GOOD_COLUMN, "false"); fields.push(GOOD_COLUMN); }
+                if (fields.length) prepared.push({ item: c.item, xml: xmp.serialize(), fields });
+            }
+            if (prepared.length) {
+                // The actions are made inside the transaction: one made before an await is dead by the time it's used ("The script object is no longer valid").
+                await transact(project, "P Corp POST -- Shoot Log notes", (compound) => {
+                    for (const p of prepared) compound.addAction(ppro.Metadata.createSetProjectMetadataAction(p.item, p.xml, p.fields));
+                });
+                notes += prepared.length;
+            }
+            await sleep(SHOOT_LOG_PAUSE_MS);
+        }
+
+        // Markers on Claude's described moments, skipping any already there from an earlier Apply.
+        let markers = 0;
+        for (let i = 0; i < clips.length; i += SHOOT_LOG_BATCH) {
+            const prepared = [];
+            for (const c of clips.slice(i, i + SHOOT_LOG_BATCH)) {
+                if (!c.markers.length) continue;
+                const clip = ppro.ClipProjectItem.cast(c.item);
+                const box = await ppro.Markers.getMarkers(clip);
+                const have = new Set();
+                for (const m of await box.getMarkers()) {
+                    if ((await m.getName()) === plan.bins.parent) have.add(Number((await m.getStart()).seconds).toFixed(1));
+                }
+                const fresh = c.markers.filter((m) => !have.has(Number(m.t).toFixed(1)));
+                if (fresh.length) prepared.push({ box, fresh });
+            }
+            if (prepared.length) {
+                await transact(project, "P Corp POST -- Shoot Log markers", (compound) => {
+                    for (const { box, fresh } of prepared) {
+                        for (const m of fresh) {
+                            compound.addAction(box.createAddMarkerAction(plan.bins.parent, "Comment", ppro.TickTime.createWithSeconds(m.t), ppro.TickTime.createWithSeconds(m.seconds), m.comment));
+                            markers += 1;
+                        }
+                    }
+                });
+            }
+            await sleep(SHOOT_LOG_PAUSE_MS);
+        }
+
+        // Search bins last, once the tags they look for are in place.
+        let searchBins = 0;
+        for (const group of plan.bins.groups) {
+            if (!group.search.length) continue;
+            const holder = await ensureBin(project, logBin, group.bin);
+            keepAlive.push(holder);
+            const have = new Set();
+            for (const item of await holder.getItems()) if (item) have.add(await itemName(item));
+            const fresh = group.search.filter((s) => !have.has(s.name));
+            if (fresh.length) {
+                await transact(project, "P Corp POST -- Shoot Log search bins", (compound) => {
+                    for (const s of fresh) compound.addAction(holder.createSmartBinAction(s.name, s.query));
+                });
+                searchBins += fresh.length;
+            }
+        }
+
+        await project.save();
+        const report = { clips: clips.length, moved: moves.length, notes, markers, search_bins: searchBins, not_in_project: missing };
+        await apiPost(`/post/shoot-log/${plan.key}/applied`, token, { report });
+        log(`Done. ${plan.counts.selects} selects, ${plan.counts.rejects} rejects: ${moves.length} clips moved, ${notes} clips noted, ${markers} markers, ${searchBins} new search bins. Project saved.`);
+        if (missing) log(`${missing} logged clips aren't in this project any more and were left alone.`);
+        log("Look in the Shoot Log bin. Deleting a clip from a search bin deletes it from the project, so remove clips from where they live.");
+    } catch (e) {
+        log(`Failed: ${e.message || e}`);
+    } finally {
+        keepAlive.length = 0;
+        applyLogButton.disabled = false;
+    }
+}
+
+logShootButton.addEventListener("click", () => { logThisShoot(); });
+applyLogButton.addEventListener("click", () => { applyShootLog(); });
+
 function setMoreOpen(open) {
     if (open) morePanel.classList.remove("hidden");
     else morePanel.classList.add("hidden");

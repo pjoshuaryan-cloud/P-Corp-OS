@@ -110,3 +110,12 @@ in a browser against the real routes with synthetic footage; **Premiere** = stil
   a full slot of footage starting a quarter of the slot later than the un-slowed moment (the plan's half-length window plays on past its end).
   `verify_build` expects exactly that and says so in a note.
 - Opening/closing "preferences" are preferences: each variant says what it actually opened and closed on.
+
+## 5. Shoot Log (2026-11-02)
+Reload the plugin first: the manifest changed. The first Log This Shoot may ask permission to open your browser.
+1. More > Log This Shoot. The review page opens and clips fill in. The project is not changed.
+2. Tag on the page, choose with S, X and U, change a tag, press Space to play.
+3. More > Apply Shoot Log. In the Project panel: Shoot Log > Selects and Rejects hold your choices; By Subject and By Shot Size are search bins; Log Note shows `[Shoot Log] ...`; selects have Good ticked; clips have markers.
+4. Change a choice on the page and Apply again: the clip moves, the note is replaced, no bins or markers are doubled.
+5. Transcribe Dialogue or Build My Edit in that project sees each clip once.
+Don't delete a clip from a search bin: that deletes it from the project.

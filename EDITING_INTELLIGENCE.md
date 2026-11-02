@@ -357,3 +357,36 @@ instagram.com/reel/Cs7dE-pJm2U) is the priority; cut "both on beat and on action
 - Test: `gq_miele_style_test.py` (14 checks, incl. a real-planner dry run: >= 75% cuts on hits, every event-led shot starts within 0.25 s of its
   moment). Also: Premiere re-saved HAUS on 2026-10-24 with Transform's "Scale" as "Scale Height" -- `transfer_finish._scale_param` reads both.
 - NOT built: split-screen collages, the end title (text), a logo card image for a music montage. Suite 1176 Python checks, 0 failures.
+
+## 13. The Shoot Log (2026-11-02)
+
+Josh's "Shoot Logger" spec asked for a separate Electron app. He asked for it to be scoped as an upgrade to P Corp and the plugin instead, so it is a stage of POST: `backend/app/post_shoot_log.py`, `backend/app/shoot_log_config.json`, `backend/app/static/shoot_log.html`, ten routes under `/post/shoot-log`, and two plugin buttons (Log This Shoot, Apply Shoot Log) under More. His answers: Alpha Mode and Joshx only, Sony 4K 4:2:2 10-bit, mostly S-Log3, hotspot at venues, XML waits.
+
+**Back-test first** (`backend/learning/shoot_log_backtest.py`, gates fixed before the first run, shares the Shoot Log's own rules):
+- Reject rule (unreadable, or black for 95% of the clip): 0 of 232 clips he really used, so it passes. It also rejected 0 of HAUS's 117 clips, so it is safe but hasn't yet caught anything.
+- Check flags don't predict use: 23% of his finished HAUS cut against 30% of what he left out. They stay as notes. Treating them as rejects would have hidden 7 of 31 clips.
+- Sorting by Claude's best moment: AUC 0.48 (HAUS 0.40, JD 0.56; 90% 0.40 to 0.55), against a gate of 0.60. **It failed, so there is no score.** Selects holds only what he confirms. Re-test with the same gate once real shoots have his confirmed selects.
+
+**Premiere test** (throwaway project, 8 synthetic clips, real Premiere Beta):
+- Works and survives save, close and reopen: Log Note, Description and Good; nested bins; moves; search bins (`FolderItem.createSmartBinAction`); markers read back. Source files keep their checksums and dates, with no sidecars. Search bins are not copies (8 clip items in the saved project), removing one keeps its clips, and retagging updates them live.
+- Search bins read Log Note, clip names and custom columns, not Description or Scene. They match parts of words, two words mean both, and they split a search at an underscore: `subject_detail` also found a clip whose note had `shot_detail subject_product`. So tag words are single unbroken words (`subjectdetail`), none inside another. They cover the whole project, so rejected clips carry no search words.
+- Bug found and fixed: `walkProject` walked into search bins (8 clips came back as 19, and a clip's parent could be the search bin). It now skips them: `Metadata.getProjectMetadata` gives Media Type "Search Bin", the only difference the API shows.
+- An action made before an `await` is dead by the time it is used ("The script object is no longer valid"), so metadata actions are made inside the transaction.
+
+**S-Log3:** Sony's sidecar `C####M01.XML` names the real gamma, and ffprobe says bt709 on S-Log3. The old 0.97 highlight check fired 0 times on all 117 HAUS clips and all 48 Birkenstock clips, because S-Log3 tops out near 0.87. Limits are now per gamma (config), `post_steady.measure` also records the share of the picture near clipping and near black (`levels`; older cached reads estimate it from thumbnails, no cache bump). Thumbnails, previews and the frames Claude sees get a viewing curve; footage is never changed.
+
+**First real shoot: Birkenstock** (48 clips, 11 min, 19 GB, A7S III S-Log3 4K 50p, read off the card, project key `p434529275`, "Test Project"):
+- Free part 10 min: 91 s for frames, 500 s to read. So about real time for this format off this card.
+- Tagging 48 of 48, none failed, $0.53 (estimate $0.51), 9 min. 181,872 input and 17,117 output tokens.
+- Checks after tightening: 37 clean, 11 to check (5 shaky, 5 near-duplicate, 1 soft), 0 rejected. Judged by eye at the first limit (0.85), 4 of 10 near-duplicates were wrong, such as people in similar light. At 0.89 the rest looked right. One shoot only, so look again on the next.
+- Known weak spots: the 1 "soft" clip is a plain board with little detail, not out of focus, so the note now says so. "Shaky" always flags a tenth of a shoot by design.
+
+**Apply Shoot Log in real Premiere** (throwaway projects, stand-in tags, 2026-11-02): 8 clips including a nested bin. Selects, Rejects, notes, Good, markers and every search bin came out as expected, in under 3 s. His existing Log Note text is kept. A second Apply changed nothing. After changing his mind, clips moved, notes were replaced, search bins followed and a description typed in Premiere stayed. All identical after save, close and reopen; 8 clip items and 11 search bins in the saved file; source files unchanged. On 150 tiny clips: 5.5 s, 399 markers, no crash, a second run changed nothing, each clip seen once. Once, right after creating the first project, the test channel stopped answering for about 2 minutes (Premiere idle, no dialog on the main window) and then recovered; the cause is unknown and it didn't recur.
+
+**His real run on Birkenstock** (11:32 to 11:35, read from the log and his saved project): 18 selects, 2 rejects, 28 of 48 clips reviewed, 2.3 minutes between his first and last choice (time spent looking before the first choice isn't counted). Apply: 20 clips moved, 48 noted, 138 markers, 12 search bins, all in the saved `.prproj`. He says the bins help, and the review felt a bit long but definitely faster than usual; there's no timed baseline.
+
+**Tags are still unmeasured.** He changed no tag: he only chose Select or Reject, so 140 of 140 "kept" says nothing about accuracy. The page now shows a count of tags changed instead of a percentage.
+
+**Not verified yet:** whether the tags are right, logging time against a timed baseline, a long real shoot, a shoot from a POST job rather than a project. The review page was checked by eye on a copy of the log through a throwaway server, with a made-up token.
+
+Offline: the page and routes hold no database connection, and a project of his needs none, but the backend itself still needs Render Postgres to start.

@@ -1213,6 +1213,9 @@ def _is_slow_route(method: str, path: str) -> bool:
     # SQLite file instead of the real shared Postgres. Every slow
     # (Claude-calling) route in this app is a POST, so gating on that is
     # safe, not just a narrow fix for this one collision.
+    # The Shoot Log and static pages never touch the cloud database, so they don't hold a connection (a page of thumbnails would tie up the pool) and keep working with no signal.
+    if path.startswith(("/post/shoot-log", "/static/")):
+        return True
     if method != "POST":
         return False
     return (
@@ -3226,6 +3229,186 @@ async def post_learn_from_project(body: LearnFromProjectRequest, request: Reques
                                ": when you stop changing a cut for 45 minutes it is logged by itself, as it is (clip lists and stringouts never are).")
     await record_tool_call("post_learn_from_project_ui", {"project": os.path.basename(body.project_path), "sequence": result["sequence"], "shoot": shoot["id"] if shoot else None}, "ok", postgres_conn)
     return result
+
+
+# ------------------------------------------------------------------------------------------------ the Shoot Log (app/post_shoot_log.py)
+class ShootLogClip(BaseModel):
+    name: str | None = None
+    path: str
+
+
+class ShootLogStartRequest(BaseModel):
+    project_path: str
+    clips: list[ShootLogClip]
+
+
+class ShootLogProjectRequest(BaseModel):
+    project_path: str
+
+
+class ShootLogOverrideRequest(BaseModel):
+    clip: str
+    field: str
+    value: Any = None
+
+
+class ShootLogTagRequest(BaseModel):
+    max_usd: float | None = None
+
+
+class ShootLogAppliedRequest(BaseModel):
+    report: dict = {}
+
+
+async def _shoot_log_context(key: str) -> dict:
+    from app import post_shoot_log as sl
+    ctx = await on_drive(sl.find_context, key)
+    if ctx is None:
+        raise HTTPException(status_code=404, detail="No Shoot Log with that id.")
+    return ctx
+
+
+async def _shoot_log_job_lookup(project_path: str) -> tuple[dict | None, dict[str, int]]:
+    """The POST shoot this project belongs to and its file ids, when the cloud database can say. With no signal the project simply logs on its own."""
+    async def look() -> tuple[dict | None, dict[str, int]]:
+        async with _pooled_postgres_conn() as postgres_conn:
+            target = os.path.normpath(project_path)
+            job = next((j for j in await list_post_jobs(None, postgres_conn) if j.get("premiere_project_path") and os.path.normpath(j["premiere_project_path"]) == target), None)
+            if job is None:
+                return None, {}
+            return job, {f["destination_path"]: f["id"] for f in await list_post_job_files(job["id"], postgres_conn)}
+    try:
+        return await asyncio.wait_for(look(), timeout=8.0)
+    except Exception as exc:
+        print(f"[shoot log] couldn't check for a POST shoot: {type(exc).__name__}")
+        return None, {}
+
+
+async def _shoot_log_audit(name: str, details: dict) -> None:
+    """The usual audit line, best effort: no signal must not stop the log."""
+    async def write() -> None:
+        async with _pooled_postgres_conn() as postgres_conn:
+            await record_tool_call(name, details, "ok", postgres_conn)
+    try:
+        await asyncio.wait_for(write(), timeout=5.0)
+    except Exception as exc:
+        print(f"[shoot log] audit line skipped: {type(exc).__name__}")
+
+
+@app.post("/post/shoot-log/start")
+async def post_shoot_log_start(body: ShootLogStartRequest, _: None = Depends(verify_token)) -> dict:
+    """Log This Shoot in the plugin: registers the project's clips and starts the free part in the background (camera data, viewing frames, checks). Calling it again carries on where
+    it stopped. Reads footage only; spends nothing."""
+    from app import post_shoot_log as sl
+    ctx = await on_drive(sl.context_for_project, body.project_path)
+    job, file_ids = await _shoot_log_job_lookup(body.project_path) if ctx is None or ctx.get("is_shoot") else (None, {})
+    if ctx is None:
+        ctx = await on_drive(sl.new_context, body.project_path, job, writing=True)
+    try:
+        started = sl.start_logging(ctx, [c.model_dump() for c in body.clips], file_ids)
+    except sl.ShootLogError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    await _shoot_log_audit("post_shoot_log_start_ui", {"project": os.path.basename(body.project_path), "clips": started["clips"]})
+    return {"key": ctx["key"], "review_path": f"/static/shoot_log.html?log={ctx['key']}", **started}
+
+
+@app.get("/post/shoot-log/{key}")
+async def post_shoot_log_view(key: str, _: None = Depends(verify_token)) -> dict:
+    """Everything the review page shows."""
+    from app import post_shoot_log as sl
+    return await on_drive(sl.view, await _shoot_log_context(key), timeout=30.0)
+
+
+@app.post("/post/shoot-log/{key}/stop")
+async def post_shoot_log_stop(key: str, _: None = Depends(verify_token)) -> dict:
+    from app import post_shoot_log as sl
+    ctx = await _shoot_log_context(key)
+    return {"run": sl.request_stop(ctx["key"])}
+
+
+@app.post("/post/shoot-log/{key}/override")
+async def post_shoot_log_override(key: str, body: ShootLogOverrideRequest, _: None = Depends(verify_token)) -> dict:
+    """One choice of his. They go in their own file and always win over Claude's answers."""
+    from app import post_shoot_log as sl
+    ctx = await _shoot_log_context(key)
+    try:
+        return await on_drive(sl.add_override, ctx, body.clip, body.field, body.value, writing=True)
+    except sl.ShootLogError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/post/shoot-log/{key}/tag")
+async def post_shoot_log_tag(key: str, body: ShootLogTagRequest, _: None = Depends(verify_token)) -> dict:
+    """Tag clips with Claude: an explicit click that spends money, stopped by a limit. Frames from the clips go to Anthropic. Never Frank-reachable."""
+    from app import post_shoot_log as sl
+    from app.post_moments import MomentsError, VisionUnavailableError, check_credit
+    ctx = await _shoot_log_context(key)
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set.")
+    client = AsyncAnthropic(api_key=api_key)
+    try:
+        await check_credit(client, sl.MODEL)
+    except VisionUnavailableError as exc:
+        raise HTTPException(status_code=402, detail=str(exc))
+    except MomentsError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    try:
+        started = sl.start_tagging(ctx, client, body.max_usd)
+    except sl.ShootLogError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    await _shoot_log_audit("post_shoot_log_tag_ui", {"shoot": ctx["name"], "started": started["started"], "estimate": started.get("estimate")})
+    return started
+
+
+@app.get("/post/shoot-log/{key}/thumb/{clip_id}/{index}")
+async def post_shoot_log_thumb(key: str, clip_id: int, index: int, _: None = Depends(verify_token)) -> FileResponse:
+    from app import post_shoot_log as sl
+    out = sl.thumb_path(await _shoot_log_context(key), str(clip_id), index)
+    if not await on_drive(out.exists):
+        raise HTTPException(status_code=404, detail="That frame hasn't been made.")
+    return FileResponse(out, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.get("/post/shoot-log/{key}/preview/{clip_id}")
+async def post_shoot_log_preview(key: str, clip_id: int, _: None = Depends(verify_token)) -> FileResponse:
+    """A small watchable copy, made the first time he plays the clip. The source file comes from the log, never from the request."""
+    from app import post_shoot_log as sl
+    ctx = await _shoot_log_context(key)
+    clip = (await on_drive(sl.load_log, ctx))["clips"].get(str(clip_id))
+    if clip is None:
+        raise HTTPException(status_code=404, detail="That clip isn't in this log.")
+    try:
+        return FileResponse(await sl.render_preview(ctx, clip), media_type="video/mp4")
+    except sl.ShootLogError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/post/shoot-log/{key}/export.csv")
+async def post_shoot_log_csv(key: str, _: None = Depends(verify_token)) -> Response:
+    from app import post_shoot_log as sl
+    ctx = await _shoot_log_context(key)
+    text = await on_drive(sl.to_csv, ctx, timeout=30.0)
+    return Response(text, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="shoot-log-{ctx["key"]}.csv"'})
+
+
+@app.post("/post/shoot-log/apply-plan")
+async def post_shoot_log_apply_plan(body: ShootLogProjectRequest, _: None = Depends(verify_token)) -> dict:
+    """Apply Shoot Log in the plugin asks what to do for the open project. Read-only here; the plugin does the Premiere side."""
+    from app import post_shoot_log as sl
+    ctx = await on_drive(sl.context_for_project, body.project_path)
+    if ctx is None:
+        raise HTTPException(status_code=404, detail="This project hasn't been logged yet. Click Log This Shoot first.")
+    return await on_drive(sl.apply_plan, ctx, timeout=30.0)
+
+
+@app.post("/post/shoot-log/{key}/applied")
+async def post_shoot_log_applied(key: str, body: ShootLogAppliedRequest, _: None = Depends(verify_token)) -> dict:
+    from app import post_shoot_log as sl
+    ctx = await _shoot_log_context(key)
+    await on_drive(sl.record_applied, ctx, body.report, timeout=30.0, writing=True)
+    await _shoot_log_audit("post_shoot_log_applied_ui", {"shoot": ctx["name"], **body.report})
+    return {"ok": True}
 
 
 class ProjectPlanRequest(BaseModel):

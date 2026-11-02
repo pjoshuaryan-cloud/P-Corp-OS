@@ -1,0 +1,40 @@
+{
+  "_about": "Everything tunable in the Shoot Log (app/post_shoot_log.py): the tag vocabulary, the limits behind each check, how frames are viewed. There is deliberately no score here: the back-test on his real edits (learning/shoot_log_backtest.py, 2026-11-01) found sorting by Claude's rating no better than chance, so nothing ranks clips.",
+  "vocabulary": {
+    "shot_size": ["extreme_wide", "wide", "medium", "close", "detail"],
+    "subjects": ["crowd", "speaker_mc", "talent", "product", "branding_signage", "venue", "food_drink", "detail", "bts"],
+    "energy": ["calm", "building", "peak"],
+    "camera_move": ["static", "pan", "tilt", "push", "pull", "handheld", "gimbal", "drone"]
+  },
+  "labels": {
+    "extreme_wide": "Extreme wide", "wide": "Wide", "medium": "Medium", "close": "Close", "detail": "Detail",
+    "crowd": "Crowd", "speaker_mc": "Speaker or MC", "talent": "Talent", "product": "Product", "branding_signage": "Branding", "venue": "Venue", "food_drink": "Food and drink", "bts": "Behind the scenes",
+    "calm": "Calm", "building": "Building", "peak": "Peak",
+    "static": "Static", "pan": "Pan", "tilt": "Tilt", "push": "Push", "pull": "Pull", "handheld": "Handheld", "gimbal": "Gimbal", "drone": "Drone"
+  },
+  "checks": {
+    "_levels_note": "Grey code values, 0..1, as the clip reader sees them. S-Log3: black 95/1023, mid grey 420/1023, 90% white 598/1023, and real frames top out at about 0.87. Rec.709: black 64/1023, white 940/1023.",
+    "levels": {
+      "slog3": { "black": 0.12, "under": 0.22, "over": 0.62, "clip": 0.84, "crushed": 0.12 },
+      "rec709": { "black": 0.08, "under": 0.16, "over": 0.80, "clip": 0.90, "crushed": 0.08 }
+    },
+    "black_share": 0.95,
+    "half_the_clip": 0.5,
+    "blown_share": 0.15,
+    "crushed_share": 0.40,
+    "soft_ratio": 0.35,
+    "shaky_top_share": 0.10,
+    "shaky_min_clips": 10,
+    "short_seconds": 2.0,
+    "_near_duplicate_note": "The best match between any two per-second thumbnails. 0.85 called people in similar light duplicates; 0.89 kept the real ones on the Birkenstock shoot, judged by eye. One shoot only: look again on the next.",
+    "near_duplicate": 0.89
+  },
+  "thumbs": { "positions": [0.1, 0.35, 0.6, 0.85], "height": 480, "concurrency": 4 },
+  "preview": { "height": 480, "seconds": 45 },
+  "viewing_curve": {
+    "_note": "Only for the review page and the frames Claude sees, so flat Log can be judged. The footage itself is never changed.",
+    "slog3": "curves=all='0/0 0.093/0.02 0.41/0.45 0.6/0.82 0.87/1 1/1',eq=saturation=1.35"
+  },
+  "tagging": { "concurrency": 4, "tries": 2, "max_tokens": 1100, "cap_multiple": 2.0, "hard_cap_usd": 25.0 },
+  "apply": { "markers_per_clip": 3, "marker_seconds": 0.5 }
+}

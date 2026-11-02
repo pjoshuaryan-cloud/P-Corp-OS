@@ -22,7 +22,7 @@ import os
 import random
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -115,6 +115,9 @@ def measure(frames: np.ndarray) -> dict[str, Any]:
     sharp = lap.reshape(len(f), -1).var(axis=1)
     hi = (f >= 0.97).reshape(len(f), -1).mean(axis=1)
     secs = frames[:: int(SAMPLE_FPS)]
+    # How much of the picture sits near clipping or near black, per second, at the levels the Shoot Log checks (S-Log3 clips far below the 0.97 `hi` looks at).
+    levels = {f"hi{int(lv * 100):02d}": [round(float(x), 3) for x in (secs >= lv * 255).reshape(len(secs), -1).mean(axis=1)] for lv in (0.84, 0.90)}
+    levels.update({f"lo{int(lv * 100):02d}": [round(float(x), 3) for x in (secs <= lv * 255).reshape(len(secs), -1).mean(axis=1)] for lv in (0.08, 0.12)})
     thumbs = secs.reshape(len(secs), THUMB_H, FRAME_H // THUMB_H, THUMB_W, FRAME_W // THUMB_W).astype(np.float32).mean(axis=(2, 4)).round().astype(np.uint8)
     usual = float(np.median(motion)) or 1e-4
     spikes = []
@@ -126,7 +129,7 @@ def measure(frames: np.ndarray) -> dict[str, Any]:
             spikes.append(int(i))
     return {"fps": SAMPLE_FPS, "motion": [round(float(x), 5) for x in motion], "sharp": [round(float(x), 6) for x in sharp],
             "luma": [round(float(x), 4) for x in luma], "hi": [round(float(x), 4) for x in hi], "spikes": spikes, "seconds": round(len(f) / SAMPLE_FPS, 2),
-            "thumbs": base64.b64encode(thumbs.tobytes()).decode("ascii"), "thumb_n": int(len(thumbs))}
+            "thumbs": base64.b64encode(thumbs.tobytes()).decode("ascii"), "thumb_n": int(len(thumbs)), "levels": levels}
 
 
 def _window_indices(m: dict[str, Any], start: float, length: float) -> tuple[int, int]:
@@ -376,7 +379,7 @@ def save_cache(job: dict[str, Any], cache: dict[str, Any]) -> None:
     p.write_text(json.dumps(cache))
 
 
-async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, concurrency: int = READ_CONCURRENCY, only_cached: bool = False, always: set[int] | None = None) -> dict[str, int]:
+async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, concurrency: int = READ_CONCURRENCY, only_cached: bool = False, always: set[int] | None = None, progress: Callable[[], None] | None = None, should_stop: Callable[[], bool] | None = None) -> dict[str, int]:
     """Attaches `clip["steady"]` (the per-clip series) to each clip, reading from the job's cache when the file hasn't changed.
     A clip that can't be read gets no `steady` and the planner falls back to its old way for it. `only_cached` reads nothing new except the clips in `always` (the
     establishing clip, which opens the edit and holds the closing card): clips not in the cache simply get no analysis (a quick plan from what has been read so far). Returns counts for the plan's notes."""
@@ -388,6 +391,13 @@ async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, con
     saving = asyncio.Lock()
 
     async def one(clip: dict[str, Any]) -> None:
+        try:
+            await read_one(clip)
+        finally:
+            if progress is not None:
+                progress()
+
+    async def read_one(clip: dict[str, Any]) -> None:
         nonlocal dirty
         key = str(clip["file_id"])
         fp = await on_drive(_fingerprint, clip["path"])
@@ -397,7 +407,7 @@ async def analyse_clips(clips: list[dict[str, Any]], job: dict[str, Any], *, con
             clip["thumbs"] = decode_thumbs(hit["m"])
             counts["cached"] += 1
             return
-        if only_cached and clip["file_id"] not in (always or set()):
+        if (only_cached and clip["file_id"] not in (always or set())) or (should_stop is not None and should_stop()):
             counts["not_read"] += 1
             return
         frames = await read_clip(clip["path"], limiter)
