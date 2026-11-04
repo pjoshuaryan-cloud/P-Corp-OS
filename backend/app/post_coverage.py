@@ -352,6 +352,28 @@ def on_set_local(plan_id: str) -> dict[str, Any]:
         return {}
 
 
+def on_set_status(plan_id: str) -> dict[str, Any] | None:
+    """The shoot date and link state shown beside a plan's name, never its address. None if it's never had a link."""
+    local = on_set_local(plan_id)
+    if not local:
+        return None
+    expires = local.get("expires_at")
+    state = "stopped" if not local.get("token") else "ran out" if expires and expires <= time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()) else "live"
+    return {"date": local.get("shoot_date"), "state": state}
+
+
+def relink_on_set(row: dict[str, Any]) -> bool:
+    """A link stopped and then made again on a phone, after this Mac had forgotten the old address. Without this the Mac would never hear of the new one, and ticks on it wouldn't reach the report."""
+    local = on_set_local(row["plan_id"])
+    if not local or local.get("token") or row["revoked_at"] or not row["share_token"]:
+        return False
+    fresh = {**local, "token": row["share_token"], "expires_at": row["expires_at"]}
+    if not local.get("sent_hash") or local.get("sent_version") is None:   # stopped on the Mac, which keeps neither
+        fresh.update({"shoot_date": row["shoot_date"], "sent_version": row["list_version"], "sent_hash": on_set_hash(load_plan(row["plan_id"]), row["shoot_date"])})
+    save_on_set_local(row["plan_id"], fresh)
+    return True
+
+
 def save_on_set_local(plan_id: str, data: dict[str, Any]) -> None:
     _write_json(_on_set_file(plan_id), data)
     os.chmod(_on_set_file(plan_id), 0o600)
@@ -508,7 +530,7 @@ def view(plan_id: str) -> dict[str, Any]:
 
 def overview() -> dict[str, Any]:
     logs = [{"key": k, "name": v["name"]} for k, v in sl.load_index().items()]
-    return {"plans": [{"id": p["id"], "name": p["name"], "client": p.get("client"), "shots": len(p["items"]), "approved": bool(p.get("approved_at")), "log_key": p.get("log_key")} for p in list_plans()], "logs": logs, "templates": list_templates()}
+    return {"plans": [{"id": p["id"], "name": p["name"], "client": p.get("client"), "shots": len(p["items"]), "approved": bool(p.get("approved_at")), "log_key": p.get("log_key"), "link": on_set_status(p["id"])} for p in list_plans()], "logs": logs, "templates": list_templates()}
 
 
 def summary_for_log(ctx: dict[str, Any], clips: list[dict[str, Any]]) -> dict[str, Any] | None:

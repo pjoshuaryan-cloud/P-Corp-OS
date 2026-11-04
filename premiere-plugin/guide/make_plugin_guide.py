@@ -339,7 +339,7 @@ s.append(steps([
         ("Watch ticks come in. <b>Details</b> changes the name or date, and stops the link.", "A stopped link stays dead. Making a new one gives a new address to send, and keeps the ticks."),
     ]),
     ("Back at the Mac", "Coverage Plans", [
-        ("Open Coverage Plans.", "Your lists come in by themselves, with their ticks. Log, Tag and <b>Check</b> as usual: the footage check and report stay on the Mac."),
+        ("Open Coverage Plans.", "Your lists come in by themselves, with their ticks. The list picker shows each one's date and whether its link is live. Log, Tag and <b>Check</b> as usual: the footage check and report stay on the Mac."),
     ]),
 ]))
 s.append(Paragraph("Handy to know", h2))

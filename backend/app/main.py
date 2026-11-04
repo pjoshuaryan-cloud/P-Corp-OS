@@ -3990,11 +3990,20 @@ async def post_coverage_phone_sync(_: None = Depends(verify_token)) -> dict:
     except Exception as exc:
         print(f"[on set] couldn't look for phone lists: {type(exc).__name__}")
         return {"imported": 0, "offline": True}
-    imported = 0
+    imported = changed = 0
     for row in rows:
         if row["source"] == "phone" and post_coverage.import_phone_list(row, row["share_token"]):
             imported += 1
-    return {"imported": imported, "offline": False}
+            continue
+        # A list that isn't open here still has to show the right date and link state in the picker: the same read an open list does, when there's something to take in.
+        moved = post_coverage.relink_on_set(row)
+        local = post_coverage.on_set_local(row["plan_id"])
+        behind = local.get("sent_version") is not None and row["list_version"] > local["sent_version"]
+        if local.get("token") and (row["revoked_at"] or behind):
+            read = await _on_set_read(row["plan_id"])
+            moved = moved or bool(row["revoked_at"]) or bool(read.get("adopted"))
+        changed += moved
+    return {"imported": imported, "changed": changed, "offline": False}
 
 
 def _on_set_shoot_date(raw: str) -> str:

@@ -453,6 +453,9 @@ with tempfile.TemporaryDirectory() as tmp:
     words, bins = cov.moments_for_log(ctx2, list(sl.load_log(ctx2)["clips"].values()))
     check("Apply gets By Moment bins from it", {b["name"] for b in bins} >= {"Outside"} and any(words.values()), bins)
     added = cov.add_item(phone_id, {"moment": "Outside", "description": "Added on the Mac afterwards", "priority": "should"})
+    cov.save_on_set_local(phone_id, {**cov.on_set_local(phone_id), "expires_at": "2020-01-01T00:00:00.000Z"})
+    check("a link past its date says it ran out", cov.on_set_status(phone_id) == {"date": "2026-11-09", "state": "ran out"}, cov.on_set_status(phone_id))
+    check("a plan with no link says nothing about one", cov.on_set_status(cov.new_plan("No link yet")["id"]) is None)
     check("a shot added on the Mac can't clash with the phone's ids", added["id"] not in phone_shots.values() and len({i["id"] for i in cov.load_plan(phone_id)["items"]}) == 4)
 
 check("nothing landed in the real data folder", not (REAL_DATA / "coverage").exists() or not any("GQ x Miele" in p.read_text() for p in (REAL_DATA / "coverage").glob("*/plan.json")))

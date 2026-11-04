@@ -14,6 +14,7 @@
   html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; }
   header.bar { position: sticky; top: 0; z-index: 5; background: rgba(19,21,25,.96); backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); padding: 12px 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
   header .title { font-size: 15px; font-weight: 650; }
+  #planPick { max-width: 100%; min-width: 0; }
   .spacer { flex: 1; }
   button, select, input, textarea, a.button { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); padding: 6px 11px; border-radius: 7px; }
   button, a.button { cursor: pointer; text-decoration: none; white-space: nowrap; }
@@ -167,11 +168,18 @@ const usd = (n) => (n < 1 ? `${Math.max(1, Math.round(n * 100))}¢` : `$${n.toFi
 const label = (v) => (v === "any" ? "Any" : (data.labels[v] || v));
 function confirmAction(title, body, yes) { return new Promise((resolve) => { const d = $("confirmDialog"); $("confirmTitle").textContent = title; $("confirmBody").textContent = body; $("confirmYes").textContent = yes; d.showModal(); $("confirmYes").onclick = () => { d.close(); resolve(true); }; $("confirmNo").onclick = () => { d.close(); resolve(false); }; }); }
 
+// Two lists can share a name, so the date and link state tell them apart.
+function planLabel(p) {
+  const name = p.client ? `${p.name} / ${p.client}` : p.name;
+  if (!p.link) return name;
+  const date = p.link.date ? new Date(`${p.link.date}T12:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "";
+  return [name, date, `link ${p.link.state}`].filter(Boolean).join(" · ");
+}
 function renderPick() {
   const s = $("planPick"); s.textContent = "";
   if (!overview.plans.length) { const o = el("option", "", "No plans yet"); s.appendChild(o); s.disabled = true; return; }
   s.disabled = false;
-  for (const p of overview.plans) { const o = el("option", "", p.client ? `${p.name} / ${p.client}` : p.name); o.value = p.id; o.selected = p.id === planId; s.appendChild(o); }
+  for (const p of overview.plans) { const o = el("option", "", planLabel(p)); o.value = p.id; o.selected = p.id === planId; s.appendChild(o); }
 }
 function renderHeader() {
   const job = data && data.job, running = job && job.state === "running";
@@ -188,7 +196,7 @@ function render() {
     const b = el("button", "primary", "New plan"); b.onclick = openNew; box.appendChild(b);
     if (logParam && overview.plans.some((p) => !p.log_key)) {
       const pick = el("select"); pick.style.marginLeft = "8px"; pick.appendChild(el("option", "", "Or link an existing plan…"));
-      for (const p of overview.plans.filter((x) => !x.log_key)) { const o = el("option", "", p.name); o.value = p.id; pick.appendChild(o); }
+      for (const p of overview.plans.filter((x) => !x.log_key)) { const o = el("option", "", planLabel(p)); o.value = p.id; pick.appendChild(o); }
       pick.onchange = async () => { if (!pick.value) return; try { await post(`/post/coverage/${pick.value}/link`, { log_key: logParam }); planId = pick.value; tab = "report"; load(); } catch (e) { toast(e.message, true); } };
       box.appendChild(pick);
     }
@@ -444,7 +452,7 @@ function showQr(title, body, url) {
 }
 $("qrClose").onclick = () => $("qrDialog").close();
 // Lists made on a phone come in by themselves. Never holds up the page, and with no signal it just finds nothing new.
-function syncPhoneLists() { api("/post/coverage-phone/sync", { method: "POST" }).then((r) => { if (r.imported) { toast(`${r.imported} list${r.imported === 1 ? "" : "s"} from your phone came in.`); load(); } }).catch(() => {}); }
+function syncPhoneLists() { api("/post/coverage-phone/sync", { method: "POST" }).then((r) => { if (r.imported) toast(`${r.imported} list${r.imported === 1 ? "" : "s"} from your phone came in.`); if (r.imported || r.changed) load(); }).catch(() => {}); }
 async function renderPhones() {
   const box = $("phoneList"); box.textContent = "";
   const r = await api("/post/coverage-phone");
