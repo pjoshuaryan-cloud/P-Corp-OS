@@ -3902,6 +3902,12 @@ async def set_manage_link_off(request: Request, plan_id: str) -> JSONResponse:
     return await _set_manage(_set_manager_key(request), lambda conn: on_set_manage.stop_link(plan_id, conn))
 
 
+@app.delete("/set/manage/lists/{plan_id}")
+async def set_manage_delete(request: Request, plan_id: str) -> JSONResponse:
+    from app import on_set_manage
+    return await _set_manage(_set_manager_key(request), lambda conn: on_set_manage.delete_list(plan_id, conn))
+
+
 class CoverageOnSetRequest(BaseModel):
     shoot_date: str
 
@@ -3994,15 +4000,29 @@ async def post_coverage_phone_sync(_: None = Depends(verify_token)) -> dict:
     for row in rows:
         if row["source"] == "phone" and post_coverage.import_phone_list(row, row["share_token"]):
             imported += 1
-            continue
         # A list that isn't open here still has to show the right date and link state in the picker: the same read an open list does, when there's something to take in.
         moved = post_coverage.relink_on_set(row)
         local = post_coverage.on_set_local(row["plan_id"])
+        if local and not local.get("token") and not post_coverage.load_on_set_ticks(row["plan_id"]):
+            # Made and stopped on a phone before this Mac ever saw it: with no address, an open list's read can't fetch its ticks, and the report needs them.
+            async def stopped_ticks(plan_id: str = row["plan_id"]) -> list:
+                async with _pooled_postgres_conn() as conn:
+                    return await on_set_db.ticks_since(plan_id, 0, conn)
+            try:
+                post_coverage.save_on_set_ticks(row["plan_id"], on_set_db.current_ticks(await asyncio.wait_for(stopped_ticks(), timeout=8.0)))
+            except Exception as exc:
+                print(f"[on set] couldn't read a stopped list's ticks: {type(exc).__name__}")
         behind = local.get("sent_version") is not None and row["list_version"] > local["sent_version"]
         if local.get("token") and (row["revoked_at"] or behind):
             read = await _on_set_read(row["plan_id"])
             moved = moved or bool(row["revoked_at"]) or bool(read.get("adopted"))
         changed += moved
+    # Deleted on a phone: nothing in the cloud says so but its absence, and the picker shouldn't go on calling it live.
+    in_cloud = {row["plan_id"] for row in rows}
+    for plan in post_coverage.list_plans():
+        if plan["id"] not in in_cloud and post_coverage.on_set_local(plan["id"]).get("token"):
+            read = await _on_set_read(plan["id"])
+            changed += not read["live"]
     return {"imported": imported, "changed": changed, "offline": False}
 
 
@@ -4130,6 +4150,35 @@ async def post_coverage_on_set_stop(plan_id: str, _: None = Depends(verify_token
         post_coverage.save_on_set_local(plan_id, {"token": None, "shoot_date": final.get("shoot_date"), "expires_at": None, "sent_hash": None})
         await _shoot_log_audit("post_coverage_on_set_stop_ui", {"plan": plan_id})
     return await _on_set_read(plan_id)
+
+
+@app.delete("/post/coverage/{plan_id}")
+async def post_coverage_delete(plan_id: str, _: None = Depends(verify_token)) -> dict:
+    """Deletes a list from the cloud and this Mac for good. A live link has to be stopped first. The cloud goes first: if it's still there, a list made on a phone would only come back."""
+    from app import on_set_db, post_coverage
+    _coverage_call(post_coverage.load_plan, plan_id)
+    if (post_coverage.job_state(plan_id) or {}).get("state") == "running":
+        raise HTTPException(status_code=409, detail="A job is running on this list. Stop it or let it finish first.")
+    if post_coverage.on_set_local(plan_id).get("token"):
+        await _on_set_read(plan_id)   # it may have been stopped on the phone since this Mac last looked
+    status = post_coverage.on_set_status(plan_id)
+    if status and status["state"] == "live":
+        raise HTTPException(status_code=409, detail="Stop the link first. A live list can't be deleted.")
+    if status:
+        async def remove() -> Any:
+            async with _pooled_postgres_conn() as conn:
+                await on_set_db.ensure_tables(conn)
+                return await on_set_db.delete_list(plan_id, conn)
+        try:
+            gone = await asyncio.wait_for(remove(), timeout=15.0)
+        except Exception as exc:
+            print(f"[on set] couldn't delete a list: {type(exc).__name__}")
+            raise HTTPException(status_code=503, detail="Couldn't reach the cloud, so nothing was deleted. Check your signal and try again.") from None
+        if gone is False:
+            raise HTTPException(status_code=409, detail="This list has a live link again, made on your phone. Stop it first.")
+    _coverage_call(post_coverage.delete_plan, plan_id)
+    await _shoot_log_audit("post_coverage_delete_ui", {"plan": plan_id})
+    return {"ok": True}
 
 
 class ProjectPlanRequest(BaseModel):

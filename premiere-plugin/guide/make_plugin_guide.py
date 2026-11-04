@@ -150,7 +150,7 @@ s.append(PageBreak())
 s += section("One shoot, start to finish", "This is the full route, in order. The next page shows what to leave out for each kind of job. If there's a brief or run sheet, start with <b>Coverage Plans</b> before the shoot, and the crew can tick it off on their phones on the day.")
 s.append(steps([
     ("Copy the footage", "P Corp app, POST", [
-        ("Plug in the card and your drive. Fill in the profile, shoot name, drives, format, resolution and frame rate, then click <b>Create Job</b> and <b>Start</b>.", "It copies, checks every file against the original and analyses the media. A notification says when it's ready."),
+        ("Plug in the card and your drive. Fill in the profile, shoot name, drives, format, resolution and frame rate, then click <b>Create Job</b> and <b>Start</b>.", "It copies, checks every file against the original and analyses the media. A notification says when it's ready. Several cameras? Give each card its own folder inside one folder, and point the job at that. Don't merge cards: same-named clips could overwrite."),
         ("Optional: click <b>View Report</b>.", "Cameras, frame rates, corrupt files, exact duplicates. Its exposure flags can miss problems on S-Log3."),
     ]),
     ("Set up Premiere", "plugin, More", [
@@ -318,7 +318,7 @@ s += bullets([
     "<b>No signal:</b> keep ticking. Ticks are saved on the phone and sent when signal returns, with the time they were really made.",
     "<b>Changing the list:</b> an edit on the Mac reaches phones by itself. With no signal, the page says <i>Phones have an older list</i> and offers <b>Send update</b>.",
     "<b>Filters:</b> <i>Still to get</i> hides what's ticked. <i>Mine</i> shows shots assigned to your camera, if the list says who's shooting what.",
-    "<b>What the link can do:</b> see this one list and tick it. It can't reach anything else in P Corp, change the list, stop the link or spend money. A shoot under a strict NDA shouldn't use it, because the list goes on the cloud server and stays there after the link stops, closed to the crew.",
+    "<b>What the link can do:</b> see this one list and tick it. It can't reach anything else in P Corp, change the list, stop the link or spend money. A shoot under a strict NDA shouldn't use it, because the list goes on the cloud server and stays there after the link stops, closed to the crew, until you delete it.",
     "<b>Warnings only show while the page is open.</b> Nothing reaches a phone in a pocket.",
 ])
 s.append(Spacer(1, 4))
@@ -347,6 +347,7 @@ s += bullets([
     "<b>Lost your phone?</b> On the Mac, <b>My phone</b>, <b>Turn off</b> locks it out at once. Crew links it sent keep working, so stop any you need to.",
     "<b>Only you start or stop links.</b> That takes your Mac or this phone. Crew can only see and tick. They could forward their link to someone else, who could then see and tick too, until you stop it.",
     "<b>What it can do:</b> shot lists only. It can't reach anything else in P Corp.",
+    "<b>Deleting a stopped list:</b> <b>Details</b> on your phone takes it off the cloud and your phone, and the Mac keeps its copy. <b>Delete list</b> in Coverage Plans takes it off the Mac and the cloud, with its ticks and report. It can't be undone, and a live link has to be stopped first.",
     "<b>A daily limit on drafts:</b> 15 a day or $1.50 a day from phones, whichever comes first, so a lost phone can't run up a bill. Templates and hand edits have no limit.",
     "<b>Both sides stay level:</b> edit on the Mac or the phone and the other catches up. If you edit the same list on both at once, the last one sent wins.",
     "<b>It needs signal</b> to make or change a list. Ticking on the crew's page is what works without it.",

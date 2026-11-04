@@ -25,15 +25,18 @@ function makeWorld(opts = {}) {
     }
     const root = new Folder("root"); root.isRoot = true; const video = new Folder(opts.nested ? "vertical" : "Video");
     if (opts.nested) { const footage = new Folder("footage"); footage.children.push(video); root.children.push(footage); } else root.children.push(video);   // his own projects: footage > vertical > clips
-    const N = opts.clips || 6; const subclipLog = [];
+    const N = opts.files ? opts.files.length : (opts.clips || 6); const subclipLog = [];
     for (let i = 0; i < N; i++) {
-        const name = `MNSTR${2684 + i}.MP4`;
+        const spec = opts.files && opts.files[i];
+        const name = spec ? spec.name : `MNSTR${2684 + i}.MP4`;
         if (opts.missingClip === name) continue;
         const clip = new Item(name);
+        if (spec) clip.getMediaFilePath = async () => spec.path;
         clip.createSubClipAction = (subName, start, end, hard, o) => ({
             run: () => {
                 if (fail.subclipBatchOnce && !fail._done && subclipLog.length === 0) { fail._done = true; throw new Error("subclip batch boom"); }
                 const s = new Item(subName); s.startTicks = start.ticks; s.endTicks = end.ticks; s.opts = o; s.hard = hard; subclipLog.push(s);
+                if (spec) { s.from = spec.path; s.getMediaFilePath = clip.getMediaFilePath; }   // a subclip has its source's path under another name
                 const unwrappable = !hard && (fail.nullUnrestricted || (fail.nullShots && [...fail.nullShots].some((n) => subName.startsWith(`RC_ED_${n}_`))));
                 if (unwrappable) video.children.push(null);                       // Premiere returns an EMPTY entry for it
                 else if (fail.lateSubclips) (stats.pending = stats.pending || []).push({ item: s, at: (stats.scans || 0) + fail.lateSubclips, into: video });
@@ -109,7 +112,7 @@ function makePlan(fps, world) {
 function backendFor(plan, posts, opts = {}) {
     return (pathname, method) => {
         if (pathname === "/post/jobs") return { body: { jobs: [{ id: 34, shoot_name: "JD Sports - MOA Store Opening", premiere_project_path: "/Volumes/X/10_PREMIERE/JD.prproj" }] } };
-        if (pathname === "/post/jobs/34/premiere-prep") return { body: { job_id: 34, shoot_name: "JD Sports - MOA Store Opening", profile: "alpha_mode", deliverable_format: "9:16", resolution: "4k_uhd", frame_rate: "25", files: [] } };
+        if (pathname === "/post/jobs/34/premiere-prep") return { body: { job_id: 34, shoot_name: "JD Sports - MOA Store Opening", profile: "alpha_mode", deliverable_format: "9:16", resolution: "4k_uhd", frame_rate: "25", files: opts.prepFiles || [] } };
         if (pathname === "/post/jobs/34/edit-plan") return opts.noPlan ? { ok: false, body: { detail: "no plan" } } : { body: plan };
         if (pathname === "/post/jobs/34/rough-cut-assembled") { posts.push(pathname); return { body: { ok: true } }; }
         return { ok: false, body: { detail: "unexpected " + pathname } };
@@ -250,6 +253,53 @@ async function run(label, worldOpts, fps, backendOpts) {
         check(/Done\. 6 of 6/.test(out) && world.video.children.filter((c) => c && String(c.name).startsWith("RC_")).length === 0,
             "the working subclips made next to his clips are tidied out of his footage bin");
     }
+    // ---- two cameras can both have a C0001.MP4, so a name alone can't say which clip a shot means
+    {
+        console.log("\n== two cameras, same file names ==");
+        const dir = "/Volumes/X/_INGESTED";
+        const A1 = `${dir}/A-cam/C0001.MP4`, A2 = `${dir}/A-cam/C0002.MP4`, B1 = `${dir}/B-cam/C0001.MP4`, B2 = `${dir}/B-cam/C0002.MP4`;
+        const clipSpec = (path) => ({ name: path.split("/").pop(), path });
+        const jobFile = (path, i) => ({ file_id: 200 + i, relative_path: path.slice(dir.length + 1), destination_path: path });
+        const planFor = (paths) => { const plan = makePlan(25); plan.shots = paths.map((path, i) => ({ ...plan.shots[i], path, name: path.split("/").pop() })); plan.music = {}; return plan; };
+        const build = async (world, plan, prepFiles) => { const { sandbox, output } = load(world, backendFor(plan, [], { prepFiles })); await vm.runInContext("assembleEdit()", sandbox); return output.textContent; };
+        const everyFile = [A1, A2, B1, B2];
+
+        let world = makeWorld({ files: everyFile.map(clipSpec) });
+        const wanted = [B1, A1, A2, B2];
+        let out = await build(world, planFor(wanted), everyFile.map(jobFile));
+        check(world.subclipLog.map((s) => s.from).join() === wanted.join(), "each shot is cut from the camera the plan means, not the last clip with that name: " + world.subclipLog.map((s) => s.from.slice(dir.length + 1)).join(" "));
+        check(/Done\. 4 of 4/.test(out), "all 4 shots placed");
+        const before = world.subclipLog.length;
+        out = await build(world, planFor(wanted), everyFile.map(jobFile));
+        check(world.subclipLog.slice(before).map((s) => s.from).join() === wanted.join() && /Done\. 4 of 4/.test(out), "building again isn't thrown by the first build's subclips, which share those paths");
+
+        world = makeWorld({ files: [clipSpec("/moved/C0009.MP4")] });
+        out = await build(world, planFor([`${dir}/C0009.MP4`]), [jobFile(`${dir}/C0009.MP4`, 0)]);
+        check(/Done\. 1 of 1/.test(out) && world.subclipLog.length === 1, "a clip whose path moved is still found by a name only it has");
+
+        world = makeWorld({ files: [clipSpec(B1)] });
+        out = await build(world, planFor([A1]), everyFile.map(jobFile));
+        check(world.subclipLog.length === 0 && /C0001\.MP4/.test(out), "if the planned camera's clip is gone, the other camera's is NOT used instead");
+
+        world = makeWorld({ files: [clipSpec(A1), clipSpec(B1)] });
+        out = await build(world, planFor(["/old/C0001.MP4"]), []);
+        check(world.subclipLog.length === 0 && /wrong camera/.test(out), "with two clips of that name and neither at the planned path, the slot stays empty and it says why: " + (out.match(/[^\n]*wrong camera[^\n]*/) || [""])[0].slice(0, 90));
+
+        const { sandbox } = load(makeWorld(), () => ({ body: {} }));
+        sandbox.__files = [jobFile(A1, 0), jobFile(B1, 1), { file_id: 9, relative_path: "C0003.MP4", destination_path: "/x/C0003.MP4" }];
+        const fileFor = async (name, path) => {
+            sandbox.__clip = path === null ? {} : { getMediaFilePath: async () => path };
+            sandbox.__name = name;
+            const found = await vm.runInContext("fileForClip(indexFiles(__files), __clip, __name)", sandbox);
+            return found ? found.file_id : null;
+        };
+        check(await fileFor("C0001.MP4", A1) === 200 && await fileFor("C0001.MP4", B1) === 201, "Transcribe, Smart Selects and Exposure get the right camera's file for each clip");
+        check(await fileFor("C0003.MP4", "/x/C0003.MP4") === 9, "and find a clip that isn't in a camera folder");
+        check(await fileFor("RC_ED_1_123", A1) === null, "a subclip isn't taken for its source");
+        check(await fileFor("C0003.MP4", null) === 9, "with no path to read, a name only one file has still works");
+        check(await fileFor("C0001.MP4", null) === null, "but a name two files share doesn't guess");
+    }
+
     console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
     process.exit(failures ? 1 : 0);
 })();

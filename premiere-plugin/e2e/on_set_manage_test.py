@@ -101,6 +101,18 @@ async def database(conn, label):
     await db.record_draft(mid, plan, 0.02, 2, conn)
     used = await db.drafts_last_day(conn)
     check(f"{label}: drafts and their cost add up", used["count"] == 2 and abs(used["usd"] - 0.0301) < 1e-6, used)
+    doomed, doomed_token = "c" + "de" * 6, "d" * 44
+    await db.publish(doomed, doomed_token, "To delete", "", today, [{"id": "a"}], {}, db.expiry_for(today, 3), conn, source="phone")
+    await db.add_ticks(await db.get_link(doomed, conn), [{"event_id": "delete-me-01", "item": "a", "done": True, "by": "A", "note": "", "at": None}], conn)
+    check(f"{label}: the list to delete has a tick", len(await db.ticks_since(doomed, 0, conn)) == 1)
+    check(f"{label}: a live list can't be deleted", await db.delete_list(doomed, conn) is False and (await db.get_link(doomed, conn)) is not None)
+    await db.revoke(doomed, conn)
+    check(f"{label}: a stopped one can", await db.delete_list(doomed, conn) is True)
+    check(f"{label}: and its list, address and ticks are all gone", await db.get_link(doomed, conn) is None and await db.get_share(doomed, conn) is None and await db.ticks_since(doomed, 0, conn) == [])
+    check(f"{label}: deleting it again says there's nothing there", await db.delete_list(doomed, conn) is None)
+    await db.publish(doomed, doomed_token, "Ran out", "", today, [{"id": "a"}], {}, PAST, conn, source="phone")
+    check(f"{label}: a link that ran out counts as stopped", await db.delete_list(doomed, conn) is True)
+    check(f"{label}: what drafts cost stays, for the daily limit", (await db.drafts_last_day(conn))["count"] == 2)
     await db.revoke_manager(mid, conn)
     check(f"{label}: a turned-off phone is locked out at once", await db.find_manager(key, conn) is None and await db.list_managers(conn) == [])
 
@@ -517,6 +529,69 @@ def main_tests():
         web.post(f"/set/manage/lists/{pid}/moment", headers=K, json={"moment": "Outside", "time": "10:15"})
         check("and it does take them", sync().get("changed") == 1 and cov.load_plan(pid)["items"][0]["time"] == "10:15", cov.load_plan(pid)["items"][0]["time"])
         check("a list that's never had a link says nothing about one", link_of(cov.new_plan("Never linked")["id"]) is None)
+
+        # ---- deleting, from the phone
+        made = web.post("/set/manage/lists", headers=K, json={"name": "To delete", "client": "NDA client", "shoot_date": today, "template": STARTER}).json()
+        did, crew_del = made["id"], {"X-Set-Token": made["token"]}
+        first_del = made["items"][0]["id"]
+        web.post("/set/ticks", headers=crew_del, json={"events": [{"event_id": "crew-del-0001", "item": first_del, "done": True, "by": "B-cam", "note": ""}]})
+        refused = web.delete(f"/set/manage/lists/{did}", headers=K)
+        check("a live list can't be deleted from the phone", refused.status_code == 400 and "Stop the link" in refused.json()["detail"], refused.text)
+        check("only the owner's login can delete: not a crew link", web.delete(f"/set/manage/lists/{did}", headers=crew_del).status_code == 404)
+        check("or nobody at all", web.delete(f"/set/manage/lists/{did}").status_code == 404)
+        check("or the Mac's main token on the phone's route", web.delete(f"/set/manage/lists/{did}", params=MAIN).status_code == 404)
+        web.delete(f"/set/manage/lists/{did}/link", headers=K)
+        sync()
+        web.get(f"/post/coverage/{did}/on-set", params=MAIN)
+        check("a list made and stopped on the phone before the Mac ever saw it still brings its ticks to the Mac, for the report", cov.load_plan(did)["name"] == "To delete" and first_del in cov.load_on_set_ticks(did), cov.load_on_set_ticks(did))
+        gone = web.delete(f"/set/manage/lists/{did}", headers=K)
+        check("a stopped list can be deleted from the phone", gone.status_code == 200 and gone.json() == {"ok": True}, gone.text)
+        check("it's off the phone", did not in [l["id"] for l in web.get("/set/manage/lists", headers=K).json()["lists"]] and web.get(f"/set/manage/lists/{did}", headers=K).status_code == 404)
+        check("and the crew's link says what any dead link says", web.get("/set/state", headers=crew_del).status_code == 404)
+        check("deleting it again finds nothing", web.delete(f"/set/manage/lists/{did}", headers=K).status_code == 404)
+        check("the cloud keeps nothing of it", asyncio.run(db.get_link(did)) is None and asyncio.run(db.get_share(did)) is None and asyncio.run(db.ticks_since(did, 0)) == [])
+        check("a phone can't reach the Mac's copy: list and ticks stay", cov.load_plan(did)["name"] == "To delete" and first_del in cov.load_on_set_ticks(did))
+        check("and it doesn't come back from the cloud", sync() == {"imported": 0, "changed": 0, "offline": False} and link_of(did)["state"] == "stopped")
+
+        unseen = web.post("/set/manage/lists", headers=K, json={"name": "Stopped and deleted while the Mac was away", "shoot_date": today}).json()
+        sync()
+        check("the Mac sees that list as live", link_of(unseen["id"])["state"] == "live", link_of(unseen["id"]))
+        web.delete(f"/set/manage/lists/{unseen['id']}/link", headers=K)
+        web.delete(f"/set/manage/lists/{unseen['id']}", headers=K)
+        check("after it's stopped and deleted on the phone, opening Coverage Plans stops calling it live", sync()["changed"] == 1 and link_of(unseen["id"])["state"] == "stopped", link_of(unseen["id"]))
+        check("and with nothing new, changes nothing", sync()["changed"] == 0)
+
+        # ---- deleting, from the Mac
+        check("deleting from the Mac needs the main token", web.delete(f"/post/coverage/{did}", params={"token": key}).status_code == 403)
+        check("a made-up list can't be deleted", web.delete("/post/coverage/c000000000000", params=MAIN).status_code == 400)
+        check("and a request can't name a folder of its own", web.delete("/post/coverage/..%2F..%2Fsecrets", params=MAIN).status_code in (400, 404))
+        remade = web.post(f"/post/coverage/{did}/on-set", params=MAIN, json={"shoot_date": today}).json()
+        check("the Mac's copy can still go back out with a new link", remade["live"] and asyncio.run(db.get_link(did)) is not None, remade.get("live"))
+        refused = web.delete(f"/post/coverage/{did}", params=MAIN)
+        check("a live list can't be deleted from the Mac", refused.status_code == 409 and "Stop the link" in refused.json()["detail"] and cov.load_plan(did), refused.text)
+        web.delete(f"/post/coverage/{did}/on-set", params=MAIN)
+        cov._JOBS[did] = {"state": "running"}
+        refused = web.delete(f"/post/coverage/{did}", params=MAIN)
+        check("nor one with a job running on it, and the cloud isn't touched", refused.status_code == 409 and asyncio.run(db.get_link(did)) is not None, refused.text)
+        cov._JOBS.pop(did)
+        keep_delete = db.delete_list
+        async def no_signal(*a, **kw):
+            raise OSError("no route")
+        db.delete_list = no_signal
+        refused = web.delete(f"/post/coverage/{did}", params=MAIN)
+        db.delete_list = keep_delete
+        check("with no signal nothing is deleted, here or there", refused.status_code == 503 and cov.load_plan(did) and asyncio.run(db.get_link(did)) is not None, refused.text)
+        back = web.post(f"/set/manage/lists/{did}/link", headers=K).json()
+        check("a link re-made on the phone, that the Mac hasn't heard of, stops the delete too", web.delete(f"/post/coverage/{did}", params=MAIN).status_code == 409 and cov.load_plan(did), back.get("live"))
+        sync()
+        web.delete(f"/set/manage/lists/{did}/link", headers=K)
+        check("a list stopped on the phone, with the Mac still thinking it's live, can be deleted", cov.on_set_local(did)["token"] and web.delete(f"/post/coverage/{did}", params=MAIN).status_code == 200, cov.on_set_local(did).get("token"))
+        check("it's gone from the Mac: list, ticks and folder", not cov.plan_dir(did).exists() and did not in [p["id"] for p in web.get("/post/coverage", params=MAIN).json()["plans"]])
+        check("and from the cloud", asyncio.run(db.get_link(did)) is None)
+        check("and a sync doesn't bring it back", sync()["imported"] == 0 and not cov.plan_dir(did).exists())
+        unlinked = cov.new_plan("Never had a link")["id"]
+        check("a list that never had a link can be deleted", web.delete(f"/post/coverage/{unlinked}", params=MAIN).status_code == 200 and not cov.plan_dir(unlinked).exists())
+        check("a template isn't touched by any of this", "JD store opening" in [t["name"] for t in web.get("/post/coverage", params=MAIN).json()["templates"]])
 
         # ---- a list made on the Mac, managed from the phone
         mplan = cov.new_plan("Made on the Mac", template=STARTER)

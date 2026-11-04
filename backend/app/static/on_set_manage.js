@@ -249,6 +249,7 @@ $("timeClear").onclick = () => saveTime("");
 $("details").onclick = () => {
   $("detName").value = current.name; $("detClient").value = current.client; $("detDate").value = current.shoot_date;
   $("detStop").hidden = !current.live;
+  $("detDelete").hidden = current.live;
   $("detailsDialog").showModal();
 };
 $("detCancel").onclick = () => $("detailsDialog").close();
@@ -259,6 +260,11 @@ $("detStop").onclick = async () => {
   $("detailsDialog").close();
   if (!(await ask("Stop this link?", "The crew's phones lose the list straight away. Ticks are kept for the report. A new link will have a new address.", "Stop link"))) return;
   try { current = await call(`/set/manage/lists/${current.id}/link`, { method: "DELETE" }); lastRender = ""; renderList(); toast("Stopped."); } catch (e) { toast(e.message, true); }
+};
+$("detDelete").onclick = async () => {
+  $("detailsDialog").close();
+  if (!(await ask("Delete this list?", "It comes off the cloud and your phone for good, with its ticks. Open Coverage Plans on the Mac first if the report needs those ticks. The Mac keeps its copy until you delete it there.", "Delete list"))) return;
+  try { await call(`/set/manage/lists/${current.id}`, { method: "DELETE" }); screen = "home"; current = null; lastRender = ""; window.scrollTo(0, 0); await loadHome(); toast("Deleted."); } catch (e) { toast(e.message, true); }
 };
 
 // ---- keeping up with the crew's ticks -------------------------------------------------------------------------------------------------------------------------
@@ -272,7 +278,12 @@ function schedule() {
         if (fresh.draft && fresh.draft.finished_at && fresh.draft.finished_at !== seenDraft) { toast(fresh.draft.message, fresh.draft.state === "failed"); seenDraft = fresh.draft.finished_at; }
         if (screen === "list" && current && fresh.id === current.id && !anyDialogOpen()) { current = fresh; renderList(); }
       } else if (screen === "home") { await loadHome(); }
-    } catch (e) { /* poor signal: the next try may work, and what's on screen stays */ }
+    } catch (e) {
+      if (screen === "list" && /doesn't exist/.test(e.message)) {   // deleted on the Mac
+        screen = "home"; current = null; lastRender = ""; toast("That list was deleted.");
+        try { await loadHome(); } catch (e2) { /* the next try may work */ }
+      }   // otherwise poor signal: the next try may work, and what's on screen stays
+    }
     schedule();
   }, current && current.draft && current.draft.state === "running" ? 1500 : 6000);
 }

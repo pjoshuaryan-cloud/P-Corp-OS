@@ -309,6 +309,14 @@ function renderList(main) {
     ok.onclick = async () => { try { await post(`/post/coverage/${planId}/approve`, { approved: !data.plan.approved_at }); load(); } catch (e) { toast(e.message, true); } };
     head.appendChild(ok);
   }
+  if (onSet && !onSet.live) {
+    const remove = el("button", "quiet", "Delete list");
+    remove.onclick = async () => {
+      if (!(await confirmAction(`Delete "${data.plan.name}"?`, "It comes off the cloud and this Mac for good, with its ticks and footage report. Save the report PDF first if you need it. Your footage and Shoot Log aren't touched.", "Delete list"))) return;
+      try { await api(`/post/coverage/${planId}`, { method: "DELETE" }); planId = null; onSet = null; data = null; lastFinish = null; toast("Deleted."); load(); } catch (e) { toast(e.message, true); }
+    };
+    head.appendChild(remove);
+  }
   card.appendChild(head);
   if (!empty) {
     const wrap = el("div", "scroll"), table = el("table"), thead = el("tr");

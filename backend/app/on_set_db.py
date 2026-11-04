@@ -181,6 +181,37 @@ async def revoke(plan_id: str, conn: Any = None) -> None:
     await _run(conn, f"UPDATE {links} SET revoked_at = ? WHERE plan_id = ?", (now_iso(), plan_id))
 
 
+async def delete_list(plan_id: str, conn: Any = None) -> bool | None:
+    """Takes a list and its ticks off the cloud for good, in one step. None if there's no such list, False if its link is still live: stopping it comes first. What a draft cost stays, with no shots in it, so the daily limit still counts it."""
+    links, ticks = _names(conn)
+    select = f"SELECT revoked_at, expires_at FROM {links} WHERE plan_id = ?"
+    removals = [f"DELETE FROM {ticks} WHERE plan_id = ?", f"DELETE FROM {_table(conn, 'meta')} WHERE plan_id = ?", f"DELETE FROM {links} WHERE plan_id = ?"]
+    if conn is not None:
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(select.replace("?", "%s") + " FOR UPDATE", (plan_id,))
+                row = await cur.fetchone()
+                if row is None or (not row[0] and row[1] > now_iso()):
+                    await conn.rollback()
+                    return None if row is None else False
+                for sql in removals:
+                    await cur.execute(sql.replace("?", "%s"), (plan_id,))
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+        return True
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(select, (plan_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None or (not row[0] and row[1] > now_iso()):
+            return None if row is None else False
+        for sql in removals:
+            await db.execute(sql, (plan_id,))
+        await db.commit()
+    return True
+
+
 async def get_link(plan_id: str, conn: Any = None) -> dict[str, Any] | None:
     links, _ = _names(conn)
     rows = await _run(conn, f"SELECT {', '.join(_LINK_COLUMNS)} FROM {links} WHERE plan_id = ?", (plan_id,))

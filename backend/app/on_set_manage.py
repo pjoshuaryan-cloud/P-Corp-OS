@@ -249,6 +249,19 @@ async def stop_link(plan_id: str, conn: Any = None) -> dict[str, Any] | None:
     return await get_list(plan_id, conn)
 
 
+async def delete_list(plan_id: str, conn: Any = None) -> dict[str, Any] | None:
+    """Takes a stopped list off the cloud and every phone. A phone's login reaches nothing on the Mac, so the Mac keeps its copy until it's deleted there."""
+    if (_DRAFTS.get(plan_id) or {}).get("state") == "running":
+        raise ListError("It's still drafting. Give it a moment.")
+    gone = await db.delete_list(plan_id, conn)
+    if gone is False:
+        raise ListError("Stop the link first. A live list can't be deleted.")
+    if gone is None:
+        return None
+    _DRAFTS.pop(plan_id, None)
+    return {"ok": True}
+
+
 async def turn_on(plan_id: str, conn: Any = None) -> dict[str, Any] | None:
     """Makes a list reachable again. After a stop that's a new address, because stopping a link has to mean the old one stays dead. A link that only ran out keeps its address."""
     link = await db.get_link(plan_id, conn)

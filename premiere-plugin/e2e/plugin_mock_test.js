@@ -29,16 +29,18 @@ function makeWorld(opts = {}) {
     const video = new Folder("Video");
     root.children.push(video);
     const clipFiles = [];
-    const N = opts.clips || 6;
+    const N = opts.files ? opts.files.length : (opts.clips || 6);
     for (let i = 0; i < N; i++) {
-        const name = `MNSTR${2684 + i}.MP4`;
+        const spec = opts.files && opts.files[i];
+        const name = spec ? spec.split("/").pop() : `MNSTR${2684 + i}.MP4`;
         const clip = new Item(name);
         clip.parent = video;
+        if (spec) clip.getMediaFilePath = async () => `/Volumes/X/_INGESTED/${spec}`;
         clip.createSubClipAction = (subName, start, end) => ({
-            run: () => { if (fail.silentSubclip && subName.includes(`RC_${fail.silentSubclip}_`)) return; const s = new Item(subName); s.range = [start.seconds, end.seconds]; video.children.push(s); },
+            run: () => { if (fail.silentSubclip && subName.includes(`RC_${fail.silentSubclip}_`)) return; const s = new Item(subName); s.range = [start.seconds, end.seconds]; s.from = spec; if (spec) s.getMediaFilePath = clip.getMediaFilePath; video.children.push(s); },
         });
         video.children.push(clip);
-        clipFiles.push({ file_id: 100 + i, relative_path: name, creation_time: `2026-10-05T0${i}:00:00Z` });
+        clipFiles.push({ file_id: 100 + i, relative_path: spec || name, destination_path: spec ? `/Volumes/X/_INGESTED/${spec}` : undefined, creation_time: `2026-10-05T0${i}:00:00Z` });
     }
     // old leftover subclips from a crashed earlier run
     for (let i = 0; i < (opts.leftovers || 0); i++) video.children.push(new Item(`RC_999_${i}_1700000000000`));
@@ -218,6 +220,16 @@ async function run(label, worldOpts, backendOpts, extra) {
         check(bins.length === 1 && bins[0].name === "Rough Cut Pieces", `one pieces bin after two runs: ${bins.map((b) => b.name)}`);
         check(bins[0].children.length >= 8 && !world.video.children.some((c) => c.name.startsWith("RC_")), `both runs' pieces are in it (${bins[0].children.length}), none left in the Video bin`);
         check(/Done\./.test(output.textContent), "second run completed");
+    }
+
+    // ---- cards kept in their own folders, with the same file names
+    {
+        const files = ["A-cam/C0001.MP4", "A-cam/C0002.MP4", "B-cam/C0001.MP4", "B-cam/C0002.MP4"];
+        const t2 = await run("two cameras, same file names", { files, timelineOrder: [] });
+        check(/Done\. 4 moment\(s\) from 4 clip\(s\)/.test(t2.output), "clips in camera folders are found, not skipped: " + (t2.output.match(/Done\.[^\n]*/) || [t2.output.slice(-90)])[0].slice(0, 80));
+        const pieces = t2.world.root.children.find((c) => c.name === "Rough Cut Pieces");
+        const cut = (pieces ? pieces.children : []).filter((c) => c.from).map((c) => `${c.name.split("_")[1]} ${c.from}`).sort();
+        check(cut.join() === files.map((f, i) => `${100 + i} ${f}`).join(), "each file's moment is cut from its own camera's clip: " + cut.join(" | "));
     }
 
     console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");

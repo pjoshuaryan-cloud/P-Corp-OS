@@ -23,6 +23,7 @@ import io
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from datetime import datetime
@@ -350,6 +351,13 @@ def on_set_local(plan_id: str) -> dict[str, Any]:
         return json.loads(_on_set_file(plan_id).read_text())
     except (OSError, ValueError):
         return {}
+
+
+def delete_plan(plan_id: str) -> None:
+    """Removes a plan from this Mac for good: its list, ticks, brief and report. The shoot it was linked to, its log and its footage aren't touched."""
+    load_plan(plan_id)
+    shutil.rmtree(plan_dir(plan_id))
+    _JOBS.pop(plan_id, None)
 
 
 def on_set_status(plan_id: str) -> dict[str, Any] | None:

@@ -407,6 +407,62 @@ async function collectAllClips(project) {
     return clips;
 }
 
+const fileNameOf = (path) => String(path || "").split("/").pop();
+const normalPath = (path) => String(path || "").normalize("NFC");
+
+async function clipFilePath(clip) {
+    try {
+        return await clip.getMediaFilePath();
+    } catch (e) {
+        return "";   // no file behind it: the name can still find it
+    }
+}
+
+/** The project's clips by their real file. Two cameras can both have a C0001.MP4, so a name alone can't say which one is meant. Only an item named as its file counts for the path, because a subclip has its source's path under another name. `files`: the job's files if known, to tell which names they share. */
+async function indexClips(clips, files = []) {
+    const byPath = new Map(), byName = new Map(), seen = new Set(), shared = new Set();
+    for (const clip of clips) {
+        if (await clip.isSequence()) continue;
+        const name = await itemName(clip);
+        const path = await clipFilePath(clip);
+        if (path && fileNameOf(path) === name) byPath.set(normalPath(path), clip);
+        if (!byName.has(name)) byName.set(name, new Map());
+        byName.get(name).set(path || clip, clip);   // the same file imported twice is still one file
+    }
+    for (const file of files) {
+        const name = fileNameOf(file.relative_path);
+        (seen.has(name) ? shared : seen).add(name);
+    }
+    return { byPath, byName, shared };
+}
+
+/** The clip for a file a plan names: by its path, or if that has moved (relinked media), by a name that can only mean one thing. Better an empty slot than the wrong camera's clip. */
+function findClip(index, path, name) {
+    const exact = path && index.byPath.get(normalPath(path));
+    if (exact) return exact;
+    const named = index.byName.get(name);
+    return named && named.size === 1 && !index.shared.has(name) ? [...named.values()][0] : null;
+}
+
+/** The job's files, to look up from a project clip. A card kept in its own folder has a relative path the clip's name alone won't match. */
+function indexFiles(files) {
+    const byPath = new Map(), byName = new Map();
+    for (const file of files) {
+        if (file.destination_path) byPath.set(normalPath(file.destination_path), file);
+        const name = fileNameOf(file.relative_path);
+        byName.set(name, [...(byName.get(name) || []), file]);
+    }
+    return { byPath, byName };
+}
+
+async function fileForClip(index, clip, name) {
+    const path = await clipFilePath(clip);
+    const exact = path && fileNameOf(path) === name ? index.byPath.get(normalPath(path)) : null;
+    if (exact) return exact;
+    const named = index.byName.get(name) || [];
+    return named.length === 1 ? named[0] : null;
+}
+
 async function transcribeDialogue() {
     const token = ensureToken();
     if (!token) {
@@ -437,10 +493,7 @@ async function transcribeDialogue() {
 
         log("Fetching file info (which clips have audio)…");
         const prep = await apiGet(`/post/jobs/${job.id}/premiere-prep`, token);
-        const fileByName = {};
-        for (const file of prep.files) {
-            fileByName[file.relative_path] = file;
-        }
+        const fileIndex = indexFiles(prep.files);
 
         const clips = await collectAllClips(project);
         let transcribedCount = 0;
@@ -449,7 +502,7 @@ async function transcribeDialogue() {
         for (const clip of clips) {
             if (await clip.isSequence()) continue;
             const name = typeof clip.name === "function" ? await clip.name() : clip.name;
-            const file = fileByName[name];
+            const file = await fileForClip(fileIndex, clip, name);
             if (!file || !file.audio_codec) {
                 skippedCount += 1;
                 continue;
@@ -546,10 +599,7 @@ async function suggestSmartSelects() {
 
         log("Fetching file info…");
         const prep = await apiGet(`/post/jobs/${job.id}/premiere-prep`, token);
-        const fileByName = {};
-        for (const file of prep.files) {
-            fileByName[file.relative_path] = file;
-        }
+        const fileIndex = indexFiles(prep.files);
 
         const clips = await collectAllClips(project);
         let clipsMarked = 0;
@@ -559,7 +609,7 @@ async function suggestSmartSelects() {
         for (const clip of clips) {
             if (await clip.isSequence()) continue;
             const name = typeof clip.name === "function" ? await clip.name() : clip.name;
-            const file = fileByName[name];
+            const file = await fileForClip(fileIndex, clip, name);
             if (!file) {
                 skippedCount += 1;
                 continue;
@@ -681,10 +731,7 @@ async function applyStartingExposure() {
 
         log("Fetching file info (exposure analysis)…");
         const prep = await apiGet(`/post/jobs/${job.id}/premiere-prep`, token);
-        const fileByName = {};
-        for (const file of prep.files) {
-            fileByName[file.relative_path] = file;
-        }
+        const fileIndex = indexFiles(prep.files);
 
         const clips = await collectAllClips(project);
         let adjustedCount = 0;
@@ -694,7 +741,7 @@ async function applyStartingExposure() {
         for (const clip of clips) {
             if (await clip.isSequence()) continue;
             const name = typeof clip.name === "function" ? await clip.name() : clip.name;
-            const file = fileByName[name];
+            const file = await fileForClip(fileIndex, clip, name);
             if (!file || !file.exposure_nudge_stops) {
                 skippedCount += 1;
                 continue;
@@ -1124,17 +1171,14 @@ async function assembleRoughCut() {
 
         log("Fetching file info…");
         const prep = await apiGet(`/post/jobs/${job.id}/premiere-prep`, token);
-        const fileByName = {};
-        for (const file of prep.files) fileByName[file.relative_path] = file;
+        const fileIndex = indexFiles(prep.files);
 
         // 1. ORDER -- the user's own timeline decides it.
         log("Reading the clip order from your timeline…");
         const timeline = await readTimelineOrder(project, prep.shoot_name);
         keepAlive.push(timeline);
         let orderedFiles = [];
-        for (const name of timeline.names) {
-            if (fileByName[name]) orderedFiles.push(fileByName[name]);
-        }
+        for (const name of timeline.names) orderedFiles.push(...(fileIndex.byName.get(name) || []));
         if (orderedFiles.length > 0) {
             log(`Using the order of "${timeline.source.name}": ${orderedFiles.length} clip(s).`);
         } else {
@@ -1146,11 +1190,7 @@ async function assembleRoughCut() {
         // 2. PLAN -- each clip's best moments from P Corp OS.
         const clips = await collectAllClips(project);
         keepAlive.push(clips);
-        const clipByName = {};
-        for (const clip of clips) {
-            if (await clip.isSequence()) continue;
-            clipByName[await itemName(clip)] = clip;
-        }
+        const clipIndex = await indexClips(clips, prep.files);
         const runId = Date.now();
         const pieces = [];
         let clipsSkipped = 0;
@@ -1181,14 +1221,14 @@ async function assembleRoughCut() {
         const FETCH_AT_ONCE = 8;
         for (let i = 0; i < orderedFiles.length; i += FETCH_AT_ONCE) {
             const chunk = orderedFiles.slice(i, i + FETCH_AT_ONCE);
-            const got = await Promise.all(chunk.map((file) => (clipByName[file.relative_path] ? fetchMoments(file) : null)));
+            const got = await Promise.all(chunk.map((file) => (findClip(clipIndex, file.destination_path, fileNameOf(file.relative_path)) ? fetchMoments(file) : null)));
             got.forEach((value, k) => { moments[i + k] = value; });
             if ((i / FETCH_AT_ONCE) % 3 === 2 || i + FETCH_AT_ONCE >= orderedFiles.length) {
                 log(`  collected ${Math.min(i + FETCH_AT_ONCE, orderedFiles.length)} of ${orderedFiles.length}`);
             }
         }
         orderedFiles.forEach((file, index) => {
-            const clip = clipByName[file.relative_path];
+            const clip = findClip(clipIndex, file.destination_path, fileNameOf(file.relative_path));
             if (!clip) {
                 clipsSkipped += 1;
                 log(`"${file.relative_path}": not in the project -- skipping.`);
@@ -2168,17 +2208,15 @@ async function assembleEdit(learned = null) {
 
         const clips = await collectAllClips(project);
         keepAlive.push(clips);
-        const clipByName = {};
-        for (const clip of clips) {
-            if (await clip.isSequence()) continue;
-            clipByName[await itemName(clip)] = clip;
-        }
+        const clipIndex = await indexClips(clips, prep.files);
         const runId = Date.now();
         const pieces = [];
         for (const shot of plan.shots) {
-            const clip = clipByName[shot.name];
+            const clip = findClip(clipIndex, shot.path, shot.name);
             if (!clip) {
-                log(`"${shot.name}" (shot ${shot.index}) isn't in the project -- that slot will be empty.`);
+                log(clipIndex.byName.has(shot.name) || clipIndex.shared.has(shot.name)
+                    ? `"${shot.name}" (shot ${shot.index}): more than one camera has a clip with this name and the planned one isn't in the project, so that slot stays empty rather than use the wrong camera's.`
+                    : `"${shot.name}" (shot ${shot.index}) isn't in the project -- that slot will be empty.`);
                 continue;
             }
             const startTicks = Math.round((shot.source_in * TICKS_PER_SECOND) / tpf) * tpf;
