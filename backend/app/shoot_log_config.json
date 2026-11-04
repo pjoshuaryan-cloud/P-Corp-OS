@@ -48,6 +48,35 @@
     "draft_max_tokens": 6000,
     "cap_multiple": 1.5,
     "hard_cap_usd": 10.0,
+    "_starter_templates_note": "Shot lists to start plans from. Each goes in once as an ordinary saved template, so one that's changed or deleted stays that way. Adding a new one here with a new id brings just that one in. The JD list comes from his hand cut of the Mall of Africa store opening; its priorities are a first guess.",
+    "starter_templates": [
+      {
+        "id": "t0000000000a1",
+        "name": "JD store opening",
+        "items": [
+          { "moment": "Outside", "description": "JD logo with the venue sign", "shot_size": "wide", "priority": "must" },
+          { "moment": "Outside", "description": "Full store front", "shot_size": "wide", "priority": "must" },
+          { "moment": "Outside", "description": "Welcome banner or headline sign, readable", "priority": "should" },
+          { "moment": "Outside", "description": "Crowd at the entrance barrier", "priority": "must" },
+          { "moment": "Opening", "description": "Confetti or the big opening moment", "priority": "must" },
+          { "moment": "Opening", "description": "First walk in, interior reveal", "priority": "should" },
+          { "moment": "Opening", "description": "Certificate or handover, with the venue sign", "shot_size": "medium", "priority": "should" },
+          { "moment": "Opening", "description": "Staff group pose, JD logos visible", "shot_size": "medium", "priority": "must" },
+          { "moment": "Opening", "description": "Staff cheering", "priority": "should" },
+          { "moment": "In store", "description": "Store interior", "shot_size": "wide", "priority": "must" },
+          { "moment": "In store", "description": "Partner brand displays, readable", "priority": "should" },
+          { "moment": "In store", "description": "Customer grabbing a shoe off the wall", "priority": "must" },
+          { "moment": "In store", "description": "Customer holding a shoe to camera", "priority": "must" },
+          { "moment": "In store", "description": "Customer trying on a shoe", "priority": "should" },
+          { "moment": "In store", "description": "Customer lifting a JD bag", "priority": "should" },
+          { "moment": "Entertainment", "description": "DJ at the booth, hands up", "priority": "must" },
+          { "moment": "Entertainment", "description": "DJ detail: headphones, mixer", "shot_size": "detail", "priority": "should" },
+          { "moment": "Entertainment", "description": "Dancers mid-move", "priority": "must" },
+          { "moment": "Entertainment", "description": "Prize wheel spin", "priority": "should" },
+          { "moment": "Reactions", "description": "Smiles, waves and points to camera", "priority": "must" }
+        ]
+      }
+    ],
     "on_set": {
       "_about": "Phase 3 (app/on_set_db.py, static/on_set.html): the phone checklist. It's served from the cloud backend, because phones at a venue can't reach this Mac.",
       "public_url": "https://p-corp-os.onrender.com",

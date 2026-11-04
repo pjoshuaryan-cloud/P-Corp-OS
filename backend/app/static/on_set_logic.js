@@ -100,7 +100,7 @@
     if (word.length > 5 && word.endsWith("ing")) word = word.slice(0, -3);
     else if (word.length > 4 && word.endsWith("ed")) word = word.slice(0, -2);
     else if (word.length > 3 && word.endsWith("s") && !word.endsWith("ss")) word = word.slice(0, -1);
-    if (word.length > 4 && word.endsWith("e")) word = word.slice(0, -1);
+    if (word.length > 3 && word.endsWith("e")) word = word.slice(0, -1);   // so "waving" and "waves" land on the same word
     return word;
   }
 

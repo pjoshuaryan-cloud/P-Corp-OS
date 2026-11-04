@@ -41,7 +41,9 @@ SHOT_SIZES = ("any", *sl.VOCAB["shot_size"])
 STATUSES = ("covered", "weak", "missing")
 STATUS_LABELS = {"covered": "Covered", "weak": "Weak", "missing": "Missing", "unchecked": "Not checked"}
 ITEM_FIELDS = ("moment", "time", "description", "shot_size", "priority", "owner")
+TEMPLATE_FIELDS = ("moment", "description", "shot_size", "priority", "owner")
 _PLAN_ID = re.compile(r"^c[0-9a-f]{12}$")
+_TEMPLATE_ID = re.compile(r"^t[0-9a-f]{12}$")
 ShootLogError = sl.ShootLogError
 
 
@@ -89,15 +91,20 @@ def list_plans() -> list[dict[str, Any]]:
     return sorted(plans, key=lambda p: p.get("created_at", ""), reverse=True)
 
 
-def new_plan(name: str, client: str | None = None, log_key: str | None = None) -> dict[str, Any]:
+def new_plan(name: str, client: str | None = None, log_key: str | None = None, template: str | None = None) -> dict[str, Any]:
     name = (name or "").strip()[:120]
     if not name:
         raise ShootLogError("Give the plan a name, such as the shoot's.")
     if log_key is not None and sl.find_context(log_key) is None:
         raise ShootLogError("That shoot hasn't been logged.")
+    if template:
+        load_template(template)   # a bad template mustn't leave an empty plan behind
     plan = {"id": "c" + uuid.uuid4().hex[:12], "name": name, "client": (client or "").strip()[:120], "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "approved_at": None, "log_key": log_key,
             "items": [], "next_item": 1, "moment_ids": {}, "next_moment": 1, "brief": {"text": "", "files": []}}
     save_plan(plan)
+    if template:
+        add_from_template(plan["id"], template)
+        return load_plan(plan["id"])
     return plan
 
 
@@ -171,6 +178,96 @@ def delete_item(plan_id: str, item_id: str) -> None:
     plan["items"] = kept
     plan["approved_at"] = None
     save_plan(plan)
+
+
+# ================================================================================================================================================== templates
+def _template_dir() -> Path:
+    return sl.DATA / "coverage_templates"
+
+
+def _template_path(template_id: str) -> Path:
+    """The id has to look like one of ours, so a request can't name a file of its own."""
+    if not _TEMPLATE_ID.match(template_id or ""):
+        raise ShootLogError("That isn't a template.")
+    return _template_dir() / f"{template_id}.json"
+
+
+def _template_item(fields: dict[str, Any]) -> dict[str, Any]:
+    """A shot as a template keeps it. No time, because every run sheet differs, and nothing about one plan's history."""
+    return {k: clean_item(fields)[k] for k in TEMPLATE_FIELDS}
+
+
+def _seed_templates() -> None:
+    """Starter lists from the config go in once. After that they're ordinary templates, so one that's been changed or deleted stays that way."""
+    marker = _template_dir() / "seeded.json"
+    try:
+        seeded = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        seeded = []
+    fresh = [t for t in CONFIG.get("starter_templates", []) if t["id"] not in seeded]
+    for t in fresh:
+        _write_json(_template_path(t["id"]), {"id": t["id"], "name": t["name"], "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "items": [_template_item(i) for i in t["items"]]})
+    if fresh:
+        _write_json(marker, seeded + [t["id"] for t in fresh])
+
+
+def load_template(template_id: str) -> dict[str, Any]:
+    _seed_templates()
+    try:
+        return json.loads(_template_path(template_id).read_text())
+    except (OSError, ValueError):
+        raise ShootLogError("That template doesn't exist.") from None
+
+
+def list_templates() -> list[dict[str, Any]]:
+    _seed_templates()
+    out = []
+    for path in _template_dir().glob("t*.json"):
+        try:
+            t = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        out.append({"id": t["id"], "name": t["name"], "shots": len(t["items"]), "must": sum(i["priority"] == "must" for i in t["items"])})
+    return sorted(out, key=lambda t: t["name"].lower())
+
+
+def save_template(plan_id: str, name: str) -> dict[str, Any]:
+    """Saves a plan's shots to start future plans from. The same name replaces the old one. Plans already made from it don't change, and neither does it when they do."""
+    plan = load_plan(plan_id)
+    name = (name or "").strip()[:80]
+    if not name:
+        raise ShootLogError("Give the template a name, such as the kind of shoot.")
+    if not plan["items"]:
+        raise ShootLogError("There are no shots on this list to save.")
+    same = next((t for t in list_templates() if t["name"].lower() == name.lower()), None)
+    template_id = same["id"] if same else "t" + uuid.uuid4().hex[:12]
+    template = {"id": template_id, "name": name, "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "items": [_template_item(i) for i in plan["items"]]}
+    _write_json(_template_path(template_id), template)
+    return {"id": template_id, "name": name, "shots": len(template["items"]), "replaced": bool(same)}
+
+
+def delete_template(template_id: str) -> None:
+    load_template(template_id)
+    _template_path(template_id).unlink()
+
+
+def add_from_template(plan_id: str, template_id: str) -> dict[str, int]:
+    """Adds a template's shots to a plan, leaving out any it already has. It's still a list a person has to read and approve."""
+    template = load_template(template_id)
+    plan = load_plan(plan_id)
+    have = {(i["moment"].lower(), i["description"].lower()) for i in plan["items"]}
+    added = 0
+    for fields in template["items"]:
+        item = clean_item(fields)
+        if (item["moment"].lower(), item["description"].lower()) in have:
+            continue
+        _add(plan, item, "template")
+        have.add((item["moment"].lower(), item["description"].lower()))
+        added += 1
+    if added:
+        plan["approved_at"] = None
+        save_plan(plan)
+    return {"added": added, "skipped": len(template["items"]) - added}
 
 
 def approve(plan_id: str, approved: bool) -> dict[str, Any]:
@@ -380,7 +477,7 @@ def view(plan_id: str) -> dict[str, Any]:
 
 def overview() -> dict[str, Any]:
     logs = [{"key": k, "name": v["name"]} for k, v in sl.load_index().items()]
-    return {"plans": [{"id": p["id"], "name": p["name"], "client": p.get("client"), "shots": len(p["items"]), "approved": bool(p.get("approved_at")), "log_key": p.get("log_key")} for p in list_plans()], "logs": logs}
+    return {"plans": [{"id": p["id"], "name": p["name"], "client": p.get("client"), "shots": len(p["items"]), "approved": bool(p.get("approved_at")), "log_key": p.get("log_key")} for p in list_plans()], "logs": logs, "templates": list_templates()}
 
 
 def summary_for_log(ctx: dict[str, Any], clips: list[dict[str, Any]]) -> dict[str, Any] | None:

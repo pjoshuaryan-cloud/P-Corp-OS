@@ -104,5 +104,26 @@ check("words not about anything on the list suggest nothing", !L.matchPhrase("lu
 check("empty words suggest nothing", !L.matchPhrase("got it, all done", list).length);
 check("a size alone isn't enough to suggest a shot", !L.matchPhrase("wide", list).length);
 
+// ---- the JD store opening list, with what someone might really say on the floor. Phrases fixed before looking at the scores.
+const config = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "../../backend/app/shoot_log_config.json"), "utf8"));
+const jd = config.coverage.starter_templates[0].items.map((it, n) => ({ id: `s${n}`, description: it.description, size: it.shot_size || "any", priority: it.priority }));
+const shot = (words) => jd.find((j) => j.description.startsWith(words)).id;
+const JD_PHRASES = [
+  ["got the JD logo and the mall sign", "JD logo"], ["store front wide", "Full store front"], ["the welcome banner", "Welcome banner"], ["crowd at the barrier", "Crowd at the entrance"],
+  ["confetti", "Confetti"], ["walking in, interior reveal", "First walk in"], ["certificate handover", "Certificate"], ["staff group photo with the logos", "Staff group pose"], ["staff cheering", "Staff cheering"],
+  ["inside the store wide", "Store interior"], ["crep protect display", "Partner brand"], ["someone grabbing a shoe off the wall", "Customer grabbing"], ["guy holding the shoe to camera", "Customer holding"],
+  ["customer trying shoes on", "Customer trying"], ["lifting the bag", "Customer lifting"], ["DJ hands up", "DJ at the booth"], ["DJ headphones", "DJ detail"], ["the dancers", "Dancers"], ["prize wheel", "Prize wheel"], ["people waving at camera", "Smiles"],
+];
+let jdRight = 0, jdWrong = 0;
+for (const [phrase, want] of JD_PHRASES) {
+  const found = L.matchPhrase(phrase, jd);
+  const right = found[0] && found[0].item.id === shot(want);
+  if (right) jdRight += 1;
+  if (found.some((x) => x.strong && x.item.id !== shot(want))) jdWrong += 1;
+  console.log(`  ${right ? "  ok" : "MISS"}  "${phrase}" -> ${found.slice(0, 2).map((x) => `${x.item.description.slice(0, 26)} ${x.score.toFixed(2)}${x.strong ? "*" : ""}`).join(" | ") || "nothing"}`);
+}
+console.log(`  JD list: right shot first on ${jdRight} of ${JD_PHRASES.length}, a wrong shot pre-selected on ${jdWrong}`);
+check("on the JD list, at least 8 in 10 phrases put the right shot first", jdRight >= JD_PHRASES.length * 0.8, jdRight);
+
 console.log(fails ? `\n${fails} FAILED` : "\nALL PASSED");
 process.exit(fails ? 1 : 0);

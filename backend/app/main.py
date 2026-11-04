@@ -3436,6 +3436,15 @@ class CoverageNewRequest(BaseModel):
     name: str
     client: str | None = None
     log_key: str | None = None
+    template: str | None = None
+
+
+class CoverageSaveTemplateRequest(BaseModel):
+    name: str
+
+
+class CoverageAddTemplateRequest(BaseModel):
+    template: str
 
 
 class CoverageDetailsRequest(BaseModel):
@@ -3512,7 +3521,7 @@ async def post_coverage_overview(_: None = Depends(verify_token)) -> dict:
 @app.post("/post/coverage")
 async def post_coverage_new(body: CoverageNewRequest, _: None = Depends(verify_token)) -> dict:
     from app import post_coverage
-    return _coverage_call(post_coverage.new_plan, body.name, body.client, body.log_key)
+    return _coverage_call(post_coverage.new_plan, body.name, body.client, body.log_key, body.template)
 
 
 @app.get("/post/coverage/{plan_id}")
@@ -3524,6 +3533,27 @@ async def post_coverage_view(plan_id: str, _: None = Depends(verify_token)) -> d
         return await on_drive(post_coverage.view, plan_id, timeout=30.0)
     except ShootLogError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/post/coverage/{plan_id}/save-template")
+async def post_coverage_save_template(plan_id: str, body: CoverageSaveTemplateRequest, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    return _coverage_call(post_coverage.save_template, plan_id, body.name)
+
+
+@app.post("/post/coverage/{plan_id}/add-template")
+async def post_coverage_add_template(plan_id: str, body: CoverageAddTemplateRequest, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    out = _coverage_call(post_coverage.add_from_template, plan_id, body.template)
+    await _on_set_push_quietly(plan_id)
+    return out
+
+
+@app.delete("/post/coverage-templates/{template_id}")
+async def post_coverage_delete_template(template_id: str, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    _coverage_call(post_coverage.delete_template, template_id)
+    return {"ok": True}
 
 
 @app.post("/post/coverage/{plan_id}/details")

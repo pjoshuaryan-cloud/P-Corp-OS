@@ -73,7 +73,10 @@
   dialog::backdrop { background: rgba(0,0,0,.6); }
   dialog h2 { font-size: 16px; }
   dialog p { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
-  dialog input { width: 100%; margin: 0 0 10px; }
+  dialog input, dialog select { width: 100%; margin: 0 0 10px; }
+  .saved { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  .saved span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .saved .muted { flex: none; }
   .actions { display: flex; gap: 8px; justify-content: flex-end; }
   .empty { color: var(--muted); padding: 24px 0; text-align: center; }
   @media (max-width: 860px) { .shot { grid-template-columns: 1fr; } .verdict { justify-content: flex-start; } .yours { text-align: left; } }
@@ -97,7 +100,16 @@
   <p>Make it before the shoot, or after: a plan doesn't need any footage yet.</p>
   <input id="newName" placeholder="Shoot name" aria-label="Shoot name">
   <input id="newClient" placeholder="Client (optional)" aria-label="Client">
+  <select id="newTemplate" aria-label="Start from"></select>
   <div class="actions"><button id="newCancel">Cancel</button><button id="newSave" class="primary">Make plan</button></div>
+</dialog>
+<dialog id="templateDialog">
+  <h2>Save as template</h2>
+  <p>Saves these shots to start future plans from. Times stay behind, because every run sheet differs.</p>
+  <input id="templateName" placeholder="Template name, such as Store opening" aria-label="Template name" maxlength="80">
+  <p id="templateNote" class="weak" hidden>This replaces the saved template with that name.</p>
+  <div id="templateList"></div>
+  <div class="actions" style="margin-top:12px"><button id="templateCancel">Close</button><button id="templateSave" class="primary">Save template</button></div>
 </dialog>
 <dialog id="tokenDialog">
   <h2>P Corp OS token</h2>
@@ -156,7 +168,7 @@ function render() {
   const main = $("main"); main.textContent = "";
   if (!data) {
     const box = el("div", "empty");
-    box.append(el("p", "", logParam ? "This shoot has no coverage plan yet." : "Start with a plan: paste a brief or run sheet and Claude drafts the shot list."));
+    box.append(el("p", "", logParam ? "This shoot has no coverage plan yet." : "Start with a plan: paste a brief or run sheet and Claude drafts the shot list, or start from a saved list."));
     const b = el("button", "primary", "New plan"); b.onclick = openNew; box.appendChild(b);
     if (logParam && overview.plans.some((p) => !p.log_key)) {
       const pick = el("select"); pick.style.marginLeft = "8px"; pick.appendChild(el("option", "", "Or link an existing plan…"));
@@ -256,7 +268,17 @@ function renderList(main) {
   const add = el("button", "", "Add a shot");
   add.onclick = async () => { const last = data.rows[data.rows.length - 1]; try { await post(`/post/coverage/${planId}/items`, { description: "New shot", moment: last ? last.moment : "General", priority: "must" }); await load(); } catch (e) { toast(e.message, true); } };
   head.appendChild(add);
+  if (overview.templates.length) {
+    const pick = el("select"); pick.setAttribute("aria-label", "Add shots from a template"); pick.appendChild(el("option", "", "Add from template…"));
+    for (const t of overview.templates) { const o = el("option", "", `${t.name} (${t.shots})`); o.value = t.id; pick.appendChild(o); }
+    pick.onchange = async () => {
+      if (!pick.value) return;
+      try { const r = await post(`/post/coverage/${planId}/add-template`, { template: pick.value }); toast(r.added ? `Added ${r.added} shot${r.added === 1 ? "" : "s"}${r.skipped ? `, and left out ${r.skipped} already here` : ""}.` : "All of those are already on this list."); await load(); } catch (e) { toast(e.message, true); }
+    };
+    head.appendChild(pick);
+  }
   if (!empty) {
+    const keep = el("button", "", "Save as template"); keep.onclick = openSaveTemplate; head.appendChild(keep);
     const pdf = el("a", "button", "Shot list PDF"); pdf.href = withToken(`/post/coverage/${planId}/shot-list.pdf`); head.appendChild(pdf);
     const ok = el("button", data.plan.approved_at ? "" : "primary", data.plan.approved_at ? "Undo approval" : "Approve list");
     ok.onclick = async () => { try { await post(`/post/coverage/${planId}/approve`, { approved: !data.plan.approved_at }); load(); } catch (e) { toast(e.message, true); } };
@@ -268,6 +290,8 @@ function renderList(main) {
     for (const [h, w] of [["Shot", "40%"], ["Moment", "14%"], ["Time", "7%"], ["Size", "14%"], ["Priority", "13%"], ["Who", "9%"], ["", "3%"]]) { const th = el("th", "", h); th.style.width = w; thead.appendChild(th); }
     table.appendChild(thead);
     const moments = [...new Set(data.rows.map((r) => r.moment))];
+    const untimed = moments.filter((m) => !data.rows.some((r) => r.moment === m && r.time)).length;
+    if (untimed) { const hint = el("div", "muted", `${untimed} of ${moments.length} moment${moments.length === 1 ? " has" : "s have"} no time yet. A time on one shot in a moment is enough for the phone warnings.`); hint.style.margin = "4px 0 8px"; wrap.appendChild(hint); }
     const list = el("datalist"); list.id = "momentList"; for (const m of moments) { const o = el("option"); o.value = m; list.appendChild(o); } card.appendChild(list);
     for (const m of moments) {
       const mr = el("tr", "moment"), td = el("td", "", m); td.colSpan = 7; mr.appendChild(td); table.appendChild(mr);
@@ -358,11 +382,34 @@ function shotRow(r) {
 }
 
 // ---- loading -------------------------------------------------------------------------------------------------------------------------------------------------
-function openNew() { $("newName").value = ""; $("newClient").value = ""; $("newDialog").showModal(); $("newName").focus(); }
+function openNew() {
+  $("newName").value = ""; $("newClient").value = "";
+  const pick = $("newTemplate"); pick.textContent = ""; pick.appendChild(el("option", "", "Start with an empty list")); pick.lastChild.value = "";
+  const templates = overview ? overview.templates : [];
+  for (const t of templates) { const o = el("option", "", `Start from ${t.name} (${t.shots} shots)`); o.value = t.id; pick.appendChild(o); }
+  pick.hidden = !templates.length;
+  $("newDialog").showModal(); $("newName").focus();
+}
+function renderSavedTemplates() {
+  const box = $("templateList"); box.textContent = "";
+  for (const t of overview.templates) {
+    const row = el("div", "saved"); row.append(el("span", "", t.name), el("span", "muted", `${t.shots} shots`));
+    const del = el("button", "quiet", "Delete"); del.setAttribute("aria-label", `Delete the template ${t.name}`);
+    del.onclick = async () => { try { await api(`/post/coverage-templates/${t.id}`, { method: "DELETE" }); overview = await api("/post/coverage"); renderSavedTemplates(); nameCheck(); render(); toast(`Deleted ${t.name}. Plans made from it don't change.`); } catch (e) { toast(e.message, true); } };
+    row.appendChild(del); box.appendChild(row);
+  }
+}
+function nameCheck() { const name = $("templateName").value.trim().toLowerCase(); $("templateNote").hidden = !overview.templates.some((t) => t.name.toLowerCase() === name); }
+function openSaveTemplate() { $("templateName").value = data.plan.name; renderSavedTemplates(); nameCheck(); $("templateDialog").showModal(); $("templateName").select(); }
+$("templateName").oninput = nameCheck;
+$("templateCancel").onclick = () => $("templateDialog").close();
+$("templateSave").onclick = async () => {
+  try { const r = await post(`/post/coverage/${planId}/save-template`, { name: $("templateName").value }); $("templateDialog").close(); toast(`${r.replaced ? "Replaced" : "Saved"} ${r.name}, with ${r.shots} shots.`); await load(); } catch (e) { toast(e.message, true); }
+};
 $("newBtn").onclick = openNew;
 $("newCancel").onclick = () => $("newDialog").close();
 $("newSave").onclick = async () => {
-  try { const p = await post("/post/coverage", { name: $("newName").value, client: $("newClient").value, log_key: logParam || null }); $("newDialog").close(); planId = p.id; tab = "list"; load(); }
+  try { const p = await post("/post/coverage", { name: $("newName").value, client: $("newClient").value, log_key: logParam || null, template: $("newTemplate").value || null }); $("newDialog").close(); planId = p.id; onSet = null; tab = "list"; load(); }
   catch (e) {
     if (logParam && /linked|hasn't been logged/.test(e.message)) { toast(e.message, true); return; }
     toast(e.message, true);

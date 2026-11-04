@@ -125,6 +125,7 @@ s.append(table(["You want to", "Use", "Where"], [
     ["Organise a shoot and choose your selects", "<b>Log This Shoot</b>, then <b>Apply Shoot Log</b>", "Plugin, under More"],
     ["Plan the shots, then check you got them", "<b>Coverage Plans</b>", "P Corp app"],
     ["Share a live shot list with the crew", "<b>Make phone link</b>, on a coverage plan", "P Corp app"],
+    ["Reuse a shot list for similar shoots", "<b>New plan</b> from a template, or <b>Save as template</b>", "P Corp app"],
     ["Find soundbites in speech or interviews", "<b>Transcribe Dialogue</b>, then <b>Suggest Smart Selects</b>", "Plugin, under More"],
     ["Cut an interview filmed on several cameras", "<b>Plan Edit</b> with the <i>Talking head, several cameras</i> style, then <b>Build My Edit</b>", "P Corp app, then plugin"],
     ["Cut a corporate story to a voice-over", "<b>Plan Edit</b> with <i>Corporate story with narration</i> and your script, then <b>Build My Edit</b>", "P Corp app, then plugin"],
@@ -266,7 +267,7 @@ s.append(PageBreak())
 s += section("Coverage: did you get every shot?", "A list of the shots you must get, made before the shoot, and a check of the footage against it afterwards. Open it with <b>Coverage Plans</b> in the POST screen of the P Corp app, or <b>Coverage</b> on the Shoot Log review page.")
 s.append(steps([
     ("Before the shoot", "Shot list tab", [
-        ("Click <b>New plan</b> and name it. Paste the brief, run sheet or storyboard notes, or add files, then click <b>Draft shot list</b>.", "PDF, Word, Excel, CSV or images. The brief goes to Anthropic. About 1¢ for a one-page brief. Or skip the draft and use <b>Add a shot</b>."),
+        ("Click <b>New plan</b> and name it. Paste the brief, run sheet or storyboard notes, or add files, then click <b>Draft shot list</b>.", "PDF, Word, Excel, CSV or images. The brief goes to Anthropic. About 1¢ for a one-page brief. Or skip the draft: start from a template, or use <b>Add a shot</b>."),
         ("Read every line. Change the wording, moment, time, size, priority or who's shooting it. Add or remove shots.", "It's only ever a draft. Set <b>Must have</b> with care: those are what the report warns you about."),
         ("Click <b>Approve list</b>, then <b>Shot list PDF</b>.", "Tick boxes, grouped by moment, for set. Changing a shot later clears the approval."),
     ]),
@@ -289,6 +290,7 @@ s.append(Spacer(1, 8))
 s += bullets([
     "<b>Check</b> only pays for shots that haven't been checked. <b>Check all again</b> redoes the lot at full price.",
     "<b>Rejecting a clip later</b> updates the report at no charge: a shot seen only in that clip drops to Weak.",
+    "<b>Templates:</b> pick one under <b>New plan</b>, or use <b>Add from template</b> on a list. <b>Save as template</b> keeps any list. <i>JD store opening</i> is there to start with. Times stay behind, so add this shoot's: one time per moment is enough for the phone warnings.",
 ])
 s.append(Spacer(1, 4))
 s.append(callout("<b>Tested on one real shoot so far.</b> On Birkenstock, with a test brief, all 4 shots that weren't filmed came out Missing, and the 9 that were came out Covered (7) or Weak (2). It leans strict, so a shot you'd happily use can say Weak. One shoot isn't much, so check Missing shots by eye before a report goes to a client."))
