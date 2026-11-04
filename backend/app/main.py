@@ -3976,8 +3976,14 @@ async def post_coverage_phone_off(manager_id: str, _: None = Depends(verify_toke
 async def post_coverage_phone_sync(_: None = Depends(verify_token)) -> dict:
     """Brings any lists made on a phone into Coverage Plans. With no signal it just finds nothing new."""
     from app import on_set_db, post_coverage
+    contents = lambda templates: {t["id"]: (t["name"], t["items"]) for t in templates}
     async def fetch() -> list:
         async with _pooled_postgres_conn() as conn:
+            # Saving or deleting a template sends it up there and then. A starter that arrives in an update has only this to send it. With no phone set up the cloud copy is empty, and stays that way.
+            cloud = await on_set_db.load_templates(conn)
+            local = [post_coverage.load_template(t["id"]) for t in post_coverage.list_templates()]
+            if cloud and contents(cloud) != contents(local):
+                await on_set_db.replace_templates(local, conn)
             return await on_set_db.all_lists(conn)
     try:
         rows = await asyncio.wait_for(fetch(), timeout=8.0)

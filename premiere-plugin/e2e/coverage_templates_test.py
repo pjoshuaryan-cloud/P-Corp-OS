@@ -14,6 +14,7 @@ fails = 0
 REAL_DATA, REAL_DB = sl.DATA, db.DB_PATH
 REAL_DB_BEFORE = REAL_DB.exists()
 STARTER = "t0000000000a1"
+BRAND = "t0000000000a2"
 
 
 def check(name, cond, detail=""):
@@ -45,13 +46,23 @@ web = TestClient(main.app)
 
 # ---- the starter list
 listed = cov.list_templates()
-check("the JD store opening list is there from the start", [t["name"] for t in listed] == ["JD store opening"] and listed[0]["shots"] == 20, listed)
+check("the starter lists are there from the start", [t["name"] for t in listed] == ["Brand activation", "JD store opening"], listed)
+jd_row = next(t for t in listed if t["id"] == STARTER)
+check("the JD store opening list has its 20 shots", jd_row["shots"] == 20, jd_row)
 starter = cov.load_template(STARTER)
 check("it has no times, because every run sheet differs", all("time" not in i for i in starter["items"]))
-check("it starts as a list of real must-haves and should-haves", listed[0]["must"] == 11 and {i["priority"] for i in starter["items"]} == {"must", "should"}, listed)
+check("it starts as a list of real must-haves and should-haves", jd_row["must"] == 11 and {i["priority"] for i in starter["items"]} == {"must", "should"}, listed)
 check("every shot uses the words the rest of coverage understands", all(i["shot_size"] in cov.SHOT_SIZES and i["priority"] in cov.PRIORITIES for i in starter["items"]))
 check("its moments run in the order of a store opening", list(dict.fromkeys(i["moment"] for i in starter["items"])) == ["Outside", "Opening", "In store", "Entertainment", "Reactions"])
-check("it's offered on the Coverage page", web.get("/post/coverage", params=MAIN).json()["templates"][0]["id"] == STARTER)
+check("it's offered on the Coverage page", STARTER in [t["id"] for t in web.get("/post/coverage", params=MAIN).json()["templates"]])
+brand = cov.load_template(BRAND)
+brand_row = next(t for t in listed if t["id"] == BRAND)
+check("the brand activation list has 20 shots, 11 of them must-haves, and no times", brand_row["shots"] == 20 and brand_row["must"] == 11 and all("time" not in i for i in brand["items"]), brand_row)
+check("it names no brand, store or product, so it suits any client", {"jd", "store", "shoe", "shoes", "mall"}.isdisjoint(w.strip(",:").lower() for i in brand["items"] for w in i["description"].split()))
+check("its shots use the words the rest of coverage understands", all(i["shot_size"] in cov.SHOT_SIZES and i["priority"] in cov.PRIORITIES for i in brand["items"]))
+check("no two of its shots say the same thing", len({i["description"] for i in brand["items"]}) == 20)
+check("its moments run in the order of an event", list(dict.fromkeys(i["moment"] for i in brand["items"])) == ["Setting", "Arrivals", "Product", "Activity", "Big moment", "Entertainment", "People"])
+check("a plan can start from it", len(cov.new_plan("Any brand day", template=BRAND)["items"]) == 20)
 
 # ---- a plan from a template
 made = web.post("/post/coverage", params=MAIN, json={"name": "JD Monday", "client": "JD Sports", "template": STARTER}).json()
@@ -85,10 +96,10 @@ mine = cov.load_template(saved["id"])
 check("it keeps the shots as you changed them, and who's shooting them", mine["items"][0]["description"] == "Changed for this job" and mine["items"][1]["owner"] == "A-cam")
 check("it leaves times and plan history behind", all(set(i) == set(cov.TEMPLATE_FIELDS) for i in mine["items"]), mine["items"][0])
 check("saving doesn't change the plan or its approval", cov.load_plan(pid)["approved_at"] and cov.load_plan(pid)["items"][0]["time"] == "09:00")
-check("both show on the list, by name", [t["name"] for t in cov.list_templates()] == ["JD store opening", "Store opening, my version"])
+check("both show on the list, by name", [t["name"] for t in cov.list_templates()] == ["Brand activation", "JD store opening", "Store opening, my version"])
 cov.update_item(pid, "i3", {"description": "Another change"})
 again = cov.save_template(pid, "STORE OPENING, my version")
-check("the same name replaces the old one, whatever the capitals", again["replaced"] and again["id"] == saved["id"] and len(cov.list_templates()) == 2, again)
+check("the same name replaces the old one, whatever the capitals", again["replaced"] and again["id"] == saved["id"] and len(cov.list_templates()) == 3, again)
 check("and holds the new shots", cov.load_template(saved["id"])["items"][2]["description"] == "Another change")
 check("a template needs a name", refused(cov.save_template, pid, "   "))
 check("an empty list can't be saved", refused(cov.save_template, cov.new_plan("Empty")["id"], "Nothing"))
@@ -113,14 +124,15 @@ check("adding it twice changes nothing, and keeps the approval", out == {"added"
 
 # ---- deleting
 web.delete(f"/post/coverage-templates/{saved['id']}", params=MAIN)
-check("a saved template can be deleted", [t["id"] for t in cov.list_templates()] == [STARTER])
+check("a saved template can be deleted", [t["id"] for t in cov.list_templates()] == [BRAND, STARTER])
 check("plans made from a deleted template don't change", len(cov.load_plan(pid)["items"]) == 20)
 web.delete(f"/post/coverage-templates/{STARTER}", params=MAIN)
-check("the starter list can be deleted too", cov.list_templates() == [])
+web.delete(f"/post/coverage-templates/{BRAND}", params=MAIN)
+check("the starter lists can be deleted too", cov.list_templates() == [])
 check("and it stays deleted, rather than coming back", cov.list_templates() == [] and refused(cov.load_template, STARTER))
 check("deleting one that's gone says so", web.delete(f"/post/coverage-templates/{STARTER}", params=MAIN).status_code == 400)
 keep_seed = cov.CONFIG["starter_templates"]
-cov.CONFIG["starter_templates"] = [*keep_seed, {"id": "t0000000000a2", "name": "New starter", "items": [{"moment": "M", "description": "A shot", "priority": "must"}]}]
+cov.CONFIG["starter_templates"] = [*keep_seed, {"id": "t0000000000f1", "name": "New starter", "items": [{"moment": "M", "description": "A shot", "priority": "must"}]}]
 check("a new starter added later comes in, without bringing a deleted one back", [t["name"] for t in cov.list_templates()] == ["New starter"])
 cov.CONFIG["starter_templates"] = keep_seed
 
@@ -130,7 +142,7 @@ for method, path, body in (("GET", "/post/coverage", None), ("POST", f"/post/cov
 check("nothing landed in the real data folder", sl.DATA != REAL_DATA and REAL_DB.exists() == REAL_DB_BEFORE)
 check("templates saved here were copied up for phones, in the test's own database", (tmp / "on_set.db").exists())
 config = json.loads((Path(cov.__file__).parent / "shoot_log_config.json").read_text())
-check("the starter list ships with the code, so it isn't lost with the data folder", config["coverage"]["starter_templates"][0]["id"] == STARTER)
+check("the starter lists ship with the code, so they aren't lost with the data folder", [t["id"] for t in config["coverage"]["starter_templates"]] == [STARTER, BRAND])
 
 print(f"\nFAILS: {fails}")
 sys.exit(1 if fails else 0)

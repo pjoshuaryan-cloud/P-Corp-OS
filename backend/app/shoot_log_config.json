@@ -75,6 +75,32 @@
           { "moment": "Entertainment", "description": "Prize wheel spin", "priority": "should" },
           { "moment": "Reactions", "description": "Smiles, waves and points to camera", "priority": "must" }
         ]
+      },
+      {
+        "id": "t0000000000a2",
+        "name": "Brand activation",
+        "items": [
+          { "moment": "Setting", "description": "Brand logo with the venue or setting", "shot_size": "wide", "priority": "must" },
+          { "moment": "Setting", "description": "Full activation space before guests arrive", "shot_size": "wide", "priority": "must" },
+          { "moment": "Setting", "description": "Branded details: signage, props, set dressing", "shot_size": "detail", "priority": "should" },
+          { "moment": "Arrivals", "description": "Guests arriving at the entrance", "priority": "must" },
+          { "moment": "Arrivals", "description": "Welcome, check-in or gift handover", "priority": "should" },
+          { "moment": "Product", "description": "Hero product close-up, sharp and readable", "shot_size": "detail", "priority": "must" },
+          { "moment": "Product", "description": "Product display, readable", "priority": "should" },
+          { "moment": "Product", "description": "Guest holding the product to camera", "priority": "must" },
+          { "moment": "Product", "description": "Guest trying the product", "priority": "should" },
+          { "moment": "Product", "description": "Brand rep showing a guest the product", "priority": "should" },
+          { "moment": "Activity", "description": "Whole space when it's busy", "shot_size": "wide", "priority": "must" },
+          { "moment": "Activity", "description": "Guests taking part in the main activity", "priority": "must" },
+          { "moment": "Activity", "description": "Close-ups of hands and faces", "shot_size": "detail", "priority": "should" },
+          { "moment": "Activity", "description": "Guests posing at the photo spot", "priority": "should" },
+          { "moment": "Activity", "description": "Guests filming on their phones", "priority": "should" },
+          { "moment": "Big moment", "description": "Speech, launch or reveal", "priority": "must" },
+          { "moment": "Big moment", "description": "Crowd reacting to the big moment", "priority": "must" },
+          { "moment": "Entertainment", "description": "DJ or performer in action", "priority": "should" },
+          { "moment": "People", "description": "Brand team group pose, logos visible", "shot_size": "medium", "priority": "must" },
+          { "moment": "People", "description": "Smiles, waves and points to camera", "priority": "must" }
+        ]
       }
     ],
     "on_set": {

@@ -125,6 +125,26 @@ for (const [phrase, want] of JD_PHRASES) {
 console.log(`  JD list: right shot first on ${jdRight} of ${JD_PHRASES.length}, a wrong shot pre-selected on ${jdWrong}`);
 check("on the JD list, at least 8 in 10 phrases put the right shot first", jdRight >= JD_PHRASES.length * 0.8, jdRight);
 
+// ---- the same for the brand activation list. Phrases fixed before looking at the scores.
+const brand = config.coverage.starter_templates[1].items.map((it, n) => ({ id: `b${n}`, description: it.description, size: it.shot_size || "any", priority: it.priority }));
+const brandShot = (words) => brand.find((b) => b.description.startsWith(words)).id;
+const BRAND_PHRASES = [
+  ["got the logo with the venue", "Brand logo"], ["empty space before doors", "Full activation"], ["signage and props", "Branded details"], ["people arriving", "Guests arriving"], ["gift handover", "Welcome"],
+  ["product close up", "Hero product"], ["the product display", "Product display"], ["girl holding the product to camera", "Guest holding"], ["someone trying the product", "Guest trying"], ["rep showing the product", "Brand rep"],
+  ["wide when it was busy", "Whole space"], ["people doing the activity", "Guests taking part"], ["hands and faces close up", "Close-ups"], ["photo spot", "Guests posing"], ["people filming on their phones", "Guests filming"],
+  ["the speech", "Speech"], ["crowd reaction", "Crowd reacting"], ["DJ playing", "DJ or performer"], ["team group photo with the logos", "Brand team"], ["people waving to camera", "Smiles"],
+];
+let brandRight = 0, brandWrong = 0;
+for (const [phrase, want] of BRAND_PHRASES) {
+  const found = L.matchPhrase(phrase, brand);
+  const right = found[0] && found[0].item.id === brandShot(want);
+  if (right) brandRight += 1;
+  if (found.some((x) => x.strong && x.item.id !== brandShot(want))) brandWrong += 1;
+  console.log(`  ${right ? "  ok" : "MISS"}  "${phrase}" -> ${found.slice(0, 2).map((x) => `${x.item.description.slice(0, 26)} ${x.score.toFixed(2)}${x.strong ? "*" : ""}`).join(" | ") || "nothing"}`);
+}
+console.log(`  Brand list: right shot first on ${brandRight} of ${BRAND_PHRASES.length}, a wrong shot pre-selected on ${brandWrong}`);
+check("on the brand activation list, at least 8 in 10 phrases put the right shot first", brandRight >= BRAND_PHRASES.length * 0.8, brandRight);
+
 // ---- QR codes. Whether they really scan was checked with Apple's own decoder (10 of 10, including one photographed off the iPhone screen); these keep the shape right.
 const { qrMatrix } = require("../../backend/app/static/on_set_qr.js");
 for (const [text, size] of [["hello", 21], ["x".repeat(40), 29], [`https://p-corp-os.onrender.com/static/on_set.html#t=${"a".repeat(43)}`, 41], ["u".repeat(150), 49]]) {

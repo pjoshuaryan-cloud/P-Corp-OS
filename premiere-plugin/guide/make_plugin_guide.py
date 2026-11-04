@@ -290,7 +290,7 @@ s.append(Spacer(1, 8))
 s += bullets([
     "<b>Check</b> only pays for shots that haven't been checked. <b>Check all again</b> redoes the lot at full price.",
     "<b>Rejecting a clip later</b> updates the report at no charge: a shot seen only in that clip drops to Weak.",
-    "<b>Templates:</b> pick one under <b>New plan</b>, or use <b>Add from template</b> on a list. <b>Save as template</b> keeps any list. <i>JD store opening</i> is there to start with. Times stay behind, so add this shoot's: one time per moment is enough for the phone warnings.",
+    "<b>Templates:</b> pick one under <b>New plan</b>, or use <b>Add from template</b> on a list. <b>Save as template</b> keeps any list. <i>JD store opening</i> and <i>Brand activation</i> are there to start with. Times stay behind, so add this shoot's: one time per moment is enough for the phone warnings.",
 ])
 s.append(Spacer(1, 4))
 s.append(callout("<b>Tested on one real shoot so far.</b> On Birkenstock, with a test brief, all 4 shots that weren't filmed came out Missing, and the 9 that were came out Covered (7) or Weak (2). It leans strict, so a shot you'd happily use can say Weak. One shoot isn't much, so check Missing shots by eye before a report goes to a client."))

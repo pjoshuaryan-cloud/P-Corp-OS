@@ -162,6 +162,10 @@ def main_tests():
         web = TestClient(main.app)
         web.portal = portal
 
+        # ---- no phone yet
+        web.post("/post/coverage-phone/sync", params=MAIN)
+        check("with no phone set up, opening Coverage Plans sends no templates to the cloud", asyncio.run(db.load_templates()) == [])
+
         # ---- setting up a phone, from the Mac
         check("setting up a phone needs the main token", web.post("/post/coverage-phone", json={}, params={"token": "wrong"}).status_code == 403)
         check("seeing phones needs it too", web.get("/post/coverage-phone", params={"token": "wrong"}).status_code == 403)
@@ -202,7 +206,7 @@ def main_tests():
         # ---- what the phone login can't reach
         home = web.get("/set/manage/lists", headers=K)
         check("the phone login opens the list of lists", home.status_code == 200 and home.json()["lists"] == [], home.text)
-        check("with the starter list ready to use before the Mac sends any", [t["name"] for t in home.json()["templates"]] == ["JD store opening"])
+        check("with the starter lists ready to use", [t["name"] for t in home.json()["templates"]] == ["Brand activation", "JD store opening"], home.json()["templates"])
         check("no key, no lists", web.get("/set/manage/lists").status_code == 404)
         check("the login can't be passed in a header", web.get("/set/manage/lists", headers={"X-Set-Manager": key}).status_code == 404)
         check("or in an address", web.get("/set/manage/lists", params={"token": key, "key": key, "k": key}).status_code == 404)
@@ -461,11 +465,29 @@ def main_tests():
         # ---- templates
         tid = web.post(f"/post/coverage/{mplan['id']}/save-template", params=MAIN, json={"name": "My own list"}).json()["id"]
         names = [t["name"] for t in web.get("/set/manage/lists", headers=K).json()["templates"]]
-        check("a template saved on the Mac is offered on the phone", names == ["JD store opening", "My own list"], names)
+        check("a template saved on the Mac is offered on the phone", names == ["Brand activation", "JD store opening", "My own list"], names)
         from_mine = web.post("/set/manage/lists", headers=K, json={"name": "From mine", "shoot_date": today, "template": tid}).json()
         check("and works there", from_mine["total"] == 20)
         web.delete(f"/post/coverage-templates/{tid}", params=MAIN)
-        check("a deleted one goes away", [t["name"] for t in web.get("/set/manage/lists", headers=K).json()["templates"]] == ["JD store opening"])
+        check("a deleted one goes away", [t["name"] for t in web.get("/set/manage/lists", headers=K).json()["templates"]] == ["Brand activation", "JD store opening"])
+        from_brand = web.post("/set/manage/lists", headers=K, json={"name": "Any brand day", "shoot_date": today, "template": "t0000000000a2"}).json()
+        check("a phone can start a list from the brand activation starter", from_brand["total"] == 20 and from_brand["must_left"] == 11, from_brand.get("total"))
+
+        # ---- a starter that arrives in an update
+        keep_seed, keep_replace, wrote = cov.CONFIG["starter_templates"], db.replace_templates, []
+        async def spy_replace(templates, conn=None):
+            wrote.append(len(templates))
+            await keep_replace(templates, conn)
+        db.replace_templates = spy_replace
+        cov.CONFIG["starter_templates"] = [*keep_seed, {"id": "t0000000000f1", "name": "Arrived in an update", "items": [{"moment": "M", "description": "A shot", "priority": "must"}]}]
+        on_phone_now = lambda: [t["name"] for t in web.get("/set/manage/lists", headers=K).json()["templates"]]
+        check("a starter that arrives in an update isn't on a phone already set up", "Arrived in an update" not in on_phone_now())
+        web.post("/post/coverage-phone/sync", params=MAIN)
+        check("until Coverage Plans next opens on the Mac", on_phone_now() == ["Arrived in an update", "Brand activation", "JD store opening"], on_phone_now())
+        web.post("/post/coverage-phone/sync", params=MAIN)
+        check("and with nothing new, opening it again writes nothing", wrote == [3], wrote)
+        web.delete("/post/coverage-templates/t0000000000f1", params=MAIN)
+        db.replace_templates, cov.CONFIG["starter_templates"] = keep_replace, keep_seed
 
         # ---- turning the phone off
         phone_id = web.get("/post/coverage-phone", params=MAIN).json()["phones"][0]["id"]
