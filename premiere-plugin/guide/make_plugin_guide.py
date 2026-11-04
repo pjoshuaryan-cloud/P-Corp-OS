@@ -322,7 +322,7 @@ s += bullets([
     "<b>Warnings only show while the page is open.</b> Nothing reaches a phone in a pocket.",
 ])
 s.append(Spacer(1, 4))
-s.append(callout("<b>Not run on a real shoot yet.</b> Tested with two browsers, one of them iPhone Safari, on test data, plus your one quick real link. Try it on two real phones first, and try the mic again: it only partly worked the first time."))
+s.append(callout("<b>Not run on a real shoot yet.</b> Tested with two browsers on test data, and by you on a real phone, where ticks came through. Try the mic again before a shoot: it only partly worked the first time."))
 
 s.append(PageBreak())
 s += section("On your phone: no Mac needed", "Make, change and send shot lists from your own phone, and draft them from a brief. Set it up once on the Mac, before the day. Your crew's side doesn't change.")
@@ -352,7 +352,7 @@ s += bullets([
     "<b>It needs signal</b> to make or change a list. Ticking on the crew's page is what works without it.",
 ])
 s.append(Spacer(1, 4))
-s.append(callout("<b>New, and not used on a real phone yet.</b> Tested on test data in iPhone Safari with a stand-in for Claude. Try the whole thing once before a shoot, including a real draft from a brief."))
+s.append(callout("<b>Not run on a real shoot yet.</b> Tried on a real iPhone: setup, a real draft from a made-up brief, and a tick on a list made on the phone all worked. How long the login lasts over days is unknown, so open the page the day before a shoot."))
 
 s.append(PageBreak())
 s += section("Time and cost", "Measured on real shoots unless it says otherwise. Your numbers will vary with footage and drive speed.")
