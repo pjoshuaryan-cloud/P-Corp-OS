@@ -390,14 +390,16 @@ def _item_from_phone(item: dict[str, Any], source: str) -> dict[str, Any]:
 
 
 def adopt_on_set_list(plan_id: str, link: dict[str, Any]) -> None:
-    """Takes in changes made on a phone. Ids stay the same, so ticks and earlier checks still line up, and a reworded shot goes back to "not checked" as it would from here."""
+    """Takes in changes made on a phone. Ids stay the same, so ticks and earlier checks still line up, and a reworded shot goes back to "not checked" as it would from here. Approval only goes if the shots really changed: a new name, or a save that changed nothing, isn't a different list."""
     plan = load_plan(plan_id)
     sources = {i["id"]: i.get("source", "user") for i in plan["items"]}
+    before = on_set_items(plan)
     plan["name"], plan["client"] = link["name"], link["client"]
     plan["items"] = [_item_from_phone(i, sources.get(i["id"], "phone")) for i in link["items"]]
     for item in plan["items"]:
         _moment_id(plan, item["moment"])
-    plan["approved_at"] = None
+    if on_set_items(plan) != before:
+        plan["approved_at"] = None
     save_plan(plan)
 
 

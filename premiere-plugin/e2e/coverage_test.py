@@ -51,7 +51,7 @@ class FakeMessages:
             log = next(b["text"] for b in content if b["type"] == "text" and b["text"].startswith("Clip log"))
             numbers = {m.group(2): int(m.group(1)) for m in re.finditer(r"^(\d+) \| (\S+)", log, re.M)}
             shots = next(b["text"] for b in content if b["type"] == "text" and b["text"].startswith("Shot list"))
-            ids = re.findall(r"^(i\d+):", shots, re.M)
+            ids = re.findall(r"^([ip][0-9a-f]+):", shots, re.M)
             return json.dumps({"items": [{"id": i, "clips": [numbers[n] for n in self.shortlist.get(i, []) if n in numbers]} for i in ids if i not in self.silent]})
         shot = content[0]["text"]
         shown = [int(m) for b in content if b["type"] == "text" for m in re.findall(r"^Clip (\d+):", b["text"])]
@@ -424,6 +424,36 @@ with tempfile.TemporaryDirectory() as tmp:
     check("an empty draft is refused before anything is spent", web.post(f"/post/coverage/{new}/draft?token=t", json={"text": " "}).status_code == 400)
     cov.start_draft = real_draft
     post_moments.check_credit = real_credit
+
+    # ---- a list made on a phone goes through the same check -------------------------------------------------------------------------------------------------
+    ctx2, _ = make_log(str(Path(tmp) / "Phone.prproj"))
+    phone_shots = {"logo": "pa1b2c3d4e5", "banner": "pa1b2c3d4e6", "guests": "pa1b2c3d4e7"}
+    phone_id = "cab12ab12ab12"
+    check("a list made on a phone comes in", cov.import_phone_list({"plan_id": phone_id, "name": "JD from the phone", "client": "JD Sports", "shoot_date": "2026-11-09", "expires_at": "2026-11-12T23:59:59.000Z", "list_version": 4, "revoked_at": None, "items": [
+        {"id": phone_shots["logo"], "moment": "Outside", "time": "09:00", "description": "Logo wall, readable", "size": "wide", "priority": "must", "owner": ""},
+        {"id": phone_shots["banner"], "moment": "Outside", "time": "09:00", "description": "Sponsor banner", "size": "any", "priority": "must", "owner": "B-cam"},
+        {"id": phone_shots["guests"], "moment": "In store", "time": "", "description": "Guests arriving", "size": "any", "priority": "should", "owner": ""},
+    ]}, "a-token"))
+    cov.link_log(phone_id, ctx2["key"])
+    phone_client = FakeClient()
+    phone_client.messages.shortlist = {phone_shots["logo"]: ["C1.MP4"], phone_shots["banner"]: [], phone_shots["guests"]: ["C3.MP4"]}
+    phone_client.messages.looks = {"Logo wall, readable": "yes", "Guests arriving": "partly"}
+    async def run_phone_check():
+        started = cov.start_check(phone_id, phone_client)
+        return started, await finish(phone_id) if started["started"] else None
+    started, state = asyncio.run(run_phone_check())
+    check("the footage check runs on it", started["started"] and state["state"] == "done", state)
+    rows = {r["id"]: r for r in cov.view(phone_id)["rows"]}
+    check("it finds what's there, by the phone's own shot ids", rows[phone_shots["logo"]]["status"] == "covered" and rows[phone_shots["logo"]]["evidence"][0]["name"] == "C1.MP4", rows[phone_shots["logo"]])
+    check("partly there is weak", rows[phone_shots["guests"]]["status"] == "weak")
+    check("and it flags the must-have that isn't there", rows[phone_shots["banner"]]["status"] == "missing" and "Sponsor banner" in cov.view(phone_id)["summary"]["must_missing"])
+    check("a shot ticked on set but not found gets its warning", cov.on_set_unfound(cov.load_plan(phone_id)["items"], cov.view(phone_id)["rows"], {phone_shots["banner"]: {"done": True, "by": "B-cam", "at": "2026-11-09T09:00:00.000Z", "note": ""}}) == ["Sponsor banner"])
+    cov.save_on_set_ticks(phone_id, {phone_shots["banner"]: {"done": True, "by": "B-cam", "at": "2026-11-09T09:00:00.000Z", "note": ""}})
+    check("its report and shot list make PDFs", cov.report_pdf(phone_id)[:4] == b"%PDF" and cov.shot_list_pdf(phone_id)[:4] == b"%PDF")
+    words, bins = cov.moments_for_log(ctx2, list(sl.load_log(ctx2)["clips"].values()))
+    check("Apply gets By Moment bins from it", {b["name"] for b in bins} >= {"Outside"} and any(words.values()), bins)
+    added = cov.add_item(phone_id, {"moment": "Outside", "description": "Added on the Mac afterwards", "priority": "should"})
+    check("a shot added on the Mac can't clash with the phone's ids", added["id"] not in phone_shots.values() and len({i["id"] for i in cov.load_plan(phone_id)["items"]}) == 4)
 
 check("nothing landed in the real data folder", not (REAL_DATA / "coverage").exists() or not any("GQ x Miele" in p.read_text() for p in (REAL_DATA / "coverage").glob("*/plan.json")))
 

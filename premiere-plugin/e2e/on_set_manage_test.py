@@ -415,6 +415,26 @@ def main_tests():
         check("the plan shows up on the Coverage page", any(p["id"] == pid for p in web.get("/post/coverage", params=MAIN).json()["plans"]))
         check("and its report works like any other", cov.report_pdf(pid)[:4] == b"%PDF")
 
+        # ---- what a change from the phone does to the Mac's approval
+        approved = cov.load_plan(pid)["approved_at"]
+        web.post(f"/set/manage/lists/{pid}/items/{first}", headers=K, json={"description": cov.load_plan(pid)["items"][0]["description"]})
+        mac = web.get(f"/post/coverage/{pid}/on-set", params=MAIN).json()
+        check("a save on the phone that changes nothing keeps the approval", mac.get("adopted") and cov.load_plan(pid)["approved_at"] == approved, mac.get("adopted"))
+        details = {"name": "JD Rosebank, renamed", "client": "JD Sports", "shoot_date": today}
+        web.post(f"/set/manage/lists/{pid}", headers=K, json=details)
+        mac = web.get(f"/post/coverage/{pid}/on-set", params=MAIN).json()
+        check("so does a new name, which still reaches the Mac", cov.load_plan(pid)["name"] == details["name"] and cov.load_plan(pid)["approved_at"] == approved, cov.load_plan(pid)["name"])
+        web.post(f"/set/manage/lists/{pid}", headers=K, json={**details, "name": "JD Rosebank"})
+        web.get(f"/post/coverage/{pid}/on-set", params=MAIN)
+        web.post(f"/set/manage/lists/{pid}/moment", headers=K, json={"moment": "Outside", "time": "09:00"})
+        web.get(f"/post/coverage/{pid}/on-set", params=MAIN)
+        check("a new time is a different list, so approval goes, as it does on the Mac", cov.load_plan(pid)["approved_at"] is None and cov.load_plan(pid)["items"][0]["time"] == "09:00")
+        check("the crew's link doesn't depend on it", web.get(f"/post/coverage/{pid}/on-set", params=MAIN).json()["live"])
+        web.post(f"/post/coverage/{pid}/approve", params=MAIN, json={"approved": True})
+        check("and approving again on the Mac brings it back", cov.load_plan(pid)["approved_at"])
+        web.post(f"/set/manage/lists/{pid}/moment", headers=K, json={"moment": "Outside", "time": ""})
+        web.get(f"/post/coverage/{pid}/on-set", params=MAIN)
+
         # ---- changes either way
         web.post(f"/set/manage/lists/{pid}/items/{first}", headers=K, json={"description": "Changed on the phone"})
         added = web.post(f"/set/manage/lists/{pid}/items", headers=K, json={"description": "New on the phone", "moment": "Backstage"}).json()

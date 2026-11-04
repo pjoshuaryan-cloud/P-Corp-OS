@@ -399,6 +399,7 @@ s.append(table(["What you see", "What to do"], [
     ["A phone says \"No signal\"", "Keep ticking. Ticks are saved and sent when signal returns."],
     ["\"Phones have an older list\"", "Click Send update on the Coverage page."],
     ["Make phone link is greyed out", "Approve the list first."],
+    ["A list or PDF says \"not approved yet\"", "A shot or time changed since you approved it, on the Mac or your phone. Click <b>Approve list</b>. The crew's link keeps working either way."],
     ["Your phone says \"This phone isn't set up\"", "It was turned off, or Safari's data was cleared. Make a new QR code on the Mac: Coverage Plans, My phone."],
     ["\"That QR code has been used or has run out\"", "Make a new one on the Mac. Each works once, for 15 minutes."],
     ["\"That's the most drafts allowed from a phone in a day\"", "Add shots by hand, start from a template, or draft on the Mac."],
