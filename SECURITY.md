@@ -50,6 +50,23 @@ Authentication, security, and permissions are explicitly owned by Layer 1 (P Cor
   - Needs a new Google OAuth scope (`gmail.send`, added to `google_oauth.py`'s `SCOPES`) — Josh must re-consent once via `/auth/google/start` before this actually works; the existing refresh token predates the new scope and Google does not retroactively grant it.
   - `AGENTS_VISION.md`'s Communications Agent section updated to match — see that file for the corresponding entry.
 
+## Decided (2026-11-04)
+
+**The on-set phone link (Shoot Logger Phase 3): P Corp's first thing on the public internet that doesn't need the main token.** Shooters at a venue can't reach this Mac and shouldn't get a login that opens everything, so a phone link opens one job's shot list and nothing else. Code: `backend/app/on_set_db.py`, the `/set/` routes in `main.py`, `backend/app/static/on_set*`. Tests: `premiere-plugin/e2e/on_set_test.py`.
+
+- **What it is:** a 256-bit random token, made by an explicit click on the Mac, after the list has been approved. The shared database stores only its SHA-256 hash. The full token stays on the Mac, in a file only its owner can read, until the link is stopped.
+- **Keeping it out of logs:** it sits after the `#` in the address, which browsers never send, and travels in a header. It's never in a query string.
+- **What it can reach:** two routes. It can read that one list and add ticks to it. It can't edit the list or reach a plan, brief, file, frame, cost, or anything else in P Corp, and it can't cause a Claude call. `verify_token` doesn't accept it, and the `/set/` routes accept nothing else (tested on the private routes, both ways).
+- **What a phone gets:** shot descriptions, moments, times, sizes, priorities, camera names, the job and client name, and other shooters' ticks and notes. Not the brief, the linked shoot, file paths or costs.
+- **Ending it:** a stopped link fails on the phone's next request and wipes the saved list off the phone. A link runs out 3 days after the shoot date. An unknown, stopped and expired link all get the same answer. A list edit never brings a run-out link back.
+- **Floods:** before any database work, 300 requests a minute per link, and 120 a minute across all links not recently seen, so made-up links can't tie up the pool while real ones keep working. Bodies stop at 64 KB, 50 ticks a request, 5,000 ticks a job. The limits are in memory and reset on restart, which is fine: they protect the database, they don't count anything.
+- **The page:** a Content-Security-Policy with no outside scripts or connections and no inline scripts, no referrer, `noindex`. Anything people typed goes on screen as text, never HTML, and is escaped in the PDF. The offline copy holds only the page's own files.
+
+**Accepted, knowingly:**
+- It's a shared link, not a login: anyone it's forwarded to can see and tick the list until it's stopped, and the name on a tick is whatever they typed. So it can be mischief, but a tick can't do damage: it never decides whether a shot is covered, and all ticks are kept.
+- Phones keep the list in their browser's storage until the link stops, or they clear it.
+- The limits are per server process, and a shot list is client information sitting on the cloud database for the life of the link. A shoot under a strict NDA shouldn't use a phone link.
+
 ## Open questions
 
 - Credential storage and secrets management across desktop + mobile + any cloud sync backend, once those exist.

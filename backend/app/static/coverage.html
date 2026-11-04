@@ -63,6 +63,9 @@
   .verdict button.on.weak { background: var(--warn); border-color: var(--warn); color: #2a1a02; }
   .verdict button.on.missing { background: var(--bad); border-color: var(--bad); color: #2a0906; }
   .yours { font-size: 10.5px; color: var(--accent); width: 100%; text-align: right; }
+  .onset-url { flex: 1 1 280px; min-width: 0; font-size: 12.5px; color: var(--muted); }
+  .ticked { color: var(--good); font-size: 12.5px; margin-top: 2px; }
+  .unfound { border-color: var(--warn); }
   #toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; z-index: 9; max-width: 80vw; }
   #toast[hidden] { display: none; }
   #toast.bad { border-color: var(--bad); }
@@ -117,7 +120,7 @@ let token = null; try { token = localStorage.getItem(TOKEN_KEY); } catch (e) {}
   if (m) { token = decodeURIComponent(m[1]); try { localStorage.setItem(TOKEN_KEY, token); } catch (e) {} history.replaceState(null, "", location.pathname + location.search); } }
 
 const logParam = params.get("log");
-let planId = params.get("plan"), data = null, overview = null, tab = logParam ? "report" : "list", poll = null, lastFinish = null, pendingFiles = [];
+let planId = params.get("plan"), data = null, overview = null, onSet = null, tab = logParam ? "report" : "list", poll = null, lastFinish = null, pendingFiles = [];
 
 function askToken() { return new Promise((resolve) => { const d = $("tokenDialog"); $("tokenInput").value = ""; d.showModal(); $("tokenSave").onclick = () => { token = $("tokenInput").value.trim(); try { localStorage.setItem(TOKEN_KEY, token); } catch (e) {} d.close(); resolve(); }; }); }
 function withToken(path) { return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token); }
@@ -207,8 +210,44 @@ function choice(row, name, values, text) {
   for (const v of values) { const o = el("option", "", text(v)); o.value = v; o.selected = row[name] === v; s.appendChild(o); }
   s.onchange = () => saveItem(row.id, { [name]: s.value }); return s;
 }
+function renderOnSet(main) {
+  if (!onSet) return;
+  const card = el("div", "card"), when = (iso) => new Date(iso).toLocaleDateString([], { day: "numeric", month: "short" });
+  card.appendChild(el("h2", "", "On set"));
+  const ticked = data.rows.filter((r) => onSet.ticks && onSet.ticks[r.id] && onSet.ticks[r.id].done).length;
+  if (!onSet.live) {
+    card.appendChild(el("div", "muted", `Put this list on the crew's phones. Ticks show for everyone within seconds, with no app or login. Anyone with the link can see and tick this one list, and nothing else.${ticked ? ` ${ticked} ticked last time.` : ""}`));
+    const row = el("div", "row"), date = el("input"); row.style.marginTop = "10px";
+    date.type = "date"; date.setAttribute("aria-label", "Shoot date"); date.value = onSet.shoot_date || new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    const go = el("button", "primary", onSet.ever ? "Make a new phone link" : "Make phone link"); go.disabled = !data.plan.approved_at;
+    go.onclick = async () => { go.disabled = true; try { onSet = await post(`/post/coverage/${planId}/on-set`, { shoot_date: date.value }); render(); } catch (e) { toast(e.message, true); go.disabled = false; } };
+    row.append(el("label", "muted", "Shoot date"), date, go);
+    if (!data.plan.approved_at) row.appendChild(el("span", "muted", "Approve the list first."));
+    card.appendChild(row); main.appendChild(card); return;
+  }
+  card.appendChild(el("div", "muted", `${onSet.expired ? "This link ran out" : "Live until"} ${when(onSet.expires_at)} · ${ticked} of ${data.rows.length} ticked${onSet.offline ? " · no signal, so these are the last ticks seen" : ""}`));
+  const row = el("div", "row"), url = el("input", "onset-url"); row.style.marginTop = "10px";
+  url.value = onSet.url; url.readOnly = true; url.setAttribute("aria-label", "Phone link"); url.onclick = () => url.select();
+  const copy = el("button", "primary", "Copy link");
+  copy.onclick = async () => { try { await navigator.clipboard.writeText(onSet.url); toast("Copied. Send it to your crew."); } catch (e) { url.select(); toast("Press Cmd+C to copy it."); } };
+  const open = el("a", "button", "Open"); open.href = onSet.url; open.target = "_blank"; open.rel = "noopener noreferrer";
+  const stop = el("button", "", "Stop link");
+  stop.onclick = async () => { if (!(await confirmAction("Stop this link?", "Phones lose the list straight away. The ticks stay for the report. A new link will have a new address.", "Stop link"))) return; try { onSet = await api(`/post/coverage/${planId}/on-set`, { method: "DELETE" }); render(); } catch (e) { toast(e.message, true); } };
+  const date = el("input"); date.type = "date"; date.setAttribute("aria-label", "Shoot date"); date.value = onSet.shoot_date;
+  date.onchange = async () => { try { onSet = await post(`/post/coverage/${planId}/on-set`, { shoot_date: date.value }); render(); } catch (e) { toast(e.message, true); } };
+  row.append(url, copy, open, stop, el("label", "muted", "Shoot date"), date);
+  card.appendChild(row);
+  if (!onSet.in_sync || onSet.expired) {
+    const line = el("div", "row"); line.style.marginTop = "10px"; line.appendChild(el("span", "weak", onSet.expired ? "This link has run out." : "Phones have an older list."));
+    const send = el("button", "", onSet.expired ? "Turn it back on" : "Send update");
+    send.onclick = async () => { try { onSet = await post(`/post/coverage/${planId}/on-set`, { shoot_date: onSet.shoot_date }); render(); toast("Sent to phones."); } catch (e) { toast(e.message, true); } };
+    line.appendChild(send); card.appendChild(line);
+  }
+  main.appendChild(card);
+}
 function renderList(main) {
   const empty = !data.rows.length;
+  if (!empty) renderOnSet(main);
   if (empty) renderBrief(main);
   const card = el("div", "card"), head = el("div", "row");
   head.appendChild(el("h2", "", data.plan.approved_at ? `Approved ${data.plan.approved_at.slice(0, 10)}` : (empty ? "Or add shots yourself" : "Draft: read it through, then approve")));
@@ -266,6 +305,12 @@ function renderReport(main) {
     const a = el("div", "card alert"); a.appendChild(el("h2", "missing", `${sum.must_missing.length} must-have${sum.must_missing.length === 1 ? "" : "s"} not found`));
     const ul = el("ul"); for (const d of sum.must_missing) ul.appendChild(el("li", "", d)); a.appendChild(ul); main.appendChild(a);
   } else if (!c.unchecked) { main.appendChild(el("div", "card ok covered", "Every must-have was found. Each one shows the clip that proves it, so look before you rely on it.")); }
+  const unfound = data.rows.filter((r) => r.status === "missing" && onSet && onSet.ticks[r.id] && onSet.ticks[r.id].done);
+  if (unfound.length) {
+    const a = el("div", "card unfound"); a.appendChild(el("h2", "weak", `${unfound.length} ticked on set, but not found in the footage`));
+    a.appendChild(el("div", "muted", "Someone says they got these. Look for them by eye first: either the check missed them, or they still need shooting."));
+    const ul = el("ul"); ul.style.margin = "6px 0 0"; ul.style.paddingLeft = "18px"; for (const r of unfound) ul.appendChild(el("li", "", r.description)); a.appendChild(ul); main.appendChild(a);
+  }
   const act = el("div", "card row"), running = data.job && data.job.state === "running", est = data.estimate;
   act.appendChild(el("span", "muted", `${data.log.name}: ${data.log.clips} clips, ${data.log.tagged} tagged.`));
   if (data.log.tagged < data.log.clips) act.appendChild(el("span", "weak", "Tag the clips first for a better check."));
@@ -290,6 +335,8 @@ function shotRow(r) {
   const what = el("div", "what"); what.appendChild(el(r.priority === "must" ? "b" : "span", "", r.description));
   what.appendChild(el("div", "muted", [data.priorities[r.priority], r.shot_size !== "any" ? label(r.shot_size) : null, r.owner || null].filter(Boolean).join(" · ")));
   if (r.reason && !r.yours) what.appendChild(el("div", "muted", r.reason));
+  const tick = onSet && onSet.ticks[r.id];
+  if (tick && tick.done) what.appendChild(el("div", "ticked", `Ticked on set by ${tick.by}, ${new Date(tick.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}${tick.note ? `: ${tick.note}` : ""}`));
   row.appendChild(what);
   const frames = el("div", "frames");
   for (const e of r.proof) {
@@ -321,9 +368,21 @@ $("newSave").onclick = async () => {
     toast(e.message, true);
   }
 };
-$("planPick").onchange = () => { planId = $("planPick").value; lastFinish = null; load(); };
+$("planPick").onchange = () => { planId = $("planPick").value; lastFinish = null; onSet = null; load(); };
 $("tokenBtn").onclick = async () => { await askToken(); load(); };
 $("stopBtn").onclick = async () => { try { await post(`/post/coverage/${planId}/stop`); } catch (e) { toast(e.message, true); } };
+
+// Comes from the cloud, so it can be slow on poor signal, and the page doesn't wait for it. Never redraws under someone typing.
+function refreshOnSet() {
+  const asked = planId;
+  api(`/post/coverage/${asked}/on-set`).then((r) => {
+    if (asked !== planId) return;
+    const changed = JSON.stringify(r) !== JSON.stringify(onSet); onSet = r;
+    const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) && $("main").contains(document.activeElement);
+    if (changed && !typing) render();
+  }).catch(() => {});
+}
+setInterval(() => { if (!document.hidden && planId && onSet && onSet.live) refreshOnSet(); }, 20000);
 
 async function load() {
   try {
@@ -335,6 +394,7 @@ async function load() {
   renderPick(); renderHeader();
   const focused = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) && $("main").contains(document.activeElement);
   if (!focused || !data || !data.job || data.job.state !== "running") render();
+  if (planId && !(data && data.job && data.job.state === "running")) refreshOnSet();
   const job = data && data.job;
   if (job && job.finished_at && job.finished_at !== lastFinish) { if (lastFinish !== null || job.state !== "done") toast(job.message || "Finished.", job.state === "failed"); lastFinish = job.finished_at; }
   if (job && job.state === "running") { if (!poll) poll = setInterval(load, 2000); }

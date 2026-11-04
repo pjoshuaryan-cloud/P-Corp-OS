@@ -129,3 +129,13 @@ Rebuild the desktop app first so the Coverage Plans button shows. This costs a l
 4. Click Covered on a Missing shot: the count changes. Click again: it goes back. Report PDF matches the page.
 5. Reject a clip that's a shot's only proof on the Shoot Log page: back on Coverage, that shot says Weak, with no charge.
 6. More > Apply Shoot Log. Shoot Log > By Moment has one search bin per moment, holding the clips the check tied to it. The rejected clip isn't in any of them. Apply again: nothing doubles.
+
+## 7. On set (2026-11-04)
+Not Premiere, but this needs real hardware. Use two real phones, ideally on real mobile signal.
+1. Coverage page, Shot list tab: Make phone link, Copy link, send it to both phones. Each picks a name or camera.
+2. Phone A ticks a shot: phone B shows it within about 5 seconds, with who and when.
+3. On an iPhone, tap the mic and say something like "logo wall, wide and tight". Allow the mic if asked. The right shots come up to confirm. If the mic fails, try the keyboard's own mic in the same box.
+4. Put phone A in airplane mode and tick something. It says "not sent yet". Close Safari's tab, reopen the link: the list is still there. Turn airplane mode off: the tick reaches phone B, with the time it was really made.
+5. Change a shot on the Mac: both phones update by themselves.
+6. Stop link: both phones say the link isn't active.
+7. After a Coverage check, a shot that was ticked but not found gets its own warning on the page and in the report PDF.

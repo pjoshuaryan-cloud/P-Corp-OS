@@ -47,6 +47,12 @@
     "tries": 2,
     "draft_max_tokens": 6000,
     "cap_multiple": 1.5,
-    "hard_cap_usd": 10.0
+    "hard_cap_usd": 10.0,
+    "on_set": {
+      "_about": "Phase 3 (app/on_set_db.py, static/on_set.html): the phone checklist. It's served from the cloud backend, because phones at a venue can't reach this Mac.",
+      "public_url": "https://p-corp-os.onrender.com",
+      "link_days_after_shoot": 3,
+      "settings": { "soon_minutes": 30, "now_minutes": 15, "poll_seconds": 5 }
+    }
   }
 }

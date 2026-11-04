@@ -124,6 +124,7 @@ s.append(table(["You want to", "Use", "Where"], [
     ["Get a cut to music built for you", "<b>Plan Edit</b>, then <b>Build My Edit</b>", "P Corp app, then plugin"],
     ["Organise a shoot and choose your selects", "<b>Log This Shoot</b>, then <b>Apply Shoot Log</b>", "Plugin, under More"],
     ["Plan the shots, then check you got them", "<b>Coverage Plans</b>", "P Corp app"],
+    ["Share a live shot list with the crew", "<b>Make phone link</b>, on a coverage plan", "P Corp app"],
     ["Find soundbites in speech or interviews", "<b>Transcribe Dialogue</b>, then <b>Suggest Smart Selects</b>", "Plugin, under More"],
     ["Cut an interview filmed on several cameras", "<b>Plan Edit</b> with the <i>Talking head, several cameras</i> style, then <b>Build My Edit</b>", "P Corp app, then plugin"],
     ["Cut a corporate story to a voice-over", "<b>Plan Edit</b> with <i>Corporate story with narration</i> and your script, then <b>Build My Edit</b>", "P Corp app, then plugin"],
@@ -145,7 +146,7 @@ s += bullets([
 s += section("Two ways to start a shoot", "<b>Start in the P Corp app whenever you can.</b> It makes a verified copy of the card, and Plan Edit, Build My Edit, Transcribe, Smart Selects, Exposure and Rough Cut all need a P Corp shoot behind the project. <b>Straight into Premiere</b> still gets you Log This Shoot, Apply Shoot Log, Coverage Plans and Learn From My Edit, but the clips stay on the card.")
 
 s.append(PageBreak())
-s += section("One shoot, start to finish", "This is the full route, in order. The next page shows what to leave out for each kind of job. If there's a brief or run sheet, start with <b>Coverage Plans</b> before the shoot: see the Coverage page.")
+s += section("One shoot, start to finish", "This is the full route, in order. The next page shows what to leave out for each kind of job. If there's a brief or run sheet, start with <b>Coverage Plans</b> before the shoot, and the crew can tick it off on their phones on the day.")
 s.append(steps([
     ("Copy the footage", "P Corp app, POST", [
         ("Plug in the card and your drive. Fill in the profile, shoot name, drives, format, resolution and frame rate, then click <b>Create Job</b> and <b>Start</b>.", "It copies, checks every file against the original and analyses the media. A notification says when it's ready."),
@@ -185,7 +186,7 @@ s.append(table(["Job", "Do this", "Leave out"], [
     ["<b>Corporate story with a voice-over</b>", "Copy, Prepare, Log, Plan Edit with <i>Corporate story with narration</i>, your script and a music bed, then Build My Edit.", "Describe, unless you want it"],
     ["<b>Long-form with no music</b>", "Copy, Prepare, Transcribe, Smart Selects or Detect Highlights, then Assemble Rough Cut. To set the order, lay the clips on a sequence named after the shoot first.", "Plan Edit, Build My Edit"],
     ["<b>Footage already in Premiere</b>", "Log This Shoot, Tag, review, Apply Shoot Log. Learn From My Edit when you've finished cutting.", "Everything else: it needs a P Corp shoot"],
-    ["<b>A brief with must-have shots</b>", "Coverage Plans before the shoot, then whichever route fits. Log, Tag and run the check straight after, while you can still get what's missing.", "Nothing. It sits alongside any route"],
+    ["<b>A brief with must-have shots</b>", "Coverage Plans before the shoot, a phone link for the crew on the day, then whichever route fits. Log, Tag and run the check straight after, while you can still get what's missing.", "Nothing. It sits alongside any route"],
     ["<b>Quick look at a card</b>", "Create Job, Start, View Report.", "Everything else"],
 ], [.27, .47, .26]))
 
@@ -293,6 +294,35 @@ s.append(Spacer(1, 4))
 s.append(callout("<b>Tested on one real shoot so far.</b> On Birkenstock, with a test brief, all 4 shots that weren't filmed came out Missing, and the 9 that were came out Covered (7) or Weak (2). It leans strict, so a shot you'd happily use can say Weak. One shoot isn't much, so check Missing shots by eye before a report goes to a client."))
 
 s.append(PageBreak())
+s += section("On set: one live list for the crew", "Everyone shooting sees the same list on their own phone, and sees each other's ticks within seconds. There's no app or login: it opens in the phone's browser.")
+s.append(steps([
+    ("Before the shoot", "Coverage Plans, Shot list tab, On set", [
+        ("Approve the list, check the shoot date, and click <b>Make phone link</b>.", "Puts a copy of the list on P Corp's cloud server. Free."),
+        ("Click <b>Copy link</b> and send it to your crew.", "WhatsApp is fine. Anyone with the link can see and tick this one list, so treat it like a door code."),
+    ]),
+    ("On the day", "on each phone", [
+        ("Open the link and pick your camera or name.", "It needs signal the first time. After that it reopens without any."),
+        ("Tap a shot when you've got it. Tap again to undo.", "Everyone sees it within about 5 seconds, with who and when. <b>Note</b> adds a few words."),
+        ("Or tap the mic, say what you got, and confirm.", "\"Logo wall, wide and tight\" suggests both shots. Nothing ticks until you confirm. If the mic won't work, use the keyboard's own mic in the same box."),
+        ("Watch the banner at the top.", "It warns about must-haves still to get: 30 minutes before each run-sheet moment, during it, and after. Only on the shoot day, and only for moments with a clock time."),
+    ]),
+    ("After the shoot", "Coverage Plans", [
+        ("Log, Tag and <b>Check</b> as usual.", "Ticks never decide what's covered. A shot ticked on set but not found in the footage gets its own warning, on the page and in the report PDF: look for it by eye."),
+        ("Click <b>Stop link</b> when you're done.", "Phones lose the list straight away and it comes off them. Ticks stay for the report. If you forget, the link runs out 3 days after the shoot."),
+    ]),
+]))
+s.append(Paragraph("Handy to know", h2))
+s += bullets([
+    "<b>No signal:</b> keep ticking. Ticks are saved on the phone and sent when signal returns, with the time they were really made.",
+    "<b>Changing the list:</b> an edit on the Mac reaches phones by itself. With no signal, the page says <i>Phones have an older list</i> and offers <b>Send update</b>.",
+    "<b>Filters:</b> <i>Still to get</i> hides what's ticked. <i>Mine</i> shows shots assigned to your camera, if the list says who's shooting what.",
+    "<b>What the link can do:</b> see this one list and tick it. It can't reach anything else in P Corp, change the list or spend money. A shoot under a strict NDA shouldn't use it, because the list sits on the cloud server while the link is live.",
+    "<b>Warnings only show while the page is open.</b> Nothing reaches a phone in a pocket.",
+])
+s.append(Spacer(1, 4))
+s.append(callout("<b>Not run on a real shoot yet.</b> Tested with two browsers, one of them iPhone Safari, on test data. Try it on two real phones first, including the mic, which hasn't been tried on a real iPhone."))
+
+s.append(PageBreak())
 s += section("Time and cost", "Measured on real shoots unless it says otherwise. Your numbers will vary with footage and drive speed.")
 s.append(table(["Step", "Time", "Cost"], [
     ["Copy and verify", "Depends on the drive", "Free"],
@@ -305,6 +335,7 @@ s.append(table(["Step", "Time", "Cost"], [
     ["Detect Highlights", "Not measured here", "More per clip than Tag. No measured figure yet"],
     ["Draft a shot list", "6 s for a one-page brief", "About 1¢, more for a long PDF"],
     ["Coverage check", "16 s for 14 shots on 48 clips", "11¢ for those, about 1¢ a shot"],
+    ["On-set phone list", "Ticks show in about 5 s (test data)", "Free"],
 ], [.26, .44, .30]))
 s.append(Spacer(1, 6))
 s.append(Paragraph("<b>Tag, Describe, Detect Highlights, Analyze Frames and the coverage check send frames to Anthropic, and Draft shot list sends the brief.</b> Check first on a client with strict terms. Without them you still get the checks, your own selects, Apply, Plan Edit and a shot list you write yourself.", body))
@@ -332,6 +363,10 @@ s.append(table(["What you see", "What to do"], [
     ["A must-have says Missing, but you shot it", "Find the clip by eye, then click Covered. The check only sees sampled frames."],
     ["A shot says Not checked", "You changed it, or the check stopped before it got there. Click Check: only those shots are charged."],
     ["Link the shoot lists nothing", "Click Log This Shoot first, with the project open."],
+    ["A phone says \"This link isn't active\"", "It was stopped or ran out. Make a new link on the Coverage page and send it again."],
+    ["A phone says \"No signal\"", "Keep ticking. Ticks are saved and sent when signal returns."],
+    ["\"Phones have an older list\"", "Click Send update on the Coverage page."],
+    ["Make phone link is greyed out", "Approve the list first."],
     ["\"Run Prepare POST Project\" or no job found", "That button needs a P Corp shoot behind the project. See Two ways to start a shoot."],
     ["Plan Edit is greyed out", "The reason shows just underneath, usually that it needs a song."],
     ["A shot's slot is empty after a build", "The panel names the clip: it isn't in the project. Import it and build again."],

@@ -10,7 +10,10 @@ Wrongly saying "covered" is the costly mistake: a must-have is really missing an
 
 Text from a brief is outside material, and so is anything Claude wrote from it. The prompts say so, and the page and PDFs escape it.
 
-Plans live on this Mac, not with the footage, because they exist before the shoot does."""
+Plans live on this Mac, not with the footage, because they exist before the shoot does.
+
+On set (Phase 3): a phone link sends a copy of the list to the shared database, and shooters tick from there (app/on_set_db.py). A tick is someone saying they got it, so it never changes a
+verdict. What it adds is a warning: a shot ticked on set that can't be found in the footage is the one to go looking for."""
 from __future__ import annotations
 
 import asyncio
@@ -18,9 +21,11 @@ import base64
 import hashlib
 import io
 import json
+import os
 import re
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
@@ -235,6 +240,65 @@ def add_override(plan_id: str, item_id: str, status: str) -> None:
     folder = plan_dir(plan_id)
     with open(folder / "overrides.jsonl", "a") as fh:
         fh.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "item": item_id, "status": status}) + "\n")
+
+
+# ===================================================================================================================================================== on set
+def _on_set_file(plan_id: str) -> Path:
+    return plan_dir(plan_id) / "on_set.json"
+
+
+def on_set_local(plan_id: str) -> dict[str, Any]:
+    """What this Mac knows about the plan's phone link, with the only full copy of its token. The shared database keeps just a hash."""
+    try:
+        return json.loads(_on_set_file(plan_id).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_on_set_local(plan_id: str, data: dict[str, Any]) -> None:
+    _write_json(_on_set_file(plan_id), data)
+    os.chmod(_on_set_file(plan_id), 0o600)
+
+
+def on_set_items(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """The list as phones get it. Only what a shooter needs: never the brief, the linked shoot, costs, or anything from the report."""
+    labels = sl.CONFIG["labels"]
+    return [{"id": i["id"], "moment": i["moment"], "time": i["time"], "description": i["description"], "size": i["shot_size"], "size_label": "" if i["shot_size"] == "any" else labels.get(i["shot_size"], i["shot_size"]),
+             "priority": i["priority"], "priority_label": PRIORITIES[i["priority"]], "owner": i["owner"]} for i in plan["items"]]
+
+
+def on_set_hash(plan: dict[str, Any], shoot_date: str) -> str:
+    """Whether phones have the list as it stands now."""
+    return hashlib.sha1(json.dumps([plan["name"], plan.get("client") or "", shoot_date, on_set_items(plan)], sort_keys=True).encode()).hexdigest()
+
+
+def on_set_url(token: str) -> str:
+    return f"{CONFIG['on_set']['public_url'].rstrip('/')}/static/on_set.html#t={token}"
+
+
+def load_on_set_ticks(plan_id: str) -> dict[str, dict[str, Any]]:
+    """The ticks last seen. Kept here too, so the report still has them with no signal, or after the link has stopped."""
+    try:
+        return json.loads((plan_dir(plan_id) / "on_set_ticks.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_on_set_ticks(plan_id: str, ticks: dict[str, dict[str, Any]]) -> None:
+    _write_json(plan_dir(plan_id) / "on_set_ticks.json", ticks)
+
+
+def on_set_clock(iso: str) -> str:
+    """A tick's time on this Mac's clock."""
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone().strftime("%H:%M")
+    except ValueError:
+        return ""
+
+
+def on_set_unfound(items: list[dict[str, Any]], results: list[dict[str, Any]], ticks: dict[str, dict[str, Any]]) -> list[str]:
+    """Shots someone says they got that the check can't find. Either the check missed it, which is worth a look, or nobody really has it, which is worth knowing while there's still time."""
+    return [i["description"] for i, r in zip(items, results) if r["status"] == "missing" and ticks.get(i["id"], {}).get("done")]
 
 
 # ================================================================================================================================================= the verdict
@@ -804,6 +868,12 @@ def _tick_box(t: dict[str, Any]) -> Any:
     return Box()
 
 
+def _on_set_line(tick: dict[str, Any] | None) -> str:
+    if not tick or not tick.get("done"):
+        return ""
+    return f"Ticked on set by {tick['by']}, {on_set_clock(tick['at'])}" + (f": {tick['note']}" if tick.get("note") else "")
+
+
 def _moments_in_order(plan: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(i["moment"] for i in plan["items"]))
 
@@ -862,6 +932,12 @@ def report_pdf(plan_id: str) -> bytes:
     elif plan["items"] and not counts["unchecked"]:
         story.append(Spacer(1, 8))
         story.append(Paragraph("<b>Every must-have was found.</b>", t["body"].clone("okay", textColor=colors.HexColor(_STATUS_INK["covered"]))))
+    ticks = load_on_set_ticks(plan_id)
+    unfound = on_set_unfound(plan["items"], results, ticks)
+    if unfound:
+        story.append(Spacer(1, 8))
+        lines = "<br/>".join(f"&bull; {_text(d)}" for d in unfound)
+        story.append(Paragraph(f"<b>Ticked on set, but not found in the footage ({len(unfound)})</b><br/>{lines}", t["body"].clone("unfound", textColor=colors.HexColor(_STATUS_INK["weak"]))))
     frame_h = 19 * t["mm"]
     for moment in _moments_in_order(plan):
         pairs = [(i, r) for i, r in zip(plan["items"], results) if i["moment"] == moment]
@@ -876,6 +952,9 @@ def report_pdf(plan_id: str) -> bytes:
             detail = ""
             if status != "covered" and result["reason"] and not result["yours"]:
                 detail = f"<br/><font size='7.8' color='#5C6370'>{_text(result['reason'])}</font>"
+            on_set = _on_set_line(ticks.get(item["id"]))
+            if on_set:
+                detail += f"<br/><font size='7.8' color='#5C6370'>{_text(on_set)}</font>"
             frames = []
             for e in result["proof"] if ctx else []:
                 path = sl.thumb_path(ctx, e["clip"], CONFIG["sheet"]["frames"][0])

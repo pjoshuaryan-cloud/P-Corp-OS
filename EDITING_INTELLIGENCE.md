@@ -422,3 +422,27 @@ Phase 2 of the same spec: a brief, run sheet or storyboard goes in and an editab
 Reading that report found a bug: a Covered row's second frame could be a clip that only partly matched (the Matis row showed a cake box with no branding), and with a rejected clip among the matches the PDF's frames and names could disagree. Page and PDF now share one `proof` list.
 
 **Not verified yet:** one shoot, with a brief written for the test, so no real client brief and no uploaded PDF. These absences were clean, so a real shot that falls between the sampled frames could still come out Missing. By Moment bins haven't been seen in real Premiere, though they use the same call as By Subject.
+
+## 15. On set: one live list for the crew (Shoot Logger Phase 3, 2026-11-04)
+
+The spec's Phase 3: a shared phone checklist with tap or voice tick-off and run-sheet alerts, done when "two shooters run one job off a single live list". `backend/app/on_set_db.py`, public routes under `/set/`, Mac routes under `/post/coverage/{id}/on-set`, `backend/app/static/on_set.html`, `on_set.js`, `on_set_logic.js`, `on_set_sw.js`, an On set card on the Coverage page. Security decisions are in `SECURITY.md`.
+
+**Why it's built this way:**
+- **On the cloud backend:** phones at a venue can't reach this Mac. The Mac and Render already share Postgres, so "make a phone link" copies the list there and Render serves it. The plan itself stays on the Mac.
+- **A web page, not the iPhone app:** that app has 7-day signing and one login opening everything. A page works on anyone's phone with nothing to install.
+- **Polling every 5 s, not push:** nothing else here has push, and asking "anything after tick 41?" costs a few hundred bytes. It stops while the page is hidden and backs off with no signal.
+- **Ticks only get added, and the latest by when it happened wins:** a tick that waited for signal can't override what someone did after it. Sending one twice counts once, so phones can retry freely. On Postgres the link's row is locked while ticks go in, because ids are handed out before commit, so a phone reading "everything after 6" could otherwise miss a 5 that commits a moment later.
+- **The tables are made by the first link, not at startup:** startup DDL has caused an outage here before.
+- **Voice matching on the phone, for free:** speech comes from the browser, or the keyboard's own mic, which is always there. Matching is local, by rare words, sizes and one-letter slips. It only suggests, and a person confirms. A Claude call would have meant a public link could spend money.
+- **A tick never changes a verdict:** it's someone saying they got it. The report adds one thing: a shot ticked on set but not found in the footage gets its own warning, on the page and in the PDF, because either the check missed it or nobody really has it.
+
+**Tested, on throwaway data and a made-up token:**
+- 145 checks in `on_set_test.py` (with its Postgres part switched on) and 68 in `plugin_on_set_test.js`, including every private route refusing the phone link and the phone link's data carrying no brief, path or cost.
+- The database part on a real Postgres 16 in a throwaway local database: 4 phones writing 240 ticks at once while another read along, none missed. Also before the tables exist.
+- The spec's done test with two different browsers, one of them real iPhone Safari in the Simulator: A-cam's tick reached B-cam in 2.4 s, B-cam's voice-style phrase ticked two shots and reached A-cam, and the run-sheet warning updated by itself.
+- With the server stopped: a tick showed "not sent yet", the page reloaded in Safari with no connection, and the tick arrived when the server came back, with the time it was really made.
+- 26 phrases I wrote against the 14-shot Birkenstock list: the right shot first on all 26, and no wrong shot pre-selected. These were written by me and typed, not real speech with venue noise.
+
+**Found only by using it:** the pinned warnings took a third of the screen (now only the most urgent stays pinned). A new link opened in the same tab stayed on the old one, because only what's after the `#` changes, so a browser doesn't reload (it now does).
+
+**Not verified yet:** two real phones on real signal at a real venue. The mic on a real iPhone: the Simulator has the speech feature but no mic, so only the wiring was tested, with a stand-in. Warnings only show while the page is open, so nothing reaches a phone in a pocket. Real alerts would need installing to the Home Screen plus web push, which is worth building only if real shoots show the banner isn't enough.

@@ -62,7 +62,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 
 from app.alpha_mode_agent import (
     ALPHA_MODE_AGENT_TOOL_NAMES,
@@ -1214,7 +1214,8 @@ def _is_slow_route(method: str, path: str) -> bool:
     # (Claude-calling) route in this app is a POST, so gating on that is
     # safe, not just a narrow fix for this one collision.
     # The Shoot Log and static pages never touch the cloud database, so they don't hold a connection (a page of thumbnails would tie up the pool) and keep working with no signal.
-    if path.startswith(("/post/shoot-log", "/post/coverage", "/static/")):
+    # /set/ is public, so it checks its rate limit first and only then takes a connection, for as short a time as it can: a flood of requests mustn't be able to tie up the pool.
+    if path.startswith(("/post/shoot-log", "/post/coverage", "/static/", "/set/")):
         return True
     if method != "POST":
         return False
@@ -3528,25 +3529,32 @@ async def post_coverage_view(plan_id: str, _: None = Depends(verify_token)) -> d
 @app.post("/post/coverage/{plan_id}/details")
 async def post_coverage_details(plan_id: str, body: CoverageDetailsRequest, _: None = Depends(verify_token)) -> dict:
     from app import post_coverage
-    return _coverage_call(post_coverage.rename, plan_id, body.name, body.client)
+    out = _coverage_call(post_coverage.rename, plan_id, body.name, body.client)
+    await _on_set_push_quietly(plan_id)
+    return out
 
 
 @app.post("/post/coverage/{plan_id}/items")
 async def post_coverage_add_item(plan_id: str, body: CoverageItemRequest, _: None = Depends(verify_token)) -> dict:
     from app import post_coverage
-    return _coverage_call(post_coverage.add_item, plan_id, body.model_dump(exclude_none=True))
+    out = _coverage_call(post_coverage.add_item, plan_id, body.model_dump(exclude_none=True))
+    await _on_set_push_quietly(plan_id)
+    return out
 
 
 @app.post("/post/coverage/{plan_id}/items/{item_id}")
 async def post_coverage_update_item(plan_id: str, item_id: str, body: CoverageItemRequest, _: None = Depends(verify_token)) -> dict:
     from app import post_coverage
-    return _coverage_call(post_coverage.update_item, plan_id, item_id, body.model_dump(exclude_none=True))
+    out = _coverage_call(post_coverage.update_item, plan_id, item_id, body.model_dump(exclude_none=True))
+    await _on_set_push_quietly(plan_id)
+    return out
 
 
 @app.delete("/post/coverage/{plan_id}/items/{item_id}")
 async def post_coverage_delete_item(plan_id: str, item_id: str, _: None = Depends(verify_token)) -> dict:
     from app import post_coverage
     _coverage_call(post_coverage.delete_item, plan_id, item_id)
+    await _on_set_push_quietly(plan_id)
     return {"ok": True}
 
 
@@ -3609,6 +3617,7 @@ def _coverage_pdf_response(data: bytes, name: str) -> Response:
 @app.get("/post/coverage/{plan_id}/report.pdf")
 async def post_coverage_report_pdf(plan_id: str, _: None = Depends(verify_token)) -> Response:
     from app import post_coverage
+    await _on_set_read(plan_id)   # the latest ticks, if there's signal; the last ones seen if not
     data = await on_drive(_coverage_call, post_coverage.report_pdf, plan_id, timeout=60.0)
     return _coverage_pdf_response(data, f"Coverage report - {post_coverage.load_plan(plan_id)['name']}")
 
@@ -3618,6 +3627,183 @@ async def post_coverage_shot_list_pdf(plan_id: str, _: None = Depends(verify_tok
     from app import post_coverage
     data = await on_drive(_coverage_call, post_coverage.shot_list_pdf, plan_id, timeout=60.0)
     return _coverage_pdf_response(data, f"Shot list - {post_coverage.load_plan(plan_id)['name']}")
+
+
+# ---- on set: the phone checklist (Shoot Logger Phase 3). Everything under /set/ is public and opens with a phone link, not the main token; see app/on_set_db.py for the rules it keeps.
+_SET_HEADERS = {"Cache-Control": "no-store", "X-Robots-Tag": "noindex"}
+
+
+class SetTick(BaseModel):
+    event_id: str = Field(min_length=8, max_length=64)
+    item: str = Field(min_length=1, max_length=20)
+    done: bool
+    by: str = Field(min_length=1, max_length=40)
+    note: str = Field(default="", max_length=200)
+    at: str | None = Field(default=None, max_length=40)
+
+
+class SetTicksRequest(BaseModel):
+    events: list[SetTick] = Field(max_length=50)
+
+
+def _set_token(request: Request) -> str:
+    """The phone link's token, once it's passed the checks that cost nothing. Comes before any database work."""
+    from app import on_set_db
+    token = request.headers.get("x-set-token", "")
+    verdict = on_set_db.admit(token)
+    if verdict == "no":
+        raise HTTPException(status_code=404, detail=on_set_db.NOT_ACTIVE, headers=_SET_HEADERS)
+    if verdict == "slow":
+        raise HTTPException(status_code=429, detail="Too many requests. Try again in a minute.", headers=_SET_HEADERS)
+    return token
+
+
+@app.get("/set/state")
+async def set_state(request: Request, since: int = Query(0, ge=0, le=2**53), v: int = Query(0, ge=0, le=2**53)) -> JSONResponse:
+    """What one phone link can see: its list, and the ticks since the last time it asked."""
+    from app import on_set_db
+    token = _set_token(request)
+    async with _pooled_postgres_conn() as conn:
+        link = await on_set_db.find_link(token, conn)
+        if link is None:
+            raise HTTPException(status_code=404, detail=on_set_db.NOT_ACTIVE, headers=_SET_HEADERS)
+        ticks = await on_set_db.ticks_since(link["plan_id"], since, conn)
+    return JSONResponse(on_set_db.state_payload(link, ticks, since, v), headers=_SET_HEADERS)
+
+
+@app.post("/set/ticks")
+async def set_ticks(request: Request) -> JSONResponse:
+    """Ticks from one phone link. All it can do is add them, to its own list. The body is only read after the link has passed its checks, and only up to a limit."""
+    from app import on_set_db
+    token = _set_token(request)
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > on_set_db.MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="That's too much at once.", headers=_SET_HEADERS)
+    try:
+        body = SetTicksRequest.model_validate_json(bytes(raw))
+    except ValidationError:
+        raise HTTPException(status_code=422, detail="Those ticks couldn't be read.", headers=_SET_HEADERS) from None
+    async with _pooled_postgres_conn() as conn:
+        link = await on_set_db.find_link(token, conn)
+        if link is None:
+            raise HTTPException(status_code=404, detail=on_set_db.NOT_ACTIVE, headers=_SET_HEADERS)
+        out = await on_set_db.add_ticks(link, [e.model_dump() for e in body.events], conn)
+    return JSONResponse(out, headers=_SET_HEADERS)
+
+
+class CoverageOnSetRequest(BaseModel):
+    shoot_date: str
+
+
+def _on_set_shoot_date(raw: str) -> str:
+    from datetime import date
+    try:
+        return date.fromisoformat(raw).isoformat()
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Pick the shoot date.") from None
+
+
+async def _on_set_publish(plan_id: str, token: str, shoot_date: str) -> None:
+    """Sends the list as it stands to phones, and notes that it did."""
+    from app import on_set_db, post_coverage
+    plan = post_coverage.load_plan(plan_id)
+    conf = post_coverage.CONFIG["on_set"]
+    expires = on_set_db.expiry_for(shoot_date, conf["link_days_after_shoot"])
+    async def send() -> None:
+        async with _pooled_postgres_conn() as conn:
+            await on_set_db.ensure_tables(conn)
+            await on_set_db.publish(plan_id, token, plan["name"], plan.get("client") or "", shoot_date, post_coverage.on_set_items(plan), conf["settings"], expires, conn)
+    await asyncio.wait_for(send(), timeout=15.0)
+    post_coverage.save_on_set_local(plan_id, {"token": token, "shoot_date": shoot_date, "expires_at": expires, "sent_hash": post_coverage.on_set_hash(plan, shoot_date)})
+
+
+async def _on_set_push_quietly(plan_id: str) -> None:
+    """After an edit, if the plan has a live link: phones get the new list. With no signal the page says they have an older one, and offers to send it."""
+    from app import post_coverage
+    from app.on_set_db import now_iso
+    local = post_coverage.on_set_local(plan_id)
+    if not local.get("token") or local.get("expires_at", "") <= now_iso():   # an edit must never bring a run-out link back to life
+        return
+    try:
+        await _on_set_publish(plan_id, local["token"], local["shoot_date"])
+    except Exception as exc:
+        print(f"[on set] couldn't update phones: {type(exc).__name__}")
+
+
+async def _on_set_read(plan_id: str) -> dict:
+    """The phone link's state for this Mac: fresh from the shared database if there's signal, the last ticks seen if not."""
+    from app import on_set_db, post_coverage
+    local = post_coverage.on_set_local(plan_id)
+    out: dict = {"live": False, "ever": bool(local), "offline": False, "ticks": post_coverage.load_on_set_ticks(plan_id), "shoot_date": local.get("shoot_date"), "expires_at": local.get("expires_at")}
+    if not local.get("token"):
+        return out
+    out.update({"live": True, "url": post_coverage.on_set_url(local["token"]), "in_sync": local.get("sent_hash") == post_coverage.on_set_hash(post_coverage.load_plan(plan_id), local["shoot_date"])})
+    async def fetch() -> tuple:
+        async with _pooled_postgres_conn() as conn:
+            return await on_set_db.get_link(plan_id, conn), await on_set_db.ticks_since(plan_id, 0, conn)
+    try:
+        link, events = await asyncio.wait_for(fetch(), timeout=8.0)
+    except Exception as exc:
+        print(f"[on set] couldn't read ticks: {type(exc).__name__}")
+        out["offline"] = True
+        return out
+    out["ticks"] = on_set_db.current_ticks(events)
+    post_coverage.save_on_set_ticks(plan_id, out["ticks"])
+    if link is None or link["revoked_at"]:
+        out["live"] = False
+    else:
+        out["expired"] = link["expires_at"] <= on_set_db.now_iso()
+    return out
+
+
+@app.get("/post/coverage/{plan_id}/on-set")
+async def post_coverage_on_set(plan_id: str, _: None = Depends(verify_token)) -> dict:
+    from app import post_coverage
+    _coverage_call(post_coverage.load_plan, plan_id)
+    return await _on_set_read(plan_id)
+
+
+@app.post("/post/coverage/{plan_id}/on-set")
+async def post_coverage_on_set_make(plan_id: str, body: CoverageOnSetRequest, _: None = Depends(verify_token)) -> dict:
+    """Makes the phone link, or changes its date or resends the list. An explicit click: this puts a copy of the shot list where anyone with the link can read it."""
+    from app import on_set_db, post_coverage
+    plan = _coverage_call(post_coverage.load_plan, plan_id)
+    local = post_coverage.on_set_local(plan_id)
+    shoot_date = _on_set_shoot_date(body.shoot_date)
+    if not plan["items"]:
+        raise HTTPException(status_code=400, detail="There are no shots on this list yet.")
+    if not local.get("token") and not plan.get("approved_at"):
+        raise HTTPException(status_code=400, detail="Approve the list first, so the crew doesn't get a draft.")
+    try:
+        await _on_set_publish(plan_id, local.get("token") or on_set_db.new_token(), shoot_date)
+    except Exception as exc:
+        print(f"[on set] couldn't make the link: {type(exc).__name__}: {exc}")
+        raise HTTPException(status_code=503, detail="Couldn't reach the cloud. Check your signal and try again.") from None
+    await _shoot_log_audit("post_coverage_on_set_ui", {"plan": plan_id, "shoot_date": shoot_date})
+    return await _on_set_read(plan_id)
+
+
+@app.delete("/post/coverage/{plan_id}/on-set")
+async def post_coverage_on_set_stop(plan_id: str, _: None = Depends(verify_token)) -> dict:
+    """Stops the link. Phones lose the list on their next request, ticks stay for the report, and making a link again gives a new address."""
+    from app import on_set_db, post_coverage
+    _coverage_call(post_coverage.load_plan, plan_id)
+    local = post_coverage.on_set_local(plan_id)
+    if local.get("token"):
+        final = await _on_set_read(plan_id)
+        async def stop() -> None:
+            async with _pooled_postgres_conn() as conn:
+                await on_set_db.revoke(plan_id, conn)
+        try:
+            await asyncio.wait_for(stop(), timeout=10.0)
+        except Exception as exc:
+            print(f"[on set] couldn't stop the link: {type(exc).__name__}")
+            raise HTTPException(status_code=503, detail="Couldn't reach the cloud, so the link is still live. Check your signal and try again.") from None
+        post_coverage.save_on_set_local(plan_id, {"token": None, "shoot_date": final.get("shoot_date"), "expires_at": None, "sent_hash": None})
+        await _shoot_log_audit("post_coverage_on_set_stop_ui", {"plan": plan_id})
+    return await _on_set_read(plan_id)
 
 
 class ProjectPlanRequest(BaseModel):
