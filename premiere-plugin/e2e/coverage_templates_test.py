@@ -8,10 +8,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 from fastapi.testclient import TestClient  # noqa: E402
-from app import main, post_coverage as cov, post_shoot_log as sl  # noqa: E402
+from app import main, on_set_db as db, post_coverage as cov, post_shoot_log as sl  # noqa: E402
 
 fails = 0
-REAL_DATA = sl.DATA
+REAL_DATA, REAL_DB = sl.DATA, db.DB_PATH
+REAL_DB_BEFORE = REAL_DB.exists()
 STARTER = "t0000000000a1"
 
 
@@ -31,6 +32,7 @@ def refused(fn, *args):
 
 tmp = Path(tempfile.mkdtemp())
 sl.DATA = tmp / "shoot_logs"
+db.DB_PATH = tmp / "on_set.db"   # saving a template also copies it up for phones, which must never reach the real data folder
 main.AUTH_TOKEN = "main-secret-token-for-this-test"
 MAIN = {"token": main.AUTH_TOKEN}
 pushed = []
@@ -125,7 +127,8 @@ cov.CONFIG["starter_templates"] = keep_seed
 # ---- who can do this
 for method, path, body in (("GET", "/post/coverage", None), ("POST", f"/post/coverage/{pid}/save-template", {"name": "x"}), ("POST", f"/post/coverage/{pid}/add-template", {"template": STARTER}), ("DELETE", f"/post/coverage-templates/{STARTER}", None)):
     check(f"{method} {path.split('/')[-1]} needs the main token", web.request(method, path, params={"token": "wrong"}, json=body).status_code == 403)
-check("nothing landed in the real data folder", sl.DATA != REAL_DATA and not (REAL_DATA / "coverage_templates" / "seeded-by-test").exists())
+check("nothing landed in the real data folder", sl.DATA != REAL_DATA and REAL_DB.exists() == REAL_DB_BEFORE)
+check("templates saved here were copied up for phones, in the test's own database", (tmp / "on_set.db").exists())
 config = json.loads((Path(cov.__file__).parent / "shoot_log_config.json").read_text())
 check("the starter list ships with the code, so it isn't lost with the data folder", config["coverage"]["starter_templates"][0]["id"] == STARTER)
 

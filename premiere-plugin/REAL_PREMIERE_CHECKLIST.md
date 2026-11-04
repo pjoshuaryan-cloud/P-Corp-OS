@@ -139,3 +139,12 @@ Not Premiere, but this needs real hardware. Use two real phones, ideally on real
 5. Change a shot on the Mac: both phones update by themselves.
 6. Stop link: both phones say the link isn't active.
 7. After a Coverage check, a shot that was ticked but not found gets its own warning on the page and in the report PDF.
+
+## 8. On your phone, with no Mac (2026-11-04)
+1. Coverage page, **My phone**, **Set up a phone**. Point the iPhone's camera at the QR code and open the link. The page opens with no login. Scan the same code again: it says it's been used.
+2. Bookmark the page. Close Safari and reopen it from the bookmark: still logged in. Send the page's address to the second phone and open it there: it says it isn't set up.
+3. **New shot list**, from JD store opening. Tap a moment to add a time, tap a shot to change it, then **Send to crew**. Send it to a second phone.
+4. On the second phone, open it and tick something: it shows on your list within seconds.
+5. **New shot list**, **Draft from a brief**. Paste a brief, or photograph a run sheet. The shots appear in a few seconds. Read them: nothing invented.
+6. Turn the Mac back on and open Coverage Plans: both lists have come in, with their ticks.
+7. **Details**, **Stop link**: the second phone says the link isn't active. On the Mac, **My phone**, **Turn off**: your phone says it isn't set up, and the crew link you remade still works.

@@ -168,8 +168,10 @@ def main_tests():
 
     asyncio.run(contract(None, "sqlite"))
     asyncio.run(sqlite_cap())
-    raw = (tmp / "on_set.db").read_bytes()
-    check("the database never holds a token, only its hash", b"tok-sqlite" not in raw, "")
+    import sqlite3
+    with sqlite3.connect(tmp / "on_set.db") as lite:
+        stored = [r[0] for r in lite.execute("SELECT token_hash FROM on_set_links")]
+    check("links are looked up by a hash, never the token itself", stored and all(re.fullmatch(r"[0-9a-f]{64}", h) for h in stored), stored)
     if os.environ.get("ON_SET_TEST_PG_DSN"):
         asyncio.run(postgres(os.environ["ON_SET_TEST_PG_DSN"]))
     else:
@@ -227,8 +229,13 @@ def main_tests():
     for method, route in (("POST", f"/post/coverage/{pid}/items"), ("POST", f"/post/coverage/{pid}/check"), ("POST", f"/post/coverage/{pid}/draft"), ("DELETE", f"/post/coverage/{pid}/on-set")):
         got = web.request(method, route, params={"token": token}, json={})
         check(f"the phone link can't {method} {route.split('/')[-1]}", got.status_code in (403, 422) and got.status_code != 200, got.status_code)
-    public = sorted({r.path for r in main.app.routes if getattr(r, "path", "").startswith("/set")})
-    check("the only public routes are the two the page needs", public == ["/set/state", "/set/ticks"], public)
+    public = sorted({r.path for r in main.app.routes if getattr(r, "path", "").startswith("/set") and not r.path.startswith("/set/manage")})
+    check("a crew link has only the two routes its page needs", public == ["/set/state", "/set/ticks"], public)
+    for route in main.app.routes:
+        if getattr(route, "path", "").startswith("/set/manage") and route.path != "/set/manage/claim":
+            for method in route.methods:
+                got = web.request(method, route.path.replace("{plan_id}", pid).replace("{item_id}", "i1"), headers=A, json={})
+                check(f"a crew link can't {method} {route.path}", got.status_code == 404 and "isn't set up" in got.text, got.status_code)
 
     # ---- the spec's test: two shooters, one live list
     first = web.get("/set/state", headers=A).json()

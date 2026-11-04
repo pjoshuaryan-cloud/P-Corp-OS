@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Coverage</title>
+<script src="on_set_qr.js"></script>
 <style>
   :root {
     --bg: #131519; --panel: #1b1e24; --panel-2: #22262e; --line: #2d323c; --text: #e8eaed; --muted: #8b93a1;
@@ -91,6 +92,7 @@
   <button id="stopBtn" hidden>Stop</button>
   <div class="spacer"></div>
   <a class="button" id="logLink" hidden>Shoot Log</a>
+  <button id="phoneBtn" title="Make shot lists from your phone, with no Mac" hidden>My phone</button>
   <button id="tokenBtn" title="Change the saved token">Token</button>
 </header>
 <main id="main"><div class="empty">Loading…</div></main>
@@ -110,6 +112,20 @@
   <p id="templateNote" class="weak" hidden>This replaces the saved template with that name.</p>
   <div id="templateList"></div>
   <div class="actions" style="margin-top:12px"><button id="templateCancel">Close</button><button id="templateSave" class="primary">Save template</button></div>
+</dialog>
+<dialog id="qrDialog">
+  <h2 id="qrTitle"></h2>
+  <p id="qrBody"></p>
+  <div id="qrBox" style="max-width:300px;margin:0 auto 14px"></div>
+  <div class="actions"><button id="qrClose">Close</button></div>
+</dialog>
+<dialog id="phoneDialog">
+  <h2>My phone</h2>
+  <p>Make, change and send shot lists from your phone, with no Mac. Scan a QR code once to set it up. That phone reaches shot lists and nothing else in P Corp, and you can turn it off here.</p>
+  <div id="phoneQr" style="max-width:280px;margin:0 auto 12px" hidden></div>
+  <p id="phoneQrNote" hidden></p>
+  <div id="phoneList"></div>
+  <div class="actions" style="margin-top:12px"><button id="phoneClose">Close</button><button id="phoneNew" class="primary">Set up a phone</button></div>
 </dialog>
 <dialog id="tokenDialog">
   <h2>P Corp OS token</h2>
@@ -242,12 +258,13 @@ function renderOnSet(main) {
   url.value = onSet.url; url.readOnly = true; url.setAttribute("aria-label", "Phone link"); url.onclick = () => url.select();
   const copy = el("button", "primary", "Copy link");
   copy.onclick = async () => { try { await navigator.clipboard.writeText(onSet.url); toast("Copied. Send it to your crew."); } catch (e) { url.select(); toast("Press Cmd+C to copy it."); } };
+  const qr = el("button", "", "QR code"); qr.onclick = () => showQr("Scan to open the list", "Crew point their phone camera at this, pick a name, and tick.", onSet.url);
   const open = el("a", "button", "Open"); open.href = onSet.url; open.target = "_blank"; open.rel = "noopener noreferrer";
   const stop = el("button", "", "Stop link");
   stop.onclick = async () => { if (!(await confirmAction("Stop this link?", "Phones lose the list straight away. The ticks stay for the report. A new link will have a new address.", "Stop link"))) return; try { onSet = await api(`/post/coverage/${planId}/on-set`, { method: "DELETE" }); render(); } catch (e) { toast(e.message, true); } };
   const date = el("input"); date.type = "date"; date.setAttribute("aria-label", "Shoot date"); date.value = onSet.shoot_date;
   date.onchange = async () => { try { onSet = await post(`/post/coverage/${planId}/on-set`, { shoot_date: date.value }); render(); } catch (e) { toast(e.message, true); } };
-  row.append(url, copy, open, stop, el("label", "muted", "Shoot date"), date);
+  row.append(url, copy, qr, open, stop, el("label", "muted", "Shoot date"), date);
   card.appendChild(row);
   if (!onSet.in_sync || onSet.expired) {
     const line = el("div", "row"); line.style.marginTop = "10px"; line.appendChild(el("span", "weak", onSet.expired ? "This link has run out." : "Phones have an older list."));
@@ -420,10 +437,43 @@ $("tokenBtn").onclick = async () => { await askToken(); load(); };
 $("stopBtn").onclick = async () => { try { await post(`/post/coverage/${planId}/stop`); } catch (e) { toast(e.message, true); } };
 
 // Comes from the cloud, so it can be slow on poor signal, and the page doesn't wait for it. Never redraws under someone typing.
+function showQr(title, body, url) {
+  $("qrTitle").textContent = title; $("qrBody").textContent = body;
+  const box = $("qrBox"); box.textContent = ""; box.appendChild(OnSetQr.qrSvg(url, document));
+  $("qrDialog").showModal();
+}
+$("qrClose").onclick = () => $("qrDialog").close();
+// Lists made on a phone come in by themselves. Never holds up the page, and with no signal it just finds nothing new.
+function syncPhoneLists() { api("/post/coverage-phone/sync", { method: "POST" }).then((r) => { if (r.imported) { toast(`${r.imported} list${r.imported === 1 ? "" : "s"} from your phone came in.`); load(); } }).catch(() => {}); }
+async function renderPhones() {
+  const box = $("phoneList"); box.textContent = "";
+  const r = await api("/post/coverage-phone");
+  if (r.offline) { box.appendChild(el("p", "muted", "No signal, so the phones can't be listed right now.")); return; }
+  for (const p of r.phones) {
+    const row = el("div", "saved"); row.append(el("span", "", p.label), el("span", "muted", p.claimed_at ? `Set up ${p.claimed_at.slice(0, 10)}` : "Waiting for a scan"));
+    const off = el("button", "quiet", "Turn off"); off.setAttribute("aria-label", `Turn off ${p.label}`);
+    off.onclick = async () => { try { await api(`/post/coverage-phone/${p.id}`, { method: "DELETE" }); await renderPhones(); toast("Turned off. Links it already sent keep working until you stop them."); } catch (e) { toast(e.message, true); } };
+    row.appendChild(off); box.appendChild(row);
+  }
+}
+$("phoneBtn").onclick = async () => { $("phoneQr").hidden = true; $("phoneQrNote").hidden = true; $("phoneDialog").showModal(); try { await renderPhones(); } catch (e) { toast(e.message, true); } };
+$("phoneClose").onclick = () => $("phoneDialog").close();
+$("phoneNew").onclick = async () => {
+  try {
+    const r = await post("/post/coverage-phone", { label: "My phone" });
+    const box = $("phoneQr"); box.textContent = ""; box.appendChild(OnSetQr.qrSvg(r.url, document)); box.hidden = false;
+    const note = $("phoneQrNote"); note.textContent = `Point your phone's camera at this and open the link. It works once, for ${r.minutes} minutes, so scan it yourself. Then bookmark that page: it only opens on your phone.`; note.hidden = false;
+    await renderPhones();
+  } catch (e) { toast(e.message, true); }
+};
+// Only offered once the backend knows about it.
+api("/post/coverage-phone").then(() => { $("phoneBtn").hidden = false; syncPhoneLists(); }).catch(() => {});
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("phoneBtn").hidden) syncPhoneLists(); });
 function refreshOnSet() {
   const asked = planId;
   api(`/post/coverage/${asked}/on-set`).then((r) => {
     if (asked !== planId) return;
+    if (r.adopted) { onSet = r; load(); return; }
     const changed = JSON.stringify(r) !== JSON.stringify(onSet); onSet = r;
     const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) && $("main").contains(document.activeElement);
     if (changed && !typing) render();

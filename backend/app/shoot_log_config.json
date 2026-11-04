@@ -81,6 +81,8 @@
       "_about": "Phase 3 (app/on_set_db.py, static/on_set.html): the phone checklist. It's served from the cloud backend, because phones at a venue can't reach this Mac.",
       "public_url": "https://p-corp-os.onrender.com",
       "link_days_after_shoot": 3,
+      "_phone_drafts_note": "Drafting from a brief on the owner's phone spends money from a login that lives on a phone, so it has a ceiling. A lost phone can only ever cost this much a day. A draft of a one-page brief was 1c.",
+      "phone_drafts": { "per_day": 15, "max_usd_per_day": 1.5 },
       "settings": { "soon_minutes": 30, "now_minutes": 15, "poll_seconds": 5 }
     }
   }

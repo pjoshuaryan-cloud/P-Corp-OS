@@ -3538,7 +3538,9 @@ async def post_coverage_view(plan_id: str, _: None = Depends(verify_token)) -> d
 @app.post("/post/coverage/{plan_id}/save-template")
 async def post_coverage_save_template(plan_id: str, body: CoverageSaveTemplateRequest, _: None = Depends(verify_token)) -> dict:
     from app import post_coverage
-    return _coverage_call(post_coverage.save_template, plan_id, body.name)
+    out = _coverage_call(post_coverage.save_template, plan_id, body.name)
+    await _on_set_sync_templates()
+    return out
 
 
 @app.post("/post/coverage/{plan_id}/add-template")
@@ -3553,6 +3555,7 @@ async def post_coverage_add_template(plan_id: str, body: CoverageAddTemplateRequ
 async def post_coverage_delete_template(template_id: str, _: None = Depends(verify_token)) -> dict:
     from app import post_coverage
     _coverage_call(post_coverage.delete_template, template_id)
+    await _on_set_sync_templates()
     return {"ok": True}
 
 
@@ -3701,20 +3704,26 @@ async def set_state(request: Request, since: int = Query(0, ge=0, le=2**53), v: 
     return JSONResponse(on_set_db.state_payload(link, ticks, since, v), headers=_SET_HEADERS)
 
 
-@app.post("/set/ticks")
-async def set_ticks(request: Request) -> JSONResponse:
-    """Ticks from one phone link. All it can do is add them, to its own list. The body is only read after the link has passed its checks, and only up to a limit."""
+async def _set_body(request: Request, model: Any, limit: int | None = None) -> Any:
+    """A public route's body, read only after its checks have passed, and only up to a limit."""
     from app import on_set_db
-    token = _set_token(request)
     raw = bytearray()
     async for chunk in request.stream():
         raw += chunk
-        if len(raw) > on_set_db.MAX_BODY_BYTES:
+        if len(raw) > (limit or on_set_db.MAX_BODY_BYTES):
             raise HTTPException(status_code=413, detail="That's too much at once.", headers=_SET_HEADERS)
     try:
-        body = SetTicksRequest.model_validate_json(bytes(raw))
+        return model.model_validate_json(bytes(raw))
     except ValidationError:
-        raise HTTPException(status_code=422, detail="Those ticks couldn't be read.", headers=_SET_HEADERS) from None
+        raise HTTPException(status_code=422, detail="That couldn't be read.", headers=_SET_HEADERS) from None
+
+
+@app.post("/set/ticks")
+async def set_ticks(request: Request) -> JSONResponse:
+    """Ticks from one phone link. All it can do is add them, to its own list."""
+    from app import on_set_db
+    token = _set_token(request)
+    body = await _set_body(request, SetTicksRequest)
     async with _pooled_postgres_conn() as conn:
         link = await on_set_db.find_link(token, conn)
         if link is None:
@@ -3723,8 +3732,263 @@ async def set_ticks(request: Request) -> JSONResponse:
     return JSONResponse(out, headers=_SET_HEADERS)
 
 
+# ---- the owner's phone: making and changing lists with no Mac. A login of its own, from a one-time QR code on the Mac, that reaches shot lists and nothing else. See app/on_set_manage.py.
+class SetClaimRequest(BaseModel):
+    code: str = Field(min_length=20, max_length=100)
+
+
+class SetNewListRequest(BaseModel):
+    name: str = Field(max_length=200)
+    client: str = Field(default="", max_length=200)
+    shoot_date: str = Field(max_length=20)
+    template: str | None = Field(default=None, max_length=40)
+
+
+class SetListDetailsRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    client: str | None = Field(default=None, max_length=200)
+    shoot_date: str | None = Field(default=None, max_length=20)
+
+
+class SetItemRequest(BaseModel):
+    moment: str | None = Field(default=None, max_length=200)
+    time: str | None = Field(default=None, max_length=40)
+    description: str | None = Field(default=None, max_length=400)
+    size: str | None = Field(default=None, max_length=40)
+    priority: str | None = Field(default=None, max_length=40)
+    owner: str | None = Field(default=None, max_length=80)
+
+
+class SetMomentTimeRequest(BaseModel):
+    moment: str = Field(max_length=200)
+    time: str = Field(default="", max_length=40)
+
+
+class SetDraftRequest(BaseModel):
+    text: str = Field(default="", max_length=20000)
+    files: list[dict] = Field(default=[], max_length=6)
+
+
+_SET_LOGIN_COOKIE = "onset_manager"
+_SET_LOGIN_DAYS = 400
+
+
+def _set_manager_key(request: Request) -> str:
+    """The phone login's key, once it's passed the checks that cost nothing. Comes before any database work. It only ever comes from its cookie, so no address or message can carry it."""
+    from app import on_set_db
+    key = request.cookies.get(_SET_LOGIN_COOKIE, "")
+    verdict = on_set_db.admit(key)
+    if verdict == "no":
+        raise HTTPException(status_code=404, detail=on_set_db.NOT_SET_UP, headers=_SET_HEADERS)
+    if verdict == "slow":
+        raise HTTPException(status_code=429, detail="Too many requests. Try again in a minute.", headers=_SET_HEADERS)
+    return key
+
+
+async def _set_manage(key: str, work: Any) -> JSONResponse:
+    """Runs one action for the owner's phone."""
+    from app import on_set_db, on_set_manage
+    async with _pooled_postgres_conn() as conn:
+        if await on_set_db.find_manager(key, conn) is None:
+            raise HTTPException(status_code=404, detail=on_set_db.NOT_SET_UP, headers=_SET_HEADERS)
+        try:
+            out = await work(conn)
+        except on_set_manage.ListError as exc:
+            raise HTTPException(status_code=400, detail=str(exc), headers=_SET_HEADERS) from None
+    if out is None:
+        raise HTTPException(status_code=404, detail="That list doesn't exist.", headers=_SET_HEADERS)
+    return JSONResponse(out, headers=_SET_HEADERS)
+
+
+@app.post("/set/manage/claim")
+async def set_manage_claim(request: Request) -> JSONResponse:
+    """Swaps the one-time code from the Mac's QR for this phone's lasting login. It goes in a cookie the page's own scripts can't read and other sites can't trigger, so forwarding any address hands over nothing."""
+    from app import on_set_db
+    body = await _set_body(request, SetClaimRequest)
+    verdict = on_set_db.admit(body.code)
+    if verdict == "slow":
+        raise HTTPException(status_code=429, detail="Too many requests. Try again in a minute.", headers=_SET_HEADERS)
+    async with _pooled_postgres_conn() as conn:
+        key = await on_set_db.claim_setup(body.code, conn) if verdict == "ok" else None
+    if key is None:
+        raise HTTPException(status_code=404, detail="That QR code has been used or has run out. Make a new one on the Mac.", headers=_SET_HEADERS)
+    response = JSONResponse({"ok": True}, headers=_SET_HEADERS)
+    secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    response.set_cookie(_SET_LOGIN_COOKIE, key, max_age=_SET_LOGIN_DAYS * 86400, path="/set/manage", httponly=True, samesite="strict", secure=secure)
+    return response
+
+
+@app.get("/set/manage/lists")
+async def set_manage_lists(request: Request) -> JSONResponse:
+    from app import on_set_manage
+    return await _set_manage(_set_manager_key(request), lambda conn: on_set_manage.overview(conn))
+
+
+@app.post("/set/manage/lists")
+async def set_manage_new_list(request: Request) -> JSONResponse:
+    from app import on_set_manage
+    key = _set_manager_key(request)
+    body = await _set_body(request, SetNewListRequest)
+    return await _set_manage(key, lambda conn: on_set_manage.create_list(body.name, body.client, body.shoot_date, body.template, conn))
+
+
+@app.get("/set/manage/lists/{plan_id}")
+async def set_manage_get_list(request: Request, plan_id: str) -> JSONResponse:
+    from app import on_set_manage
+    return await _set_manage(_set_manager_key(request), lambda conn: on_set_manage.get_list(plan_id, conn))
+
+
+@app.post("/set/manage/lists/{plan_id}")
+async def set_manage_list_details(request: Request, plan_id: str) -> JSONResponse:
+    from app import on_set_manage
+    key = _set_manager_key(request)
+    body = await _set_body(request, SetListDetailsRequest)
+    return await _set_manage(key, lambda conn: on_set_manage.update_details(plan_id, body.model_dump(), conn))
+
+
+@app.post("/set/manage/lists/{plan_id}/items")
+async def set_manage_add_item(request: Request, plan_id: str) -> JSONResponse:
+    from app import on_set_manage
+    key = _set_manager_key(request)
+    body = await _set_body(request, SetItemRequest)
+    return await _set_manage(key, lambda conn: on_set_manage.add_item(plan_id, body.model_dump(exclude_none=True), conn))
+
+
+@app.post("/set/manage/lists/{plan_id}/items/{item_id}")
+async def set_manage_update_item(request: Request, plan_id: str, item_id: str) -> JSONResponse:
+    from app import on_set_manage
+    key = _set_manager_key(request)
+    body = await _set_body(request, SetItemRequest)
+    return await _set_manage(key, lambda conn: on_set_manage.update_item(plan_id, item_id, body.model_dump(exclude_none=True), conn))
+
+
+@app.delete("/set/manage/lists/{plan_id}/items/{item_id}")
+async def set_manage_delete_item(request: Request, plan_id: str, item_id: str) -> JSONResponse:
+    from app import on_set_manage
+    return await _set_manage(_set_manager_key(request), lambda conn: on_set_manage.delete_item(plan_id, item_id, conn))
+
+
+@app.post("/set/manage/lists/{plan_id}/moment")
+async def set_manage_moment_time(request: Request, plan_id: str) -> JSONResponse:
+    from app import on_set_manage
+    key = _set_manager_key(request)
+    body = await _set_body(request, SetMomentTimeRequest)
+    return await _set_manage(key, lambda conn: on_set_manage.set_moment_time(plan_id, body.moment, body.time, conn))
+
+
+@app.post("/set/manage/lists/{plan_id}/draft")
+async def set_manage_draft(request: Request, plan_id: str) -> JSONResponse:
+    """Drafts a list from a brief: a tap that spends a little, within a daily limit, and sends the brief to Anthropic. A big body is only read once the login has been checked, and no connection is held while it arrives."""
+    from app import on_set_db, on_set_manage
+    key = _set_manager_key(request)
+    async with _pooled_postgres_conn() as conn:
+        manager = await on_set_db.find_manager(key, conn)
+    if manager is None:
+        raise HTTPException(status_code=404, detail=on_set_db.NOT_SET_UP, headers=_SET_HEADERS)
+    body = await _set_body(request, SetDraftRequest, on_set_manage.MAX_DRAFT_BODY_BYTES)
+    client = _coverage_client()
+    return await _set_manage(key, lambda conn: on_set_manage.start_draft(plan_id, manager, body.text, body.files, client, _pooled_postgres_conn, conn))
+
+
+@app.post("/set/manage/lists/{plan_id}/link")
+async def set_manage_link_on(request: Request, plan_id: str) -> JSONResponse:
+    from app import on_set_manage
+    return await _set_manage(_set_manager_key(request), lambda conn: on_set_manage.turn_on(plan_id, conn))
+
+
+@app.delete("/set/manage/lists/{plan_id}/link")
+async def set_manage_link_off(request: Request, plan_id: str) -> JSONResponse:
+    from app import on_set_manage
+    return await _set_manage(_set_manager_key(request), lambda conn: on_set_manage.stop_link(plan_id, conn))
+
+
 class CoverageOnSetRequest(BaseModel):
     shoot_date: str
+
+
+class CoveragePhoneRequest(BaseModel):
+    label: str = "My phone"
+
+
+async def _on_set_sync_templates() -> None:
+    """Copies the Mac's saved lists up, so a phone can start from them. Best effort: with no signal, a phone keeps what it last had."""
+    from app import on_set_db, post_coverage
+    async def send() -> None:
+        async with _pooled_postgres_conn() as conn:
+            await on_set_db.ensure_tables(conn)
+            await on_set_db.replace_templates([post_coverage.load_template(t["id"]) for t in post_coverage.list_templates()], conn)
+    try:
+        await asyncio.wait_for(send(), timeout=10.0)
+    except Exception as exc:
+        print(f"[on set] couldn't copy templates up: {type(exc).__name__}")
+
+
+@app.get("/post/coverage-phone")
+async def post_coverage_phone(_: None = Depends(verify_token)) -> dict:
+    """Phones that can make lists with no Mac."""
+    from app import on_set_db
+    async def fetch() -> list:
+        async with _pooled_postgres_conn() as conn:
+            return await on_set_db.list_managers(conn)
+    try:
+        return {"phones": await asyncio.wait_for(fetch(), timeout=8.0), "offline": False}
+    except Exception as exc:
+        print(f"[on set] couldn't read phones: {type(exc).__name__}")
+        return {"phones": [], "offline": True}
+
+
+@app.post("/post/coverage-phone")
+async def post_coverage_phone_setup(body: CoveragePhoneRequest, _: None = Depends(verify_token)) -> dict:
+    """Makes a one-time QR code that gives a phone its login. An explicit click, because that phone can then make and change shot lists from anywhere."""
+    from app import on_set_db, post_coverage
+    label = on_set_db._clean_text(body.label, 40) or "My phone"
+    async def make() -> tuple:
+        async with _pooled_postgres_conn() as conn:
+            await on_set_db.ensure_tables(conn)
+            return await on_set_db.new_setup(label, conn)
+    try:
+        manager_id, code = await asyncio.wait_for(make(), timeout=15.0)
+    except Exception as exc:
+        print(f"[on set] couldn't make a phone setup: {type(exc).__name__}: {exc}")
+        raise HTTPException(status_code=503, detail="Couldn't reach the cloud. Check your signal and try again.") from None
+    await _on_set_sync_templates()
+    await _shoot_log_audit("post_coverage_phone_setup_ui", {"phone": manager_id, "label": label})
+    return {"id": manager_id, "url": f"{post_coverage.CONFIG['on_set']['public_url'].rstrip('/')}/static/on_set_manage.html#s={code}", "minutes": on_set_db.SETUP_MINUTES}
+
+
+@app.delete("/post/coverage-phone/{manager_id}")
+async def post_coverage_phone_off(manager_id: str, _: None = Depends(verify_token)) -> dict:
+    """Turns a phone's login off, straight away. Links it already sent keep working: stop those separately."""
+    from app import on_set_db
+    async def stop() -> None:
+        async with _pooled_postgres_conn() as conn:
+            await on_set_db.revoke_manager(manager_id, conn)
+    try:
+        await asyncio.wait_for(stop(), timeout=10.0)
+    except Exception as exc:
+        print(f"[on set] couldn't turn a phone off: {type(exc).__name__}")
+        raise HTTPException(status_code=503, detail="Couldn't reach the cloud, so that phone can still make lists. Check your signal and try again.") from None
+    await _shoot_log_audit("post_coverage_phone_off_ui", {"phone": manager_id})
+    return {"ok": True}
+
+
+@app.post("/post/coverage-phone/sync")
+async def post_coverage_phone_sync(_: None = Depends(verify_token)) -> dict:
+    """Brings any lists made on a phone into Coverage Plans. With no signal it just finds nothing new."""
+    from app import on_set_db, post_coverage
+    async def fetch() -> list:
+        async with _pooled_postgres_conn() as conn:
+            return await on_set_db.all_lists(conn)
+    try:
+        rows = await asyncio.wait_for(fetch(), timeout=8.0)
+    except Exception as exc:
+        print(f"[on set] couldn't look for phone lists: {type(exc).__name__}")
+        return {"imported": 0, "offline": True}
+    imported = 0
+    for row in rows:
+        if row["source"] == "phone" and post_coverage.import_phone_list(row, row["share_token"]):
+            imported += 1
+    return {"imported": imported, "offline": False}
 
 
 def _on_set_shoot_date(raw: str) -> str:
@@ -3741,12 +4005,12 @@ async def _on_set_publish(plan_id: str, token: str, shoot_date: str) -> None:
     plan = post_coverage.load_plan(plan_id)
     conf = post_coverage.CONFIG["on_set"]
     expires = on_set_db.expiry_for(shoot_date, conf["link_days_after_shoot"])
-    async def send() -> None:
+    async def send() -> dict:
         async with _pooled_postgres_conn() as conn:
             await on_set_db.ensure_tables(conn)
-            await on_set_db.publish(plan_id, token, plan["name"], plan.get("client") or "", shoot_date, post_coverage.on_set_items(plan), conf["settings"], expires, conn)
-    await asyncio.wait_for(send(), timeout=15.0)
-    post_coverage.save_on_set_local(plan_id, {"token": token, "shoot_date": shoot_date, "expires_at": expires, "sent_hash": post_coverage.on_set_hash(plan, shoot_date)})
+            return await on_set_db.publish(plan_id, token, plan["name"], plan.get("client") or "", shoot_date, post_coverage.on_set_items(plan), conf["settings"], expires, conn)
+    link = await asyncio.wait_for(send(), timeout=15.0)
+    post_coverage.save_on_set_local(plan_id, {"token": token, "shoot_date": shoot_date, "expires_at": expires, "sent_hash": post_coverage.on_set_hash(plan, shoot_date), "sent_version": link["list_version"]})
 
 
 async def _on_set_push_quietly(plan_id: str) -> None:
@@ -3772,9 +4036,9 @@ async def _on_set_read(plan_id: str) -> dict:
     out.update({"live": True, "url": post_coverage.on_set_url(local["token"]), "in_sync": local.get("sent_hash") == post_coverage.on_set_hash(post_coverage.load_plan(plan_id), local["shoot_date"])})
     async def fetch() -> tuple:
         async with _pooled_postgres_conn() as conn:
-            return await on_set_db.get_link(plan_id, conn), await on_set_db.ticks_since(plan_id, 0, conn)
+            return await on_set_db.get_link(plan_id, conn), await on_set_db.ticks_since(plan_id, 0, conn), await on_set_db.get_share(plan_id, conn)
     try:
-        link, events = await asyncio.wait_for(fetch(), timeout=8.0)
+        link, events, share = await asyncio.wait_for(fetch(), timeout=8.0)
     except Exception as exc:
         print(f"[on set] couldn't read ticks: {type(exc).__name__}")
         out["offline"] = True
@@ -3782,9 +4046,26 @@ async def _on_set_read(plan_id: str) -> dict:
     out["ticks"] = on_set_db.current_ticks(events)
     post_coverage.save_on_set_ticks(plan_id, out["ticks"])
     if link is None or link["revoked_at"]:
+        # Stopped from a phone. The address has to stay dead, so this Mac forgets it too.
+        post_coverage.save_on_set_local(plan_id, {**local, "token": None})
         out["live"] = False
-    else:
-        out["expired"] = link["expires_at"] <= on_set_db.now_iso()
+        out.pop("url", None)
+        out.pop("in_sync", None)
+        return out
+    plan = post_coverage.load_plan(plan_id)
+    fresh = dict(local)
+    # Changed on a phone since this Mac last sent it. Unsent edits here are left alone, and the page offers to send them.
+    if local.get("sent_version") is not None and link["list_version"] > local["sent_version"] and post_coverage.on_set_hash(plan, local["shoot_date"]) == local.get("sent_hash"):
+        post_coverage.adopt_on_set_list(plan_id, link)
+        plan = post_coverage.load_plan(plan_id)
+        fresh.update({"shoot_date": link["shoot_date"], "sent_version": link["list_version"], "sent_hash": post_coverage.on_set_hash(plan, link["shoot_date"])})
+        out["adopted"] = True
+    if share and share["token"] != local["token"]:
+        fresh["token"] = share["token"]
+    fresh["expires_at"] = link["expires_at"]
+    if fresh != local:
+        post_coverage.save_on_set_local(plan_id, fresh)
+    out.update({"url": post_coverage.on_set_url(fresh["token"]), "shoot_date": fresh["shoot_date"], "expires_at": fresh["expires_at"], "in_sync": fresh.get("sent_hash") == post_coverage.on_set_hash(plan, fresh["shoot_date"]), "expired": link["expires_at"] <= on_set_db.now_iso()})
     return out
 
 

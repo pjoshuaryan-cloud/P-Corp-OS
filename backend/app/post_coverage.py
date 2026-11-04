@@ -385,6 +385,35 @@ def save_on_set_ticks(plan_id: str, ticks: dict[str, dict[str, Any]]) -> None:
     _write_json(plan_dir(plan_id) / "on_set_ticks.json", ticks)
 
 
+def _item_from_phone(item: dict[str, Any], source: str) -> dict[str, Any]:
+    return {**clean_item({"moment": item["moment"], "time": item["time"], "description": item["description"], "shot_size": item["size"], "priority": item["priority"], "owner": item["owner"]}), "id": item["id"], "source": source}
+
+
+def adopt_on_set_list(plan_id: str, link: dict[str, Any]) -> None:
+    """Takes in changes made on a phone. Ids stay the same, so ticks and earlier checks still line up, and a reworded shot goes back to "not checked" as it would from here."""
+    plan = load_plan(plan_id)
+    sources = {i["id"]: i.get("source", "user") for i in plan["items"]}
+    plan["name"], plan["client"] = link["name"], link["client"]
+    plan["items"] = [_item_from_phone(i, sources.get(i["id"], "phone")) for i in link["items"]]
+    for item in plan["items"]:
+        _moment_id(plan, item["moment"])
+    plan["approved_at"] = None
+    save_plan(plan)
+
+
+def import_phone_list(link: dict[str, Any], token: str | None) -> bool:
+    """Brings a list made on a phone into Coverage Plans, under the same id, so its ticks and link carry on. It was already sent to the crew, so it counts as approved. False if it's already here."""
+    if plan_dir(link["plan_id"]).exists():
+        return False
+    plan = {"id": link["plan_id"], "name": link["name"], "client": link["client"], "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "approved_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "log_key": None,
+            "items": [_item_from_phone(i, "phone") for i in link["items"]], "next_item": 1, "moment_ids": {}, "next_moment": 1, "brief": {"text": "", "files": []}}
+    for item in plan["items"]:
+        _moment_id(plan, item["moment"])
+    save_plan(plan)
+    save_on_set_local(plan["id"], {"token": None if link["revoked_at"] else token, "shoot_date": link["shoot_date"], "expires_at": link["expires_at"], "sent_hash": on_set_hash(plan, link["shoot_date"]), "sent_version": link["list_version"]})
+    return True
+
+
 def on_set_clock(iso: str) -> str:
     """A tick's time on this Mac's clock."""
     try:

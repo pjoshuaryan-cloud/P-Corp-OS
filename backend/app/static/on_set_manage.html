@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#101215">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>Shot lists</title>
+<style>
+  :root {
+    --bg: #101215; --panel: #1b1e24; --panel-2: #262a33; --line: #323844; --text: #f2f4f7; --muted: #a2aab8;
+    --accent: #3fc1b0; --accent-ink: #06201c; --warn: #f0b24d; --bad: #ef7a6d; --good: #62c98a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.35 -apple-system, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; -webkit-text-size-adjust: 100%; }
+  button, input, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :is(button, input, select):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: calc(12px + env(safe-area-inset-top)) 16px 10px; border-bottom: 1px solid var(--line); }
+  .titlerow { display: flex; align-items: center; gap: 10px; min-height: 34px; }
+  h1 { flex: 1; min-width: 0; margin: 0; font-size: 18px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sub { color: var(--muted); font-size: 13px; margin-top: 1px; }
+  .iconbtn { flex: none; min-width: 44px; min-height: 36px; padding: 0 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; font-size: 14px; }
+  main { padding: 12px 16px calc(100px + env(safe-area-inset-bottom)); }
+  .list-card { display: block; width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 13px 14px; margin-bottom: 9px; }
+  .list-card b { display: block; font-size: 16.5px; font-weight: 650; overflow-wrap: anywhere; }
+  .list-card .sub { margin-top: 3px; }
+  .state { font-weight: 600; }
+  .state.live { color: var(--good); } .state.off { color: var(--muted); } .state.late { color: var(--warn); }
+  .must-left { color: var(--bad); font-weight: 600; }
+  .primary-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 8px; }
+  .big { min-height: 50px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel-2); font-weight: 600; padding: 0 16px; }
+  .big.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-size: 17px; }
+  .wide { display: block; width: 100%; }
+  .progress { margin: 4px 0 12px; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .track { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin-bottom: 5px; }
+  #fill { height: 100%; width: 0; background: var(--accent); }
+  .moment { display: flex; width: 100%; align-items: center; gap: 8px; margin: 18px 0 6px; padding: 7px 0; background: none; border: 0; text-align: left; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .moment .when { font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--text); font-variant-numeric: tabular-nums; }
+  .moment .when.none { color: var(--accent); }
+  .shot { display: block; width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; margin-bottom: 7px; }
+  .shot .what { overflow-wrap: anywhere; }
+  .shot.must .what { font-weight: 650; }
+  .shot.done { border-color: #2f5f4c; }
+  .meta { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .by { display: block; color: var(--good); font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
+  .empty { color: var(--muted); text-align: center; padding: 34px 12px; }
+  .bottom { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--line); }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 18px; width: calc(100vw - 28px); max-width: 460px; }
+  dialog::backdrop { background: rgba(0, 0, 0, .65); }
+  dialog h2 { margin: 0 0 10px; font-size: 18px; }
+  dialog p { margin: 0 0 12px; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+  label.field { display: block; margin-bottom: 11px; font-size: 13px; color: var(--muted); }
+  label.field textarea { display: block; width: 100%; min-height: 130px; margin-top: 4px; padding: 10px 11px; background: var(--panel-2); color: var(--text); font: inherit; font-size: 16px; border: 1px solid var(--line); border-radius: 10px; resize: vertical; }
+  label.field input[type=file] { height: auto; padding: 10px 11px; font-size: 14px; }
+  .drafting { background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; padding: 11px 13px; margin-bottom: 12px; font-size: 14.5px; }
+  label.field input, label.field select { display: block; width: 100%; height: 44px; margin-top: 4px; padding: 0 11px; background: var(--panel-2); color: var(--text); font-size: 16px; border: 1px solid var(--line); border-radius: 10px; }
+  /* iPhones give date and time boxes a size of their own, wider than the dialog, unless told otherwise */
+  label.field input[type=date], label.field input[type=time] { -webkit-appearance: none; appearance: none; min-width: 0; max-width: 100%; line-height: 44px; text-align: left; }
+  label.field input::-webkit-date-and-time-value { text-align: left; }
+  .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+  dialog h2:focus { outline: none; }
+  .actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 6px; }
+  .actions button { min-height: 44px; padding: 0 15px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; }
+  .actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 650; }
+  .actions button.danger { color: var(--bad); margin-right: auto; }
+  #qrBox { background: #fff; border-radius: 10px; padding: 4px; margin-bottom: 12px; }
+  #toast { position: fixed; left: 16px; right: 16px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 7; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 13px; font-size: 14px; }
+  #toast.bad { border-color: var(--bad); }
+  #needSetup { padding: 48px 24px; text-align: center; }
+  #needSetup h2 { font-size: 19px; margin: 0 0 8px; }
+  #needSetup p { color: var(--muted); margin: 0; }
+</style>
+</head>
+<body>
+<header id="top" hidden>
+  <div class="titlerow"><button id="back" class="iconbtn" type="button" aria-label="Back to all lists" hidden>Back</button><h1 id="title">Shot lists</h1><button id="details" class="iconbtn" type="button" hidden>Details</button></div>
+  <div class="sub" id="sub"></div>
+</header>
+<main id="main"><div class="empty">Loading…</div></main>
+<div class="bottom" id="bottom" hidden><button id="bottomBtn" class="big primary wide" type="button"></button></div>
+<div id="toast" role="status" hidden></div>
+
+<dialog id="newDialog">
+  <h2 tabindex="-1" autofocus>New shot list</h2>
+  <label class="field">Shoot name<input id="newName" type="text" maxlength="120" autocomplete="off" placeholder="JD store opening"></label>
+  <label class="field">Client (optional)<input id="newClient" type="text" maxlength="120" autocomplete="off"></label>
+  <label class="field">Shoot date<input id="newDate" type="date"></label>
+  <label class="field">Start from<select id="newTemplate"></select></label>
+  <div class="actions"><button id="newCancel" type="button">Cancel</button><button id="newSave" class="primary" type="button">Make list</button></div>
+</dialog>
+
+<dialog id="draftDialog">
+  <h2 tabindex="-1" autofocus>Draft from a brief</h2>
+  <p id="draftNote"></p>
+  <label class="field">Paste the brief or run sheet<textarea id="draftText" maxlength="20000" placeholder="Paste it here"></textarea></label>
+  <label class="field">Or add a photo or file<input id="draftFiles" type="file" multiple accept="image/*,.pdf,.docx,.xlsx,.csv"></label>
+  <div class="actions"><button id="draftCancel" type="button">Cancel</button><button id="draftSave" class="primary" type="button">Draft shot list</button></div>
+</dialog>
+
+<dialog id="shotDialog">
+  <h2 id="shotTitle" tabindex="-1" autofocus>Shot</h2>
+  <label class="field">What to get<input id="shotWhat" type="text" maxlength="200" autocomplete="off"></label>
+  <label class="field">Moment<input id="shotMoment" type="text" maxlength="60" list="momentList" autocomplete="off"></label>
+  <datalist id="momentList"></datalist>
+  <div class="two">
+    <label class="field">Size<select id="shotSize"></select></label>
+    <label class="field">Priority<select id="shotPriority"></select></label>
+  </div>
+  <label class="field">Who's shooting it (optional)<input id="shotOwner" type="text" maxlength="40" list="ownerList" autocomplete="off" placeholder="A-cam"></label>
+  <datalist id="ownerList"></datalist>
+  <div class="actions"><button id="shotDelete" class="danger" type="button">Remove</button><button id="shotCancel" type="button">Cancel</button><button id="shotSave" class="primary" type="button">Save</button></div>
+</dialog>
+
+<dialog id="timeDialog">
+  <h2 id="timeTitle" tabindex="-1" autofocus></h2>
+  <p>The crew's phones warn about must-haves still to get, from 30 minutes before this.</p>
+  <label class="field">Time<input id="timeValue" type="time"></label>
+  <div class="actions"><button id="timeClear" class="danger" type="button">No time</button><button id="timeCancel" type="button">Cancel</button><button id="timeSave" class="primary" type="button">Save</button></div>
+</dialog>
+
+<dialog id="detailsDialog">
+  <h2 tabindex="-1" autofocus>Details</h2>
+  <label class="field">Shoot name<input id="detName" type="text" maxlength="120" autocomplete="off"></label>
+  <label class="field">Client (optional)<input id="detClient" type="text" maxlength="120" autocomplete="off"></label>
+  <label class="field">Shoot date<input id="detDate" type="date"></label>
+  <div class="actions"><button id="detStop" class="danger" type="button">Stop link</button><button id="detCancel" type="button">Cancel</button><button id="detSave" class="primary" type="button">Save</button></div>
+</dialog>
+
+<dialog id="qrDialog">
+  <h2 tabindex="-1" autofocus>Scan to open the list</h2>
+  <p>Crew point their phone camera at this, pick a name, and tick.</p>
+  <div id="qrBox"></div>
+  <div class="actions"><button id="qrClose" type="button">Close</button></div>
+</dialog>
+
+<dialog id="askDialog">
+  <h2 id="askTitle" tabindex="-1" autofocus></h2>
+  <p id="askBody"></p>
+  <div class="actions"><button id="askNo" type="button">Cancel</button><button id="askYes" class="primary" type="button"></button></div>
+</dialog>
+
+<script src="on_set_logic.js"></script>
+<script src="on_set_qr.js"></script>
+<script src="on_set_manage.js"></script>
+</body>
+</html>

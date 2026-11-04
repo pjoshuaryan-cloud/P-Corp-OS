@@ -5,12 +5,16 @@ on the Mac: only a copy of its shot list comes here, and only when the DOP makes
 
 This is P Corp's first thing on the public internet that doesn't need the main token, so the rules are strict:
   - A link is a long random token that opens one list and nothing else. It isn't a login: verify_token never accepts it, and the routes here accept nothing but it.
-  - Only its hash is stored here. It travels in a header, and in the page address after a "#", so it never lands in a server log.
+  - It's looked up by its hash, and it travels in a header, and in the page address after a "#", so it never lands in a server log. The full link is also kept here, readable only by the
+    owner's phone login and the Mac, so a list can be re-sent from either one.
   - The routes can read that list and add ticks to it. They can't edit the list, reach a plan, a file, a brief or a cost, or spend money on Claude.
   - Stopping a link or reaching its end date takes effect on the phone's next request. An unknown, stopped and expired link all get the same answer.
   - Ticks only ever get added. A tick never decides whether a shot is covered: that comes from the footage.
 
-The tables are made the first time a link is made, not at startup: startup DDL has caused an outage here before, and a Mac or cloud backend that has never made a link shouldn't need them."""
+The tables are made the first time a link is made, not at startup: startup DDL has caused an outage here before, and a Mac or cloud backend that has never made a link shouldn't need them.
+
+The owner's phone (app/on_set_manage.py) gets its own login, a "manager key", from a one-time QR code on the Mac. It can make and change shot lists, and draft one from a brief up to a daily spending limit, and
+nothing else. It isn't a phone link, and neither one is the main token. Only the Mac and that login can start or stop a link: a crew link can't, and the login lives in a cookie on the phone, so no forwarded address can carry it."""
 from __future__ import annotations
 
 import hashlib
@@ -28,6 +32,8 @@ import aiosqlite
 DB_PATH = Path(__file__).parent.parent / "data" / "on_set.db"
 
 NOT_ACTIVE = "This link isn't active. Ask whoever sent it for a new one."
+NOT_SET_UP = "This phone isn't set up. On the Mac, open Coverage Plans and click My phone."
+SETUP_MINUTES = 15
 MAX_TICKS_PER_LINK = 5000
 MAX_BODY_BYTES = 64 * 1024
 REQUESTS_PER_LINK_PER_MINUTE = 300     # a phone polling every 5 s is 12, so this is 25 phones
@@ -102,6 +108,19 @@ def _names(conn: Any) -> tuple[str, str]:
     return ("on_set.links", "on_set.ticks") if conn is not None else ("on_set_links", "on_set_ticks")
 
 
+def _table(conn: Any, name: str) -> str:
+    return f"on_set.{name}" if conn is not None else f"on_set_{name}"
+
+
+async def _missing_table(exc: Exception, conn: Any) -> bool:
+    """True if this is only the tables not being made yet, which isn't a fault. Anything else shouldn't be hidden."""
+    if "does not exist" not in str(exc) and "no such table" not in str(exc):
+        return False
+    if conn is not None:
+        await conn.rollback()
+    return True
+
+
 async def _run(conn: Any, sql: str, params: tuple = ()) -> list[tuple]:
     """One statement, the same SQL on both databases, committed."""
     if conn is not None:
@@ -130,6 +149,11 @@ async def ensure_tables(conn: Any = None) -> None:
     await _run(conn, f"""CREATE TABLE IF NOT EXISTS {ticks} (
         id {identity}, plan_id TEXT NOT NULL REFERENCES {links}(plan_id), event_id TEXT NOT NULL, item_id TEXT NOT NULL, done INTEGER NOT NULL CHECK (done IN (0, 1)), by_name TEXT NOT NULL,
         note TEXT NOT NULL, happened_at TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE (plan_id, event_id))""")
+    await _run(conn, f"""CREATE TABLE IF NOT EXISTS {_table(conn, "meta")} (plan_id TEXT PRIMARY KEY, share_token TEXT NOT NULL, source TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+    await _run(conn, f"""CREATE TABLE IF NOT EXISTS {_table(conn, "managers")} (
+        id TEXT PRIMARY KEY, label TEXT NOT NULL, setup_hash TEXT UNIQUE, setup_expires TEXT, key_hash TEXT UNIQUE, created_at TEXT NOT NULL, claimed_at TEXT, last_used_at TEXT, revoked_at TEXT)""")
+    await _run(conn, f"""CREATE TABLE IF NOT EXISTS {_table(conn, "templates")} (id TEXT PRIMARY KEY, name TEXT NOT NULL, items_json TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+    await _run(conn, f"""CREATE TABLE IF NOT EXISTS {_table(conn, "drafts")} (event_id TEXT PRIMARY KEY, manager_id TEXT NOT NULL, plan_id TEXT NOT NULL, usd_micros INTEGER NOT NULL, calls INTEGER NOT NULL, created_at TEXT NOT NULL)""")
 
 
 def _link(row: tuple) -> dict[str, Any]:
@@ -139,7 +163,7 @@ def _link(row: tuple) -> dict[str, Any]:
     return out
 
 
-async def publish(plan_id: str, token: str, name: str, client: str, shoot_date: str, items: list[dict[str, Any]], settings: dict[str, Any], expires_at: str, conn: Any = None) -> dict[str, Any]:
+async def publish(plan_id: str, token: str, name: str, client: str, shoot_date: str, items: list[dict[str, Any]], settings: dict[str, Any], expires_at: str, conn: Any = None, source: str = "mac") -> dict[str, Any]:
     """Makes the link, or sends a new list to one that exists. Ticks already made on this plan stay."""
     links, _ = _names(conn)
     await _run(conn, f"""INSERT INTO {links} AS l (plan_id, token_hash, name, client, shoot_date, items_json, settings_json, list_version, created_at, expires_at, revoked_at)
@@ -147,6 +171,8 @@ async def publish(plan_id: str, token: str, name: str, client: str, shoot_date: 
         ON CONFLICT (plan_id) DO UPDATE SET token_hash = excluded.token_hash, name = excluded.name, client = excluded.client, shoot_date = excluded.shoot_date, items_json = excluded.items_json,
         settings_json = excluded.settings_json, list_version = l.list_version + 1, expires_at = excluded.expires_at, revoked_at = NULL""",
                 (plan_id, token_hash(token), name, client, shoot_date, json.dumps(items), json.dumps(settings), now_iso(), expires_at))
+    await _run(conn, f"""INSERT INTO {_table(conn, "meta")} (plan_id, share_token, source, updated_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT (plan_id) DO UPDATE SET share_token = excluded.share_token, updated_at = excluded.updated_at""", (plan_id, token, source, now_iso()))
     return await get_link(plan_id, conn)  # type: ignore[return-value]
 
 
@@ -178,6 +204,164 @@ async def find_link(token: str, conn: Any = None) -> dict[str, Any] | None:
         return None
     _remember(hashed)
     return _link(rows[0])
+
+
+async def get_share(plan_id: str, conn: Any = None) -> dict[str, Any] | None:
+    """The full link and where the list was made. Only for the owner's phone login and the Mac: no route a phone link can reach ever returns this."""
+    try:
+        rows = await _run(conn, f"SELECT share_token, source FROM {_table(conn, 'meta')} WHERE plan_id = ?", (plan_id,))
+    except Exception as exc:
+        if await _missing_table(exc, conn):
+            return None
+        raise
+    return {"token": rows[0][0], "source": rows[0][1]} if rows else None
+
+
+async def all_lists(conn: Any = None, limit: int = 60) -> list[dict[str, Any]]:
+    """Every list, latest shoot first, each with its link and where it was made if those are known."""
+    links = _names(conn)[0]
+    cols = ", ".join(f"l.{c}" for c in _LINK_COLUMNS)
+    try:
+        rows = await _run(conn, f"SELECT {cols}, m.share_token, m.source FROM {links} l LEFT JOIN {_table(conn, 'meta')} m ON m.plan_id = l.plan_id ORDER BY l.shoot_date DESC, l.created_at DESC LIMIT {int(limit)}")
+    except Exception as exc:
+        if await _missing_table(exc, conn):
+            return []
+        raise
+    return [{**_link(r[:len(_LINK_COLUMNS)]), "share_token": r[-2], "source": r[-1]} for r in rows]
+
+
+async def change_list(plan_id: str, change: Any, conn: Any = None) -> dict[str, Any] | None:
+    """Reads a list, lets `change` alter it, and writes it back as one step, so two edits at once can't lose one. Phones see the new list on their next check."""
+    links = _names(conn)[0]
+    select = f"SELECT {', '.join(_LINK_COLUMNS)} FROM {links} WHERE plan_id = ?"
+    update = f"UPDATE {links} SET name = ?, client = ?, shoot_date = ?, items_json = ?, list_version = list_version + 1, expires_at = ? WHERE plan_id = ?"
+    values = lambda link: (link["name"], link["client"], link["shoot_date"], json.dumps(link["items"]), link["expires_at"], plan_id)
+    if conn is not None:
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(select.replace("?", "%s") + " FOR UPDATE", (plan_id,))
+                row = await cur.fetchone()
+                if row is None:
+                    await conn.rollback()
+                    return None
+                link = _link(row)
+                change(link)
+                await cur.execute(update.replace("?", "%s"), values(link))
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+        return await get_link(plan_id, conn)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(select, (plan_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        link = _link(tuple(row))
+        change(link)
+        await db.execute(update, values(link))
+        await db.commit()
+    return await get_link(plan_id, conn)
+
+
+async def new_address(plan_id: str, token: str, expires_at: str, conn: Any = None) -> None:
+    """A new link for a list, for after one's been stopped. The old address stays dead."""
+    links = _names(conn)[0]
+    await _run(conn, f"UPDATE {links} SET token_hash = ?, expires_at = ?, revoked_at = NULL WHERE plan_id = ?", (token_hash(token), expires_at, plan_id))
+    await _run(conn, f"UPDATE {_table(conn, 'meta')} SET share_token = ?, updated_at = ? WHERE plan_id = ?", (token, now_iso(), plan_id))
+
+
+async def set_expiry(plan_id: str, expires_at: str, conn: Any = None) -> None:
+    await _run(conn, f"UPDATE {_names(conn)[0]} SET expires_at = ? WHERE plan_id = ?", (expires_at, plan_id))
+
+
+# ============================================================================================================================================ the owner's phone
+async def new_setup(label: str, conn: Any = None) -> tuple[str, str]:
+    """(manager id, setup code). The code is for one QR scan, in the next few minutes. A photo of the QR code is worthless once it's been used or has run out."""
+    manager_id, code = "m" + secrets.token_hex(6), secrets.token_urlsafe(24)
+    expires = _iso(datetime.now(timezone.utc) + timedelta(minutes=SETUP_MINUTES))
+    await _run(conn, f"INSERT INTO {_table(conn, 'managers')} (id, label, setup_hash, setup_expires, created_at) VALUES (?, ?, ?, ?, ?)", (manager_id, label, token_hash(code), expires, now_iso()))
+    return manager_id, code
+
+
+async def claim_setup(code: str, conn: Any = None) -> str | None:
+    """Swaps a setup code for the phone's lasting key, once. The update is one step, so two scans at once can't both get it."""
+    key = secrets.token_urlsafe(32)
+    try:
+        rows = await _run(conn, f"""UPDATE {_table(conn, 'managers')} SET key_hash = ?, claimed_at = ?, setup_hash = NULL, setup_expires = NULL
+            WHERE setup_hash = ? AND setup_expires > ? AND revoked_at IS NULL RETURNING id""", (token_hash(key), now_iso(), token_hash(code), now_iso()))
+    except Exception as exc:
+        if await _missing_table(exc, conn):
+            return None
+        raise
+    if not rows:
+        return None
+    _remember(token_hash(key))
+    return key
+
+
+async def find_manager(key: str, conn: Any = None) -> dict[str, Any] | None:
+    hashed = token_hash(key)
+    managers = _table(conn, "managers")
+    try:
+        rows = await _run(conn, f"SELECT id, label, last_used_at FROM {managers} WHERE key_hash = ? AND revoked_at IS NULL", (hashed,))
+    except Exception as exc:
+        if await _missing_table(exc, conn):
+            return None
+        raise
+    if not rows:
+        return None
+    _remember(hashed)
+    stamp = now_iso()
+    if not rows[0][2] or rows[0][2][:13] != stamp[:13]:   # at most hourly, so a phone checking in every few seconds doesn't write each time
+        await _run(conn, f"UPDATE {managers} SET last_used_at = ? WHERE id = ?", (stamp, rows[0][0]))
+    return {"id": rows[0][0], "label": rows[0][1]}
+
+
+async def list_managers(conn: Any = None) -> list[dict[str, Any]]:
+    """Phones with a login, and setups still waiting to be scanned. Never a key or code."""
+    try:
+        rows = await _run(conn, f"SELECT id, label, created_at, claimed_at, last_used_at, setup_expires FROM {_table(conn, 'managers')} WHERE revoked_at IS NULL ORDER BY created_at")
+    except Exception as exc:
+        if await _missing_table(exc, conn):
+            return []
+        raise
+    stamp = now_iso()
+    return [{"id": r[0], "label": r[1], "created_at": r[2], "claimed_at": r[3], "last_used_at": r[4]} for r in rows if r[3] or (r[5] and r[5] > stamp)]
+
+
+async def revoke_manager(manager_id: str, conn: Any = None) -> None:
+    await _run(conn, f"UPDATE {_table(conn, 'managers')} SET revoked_at = ?, setup_hash = NULL, setup_expires = NULL WHERE id = ?", (now_iso(), manager_id))
+
+
+async def record_draft(manager_id: str, plan_id: str, usd: float, calls: int, conn: Any = None) -> None:
+    """What a draft from a phone really cost, for the daily limit and for anyone asking where the money went."""
+    await _run(conn, f"INSERT INTO {_table(conn, 'drafts')} (event_id, manager_id, plan_id, usd_micros, calls, created_at) VALUES (?, ?, ?, ?, ?, ?)", (secrets.token_hex(8), manager_id, plan_id, int(round(usd * 1e6)), calls, now_iso()))
+
+
+async def drafts_last_day(conn: Any = None) -> dict[str, float]:
+    """Drafts and spend in the last 24 hours, across all phones."""
+    since = _iso(datetime.now(timezone.utc) - timedelta(days=1))
+    rows = await _run(conn, f"SELECT COUNT(*), COALESCE(SUM(usd_micros), 0) FROM {_table(conn, 'drafts')} WHERE created_at > ?", (since,))
+    return {"count": int(rows[0][0]), "usd": int(rows[0][1]) / 1e6}
+
+
+async def replace_templates(templates: list[dict[str, Any]], conn: Any = None) -> None:
+    """The Mac's saved shot lists, copied up so a phone can start from them."""
+    table = _table(conn, "templates")
+    await _run(conn, f"DELETE FROM {table}")
+    for t in templates:
+        await _run(conn, f"INSERT INTO {table} (id, name, items_json, updated_at) VALUES (?, ?, ?, ?)", (t["id"], t["name"], json.dumps(t["items"]), now_iso()))
+
+
+async def load_templates(conn: Any = None) -> list[dict[str, Any]]:
+    try:
+        rows = await _run(conn, f"SELECT id, name, items_json FROM {_table(conn, 'templates')} ORDER BY name")
+    except Exception as exc:
+        if await _missing_table(exc, conn):
+            return []
+        raise
+    return [{"id": r[0], "name": r[1], "items": json.loads(r[2])} for r in rows]
 
 
 def _clean_text(raw: Any, limit: int) -> str:

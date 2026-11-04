@@ -125,5 +125,17 @@ for (const [phrase, want] of JD_PHRASES) {
 console.log(`  JD list: right shot first on ${jdRight} of ${JD_PHRASES.length}, a wrong shot pre-selected on ${jdWrong}`);
 check("on the JD list, at least 8 in 10 phrases put the right shot first", jdRight >= JD_PHRASES.length * 0.8, jdRight);
 
+// ---- QR codes. Whether they really scan was checked with Apple's own decoder (10 of 10, including one photographed off the iPhone screen); these keep the shape right.
+const { qrMatrix } = require("../../backend/app/static/on_set_qr.js");
+for (const [text, size] of [["hello", 21], ["x".repeat(40), 29], [`https://p-corp-os.onrender.com/static/on_set.html#t=${"a".repeat(43)}`, 41], ["u".repeat(150), 49]]) {
+  const m = qrMatrix(text);
+  const corner = (x, y) => m[y][x] && m[y][x + 6] && m[y + 6][x] && m[y + 6][x + 6] && !m[y + 1][x + 1] && m[y + 3][x + 3];
+  check(`a ${text.length}-character link makes a ${size}x${size} code with its three corner squares`, m.length === size && m.every((r) => r.length === size) && corner(0, 0) && corner(size - 7, 0) && corner(0, size - 7));
+}
+let tooLong = false;
+try { qrMatrix("q".repeat(400)); } catch (e) { tooLong = true; }
+check("something too long for a code says so rather than drawing a broken one", tooLong);
+check("the same link always draws the same code", JSON.stringify(qrMatrix("abc")) === JSON.stringify(qrMatrix("abc")));
+
 console.log(fails ? `\n${fails} FAILED` : "\nALL PASSED");
 process.exit(fails ? 1 : 0);

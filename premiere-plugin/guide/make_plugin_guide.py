@@ -124,7 +124,7 @@ s.append(table(["You want to", "Use", "Where"], [
     ["Get a cut to music built for you", "<b>Plan Edit</b>, then <b>Build My Edit</b>", "P Corp app, then plugin"],
     ["Organise a shoot and choose your selects", "<b>Log This Shoot</b>, then <b>Apply Shoot Log</b>", "Plugin, under More"],
     ["Plan the shots, then check you got them", "<b>Coverage Plans</b>", "P Corp app"],
-    ["Share a live shot list with the crew", "<b>Make phone link</b>, on a coverage plan", "P Corp app"],
+    ["Share a live shot list with the crew", "<b>Make phone link</b>, on a coverage plan", "P Corp app or phone"],
     ["Reuse a shot list for similar shoots", "<b>New plan</b> from a template, or <b>Save as template</b>", "P Corp app"],
     ["Find soundbites in speech or interviews", "<b>Transcribe Dialogue</b>, then <b>Suggest Smart Selects</b>", "Plugin, under More"],
     ["Cut an interview filmed on several cameras", "<b>Plan Edit</b> with the <i>Talking head, several cameras</i> style, then <b>Build My Edit</b>", "P Corp app, then plugin"],
@@ -300,7 +300,7 @@ s += section("On set: one live list for the crew", "Everyone shooting sees the s
 s.append(steps([
     ("Before the shoot", "Coverage Plans, Shot list tab, On set", [
         ("Approve the list, check the shoot date, and click <b>Make phone link</b>.", "Puts a copy of the list on P Corp's cloud server. Free."),
-        ("Click <b>Copy link</b> and send it to your crew.", "WhatsApp is fine. Anyone with the link can see and tick this one list, so treat it like a door code."),
+        ("Click <b>Copy link</b> and send it to your crew, or <b>QR code</b> for them to scan.", "WhatsApp is fine. Anyone with the link can see and tick this one list, so treat it like a door code."),
     ]),
     ("On the day", "on each phone", [
         ("Open the link and pick your camera or name.", "It needs signal the first time. After that it reopens without any."),
@@ -318,11 +318,41 @@ s += bullets([
     "<b>No signal:</b> keep ticking. Ticks are saved on the phone and sent when signal returns, with the time they were really made.",
     "<b>Changing the list:</b> an edit on the Mac reaches phones by itself. With no signal, the page says <i>Phones have an older list</i> and offers <b>Send update</b>.",
     "<b>Filters:</b> <i>Still to get</i> hides what's ticked. <i>Mine</i> shows shots assigned to your camera, if the list says who's shooting what.",
-    "<b>What the link can do:</b> see this one list and tick it. It can't reach anything else in P Corp, change the list or spend money. A shoot under a strict NDA shouldn't use it, because the list sits on the cloud server while the link is live.",
+    "<b>What the link can do:</b> see this one list and tick it. It can't reach anything else in P Corp, change the list, stop the link or spend money. A shoot under a strict NDA shouldn't use it, because the list goes on the cloud server and stays there after the link stops, closed to the crew.",
     "<b>Warnings only show while the page is open.</b> Nothing reaches a phone in a pocket.",
 ])
 s.append(Spacer(1, 4))
-s.append(callout("<b>Not run on a real shoot yet.</b> Tested with two browsers, one of them iPhone Safari, on test data. Try it on two real phones first, including the mic, which hasn't been tried on a real iPhone."))
+s.append(callout("<b>Not run on a real shoot yet.</b> Tested with two browsers, one of them iPhone Safari, on test data, plus your one quick real link. Try it on two real phones first, and try the mic again: it only partly worked the first time."))
+
+s.append(PageBreak())
+s += section("On your phone: no Mac needed", "Make, change and send shot lists from your own phone, and draft them from a brief. Set it up once on the Mac, before the day. Your crew's side doesn't change.")
+s.append(steps([
+    ("Set up once", "Coverage Plans, My phone", [
+        ("On the Mac, click <b>My phone</b>, then <b>Set up a phone</b>. Point your phone's camera at the QR code and open the link.", "It works once, for 15 minutes. No password to type."),
+        ("Bookmark that page.", "Scan it yourself: the first phone to scan gets the login. The page only opens on your phone, so its address is useless to anyone else. Clearing Safari's data logs you out, and then you need a new QR code."),
+    ]),
+    ("Any time", "on your phone", [
+        ("Tap <b>New shot list</b>. Start from a template, from a brief, or from nothing.", "Set the shoot date here: the warnings only run on that day."),
+        ("For a brief, paste it or add a photo or file, then tap <b>Draft shot list</b>.", "A photo of a run sheet works. The brief goes to Anthropic, and it isn't kept. About 1¢ for a one-page brief. Read the result through."),
+        ("Tap a shot to change or remove it. Tap a moment's <b>Add time</b> to set its time.", "One time per moment. Changes reach the crew by themselves."),
+        ("Tap <b>Send to crew</b> to share the link, or <b>QR code</b> for them to scan.", "They open it, pick a name and tick. To tick yourself, tap <b>Open the checklist to tick</b>."),
+        ("Watch ticks come in. <b>Details</b> changes the name or date, and stops the link.", "A stopped link stays dead. Making a new one gives a new address to send, and keeps the ticks."),
+    ]),
+    ("Back at the Mac", "Coverage Plans", [
+        ("Open Coverage Plans.", "Your lists come in by themselves, with their ticks. Log, Tag and <b>Check</b> as usual: the footage check and report stay on the Mac."),
+    ]),
+]))
+s.append(Paragraph("Handy to know", h2))
+s += bullets([
+    "<b>Lost your phone?</b> On the Mac, <b>My phone</b>, <b>Turn off</b> locks it out at once. Crew links it sent keep working, so stop any you need to.",
+    "<b>Only you start or stop links.</b> That takes your Mac or this phone. Crew can only see and tick. They could forward their link to someone else, who could then see and tick too, until you stop it.",
+    "<b>What it can do:</b> shot lists only. It can't reach anything else in P Corp.",
+    "<b>A daily limit on drafts:</b> 15 a day or $1.50 a day from phones, whichever comes first, so a lost phone can't run up a bill. Templates and hand edits have no limit.",
+    "<b>Both sides stay level:</b> edit on the Mac or the phone and the other catches up. If you edit the same list on both at once, the last one sent wins.",
+    "<b>It needs signal</b> to make or change a list. Ticking on the crew's page is what works without it.",
+])
+s.append(Spacer(1, 4))
+s.append(callout("<b>New, and not used on a real phone yet.</b> Tested on test data in iPhone Safari with a stand-in for Claude. Try the whole thing once before a shoot, including a real draft from a brief."))
 
 s.append(PageBreak())
 s += section("Time and cost", "Measured on real shoots unless it says otherwise. Your numbers will vary with footage and drive speed.")
@@ -335,7 +365,7 @@ s.append(table(["Step", "Time", "Cost"], [
     ["Describe clips", "38 min for 165 clips", "About 1¢ a clip"],
     ["Transcribe Dialogue", "Minutes, depending on length", "Free"],
     ["Detect Highlights", "Not measured here", "More per clip than Tag. No measured figure yet"],
-    ["Draft a shot list", "6 s for a one-page brief", "About 1¢, more for a long PDF"],
+    ["Draft a shot list (Mac or phone)", "6 s for a one-page brief, on the Mac", "About 1¢, more for a long PDF"],
     ["Coverage check", "16 s for 14 shots on 48 clips", "11¢ for those, about 1¢ a shot"],
     ["On-set phone list", "Ticks show in about 5 s (test data)", "Free"],
 ], [.26, .44, .30]))
@@ -369,6 +399,9 @@ s.append(table(["What you see", "What to do"], [
     ["A phone says \"No signal\"", "Keep ticking. Ticks are saved and sent when signal returns."],
     ["\"Phones have an older list\"", "Click Send update on the Coverage page."],
     ["Make phone link is greyed out", "Approve the list first."],
+    ["Your phone says \"This phone isn't set up\"", "It was turned off, or Safari's data was cleared. Make a new QR code on the Mac: Coverage Plans, My phone."],
+    ["\"That QR code has been used or has run out\"", "Make a new one on the Mac. Each works once, for 15 minutes."],
+    ["\"That's the most drafts allowed from a phone in a day\"", "Add shots by hand, start from a template, or draft on the Mac."],
     ["\"Run Prepare POST Project\" or no job found", "That button needs a P Corp shoot behind the project. See Two ways to start a shoot."],
     ["Plan Edit is greyed out", "The reason shows just underneath, usually that it needs a song."],
     ["A shot's slot is empty after a build", "The panel names the clip: it isn't in the project. Import it and build again."],
