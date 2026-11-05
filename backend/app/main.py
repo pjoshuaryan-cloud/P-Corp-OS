@@ -189,6 +189,7 @@ from app.post_db import init_post_db, list_post_jobs, get_post_job, get_post_job
 from app.post_media import compute_media_report, compute_proxy_recommendations, trigger_media_analysis, trigger_proxy_generation, extract_representative_frames, compute_exposure_nudge_stops, trigger_highlight_detection
 from app.post_vision_agent import analyze_frames
 from app.post_transcripts import summarize_transcript, generate_srt, format_readable_transcript, find_smart_select_candidates
+from app import post_db, post_sources
 from app.post_sources import list_source_volumes
 from app.post_profiles import POST_PROFILES, compute_destination_root
 from app.post_ingest import _post_ingest_loop
@@ -2705,6 +2706,13 @@ class PostJobCreateRequest(BaseModel):
     deliverable_format: str | None = None
     resolution: str | None = None
     frame_rate: str | None = None
+    allow_same_drive: bool = False   # a folder already on the destination drive, copied there anyway
+
+
+class PostJobAddCardRequest(BaseModel):
+    source_path: str
+    source_volume_name: str | None = None
+    source_volume_uuid: str | None = None
 
 
 @app.post("/post/jobs")
@@ -2726,6 +2734,10 @@ async def post_jobs_create(body: PostJobCreateRequest, request: Request, _: None
     # enumeration never blocks the request and a job interrupted mid-scan
     # simply sits there for the loop's own restart to pick back up.
     destination_root = str(compute_destination_root(body.profile, body.destination_volume_path, body.client_name, body.shoot_name))
+    if Path(destination_root).is_relative_to(Path(body.source_path)):
+        raise HTTPException(status_code=400, detail="That would copy the drive into itself. Choose a different destination drive.")
+    if not body.allow_same_drive and post_sources.same_drive(body.source_path, body.destination_volume_path):
+        raise HTTPException(status_code=400, detail="The source and destination are the same drive, so the footage would be on it twice. Choose a different destination drive.")
     job_id = await create_post_job(
         body.profile, body.shoot_name, body.source_path, destination_root,
         client_name=body.client_name, source_volume_name=body.source_volume_name,
@@ -2750,7 +2762,8 @@ async def post_job_get(job_id: int, request: Request, _: None = Depends(verify_t
 @app.get("/post/jobs/{job_id}/files")
 async def post_job_files_list(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
     postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
-    return {"files": await list_post_job_files(job_id, postgres_conn)}
+    from app.post_media import shown_path
+    return {"files": [{**f, "relative_path": shown_path(f)} for f in await list_post_job_files(job_id, postgres_conn)]}
 
 
 @app.post("/post/jobs/{job_id}/start")
@@ -2776,6 +2789,48 @@ async def post_job_start(job_id: int, request: Request, _: None = Depends(verify
         )
     await record_tool_call("post_job_start_ui", {"job_id": job_id}, "ok", postgres_conn)
     return {"started": True}
+
+
+@app.post("/post/jobs/{job_id}/add-card")
+async def post_job_add_card(job_id: int, body: PostJobAddCardRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Adds another card to a copied shoot, straight from the card: it's checked file by file like the first, into its own folder, and what's already in the shoot is skipped. Before Prepare POST
+    Project, which only imports what's there when it runs. Everything that can be refused is refused before anything changes."""
+    from app import post_ingest
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    if job.get("premiere_project_path"):
+        raise HTTPException(status_code=409, detail="This shoot already has its Premiere project, and cards have to go in before Prepare POST Project. Make a new job for this card.")
+    if job["status"] != "ingested":
+        raise HTTPException(status_code=409, detail="Wait for this shoot to finish copying and analysing, then add the next card.")
+    if not os.path.isdir(body.source_path):
+        raise HTTPException(status_code=400, detail="That card isn't connected.")
+    if post_sources.same_drive(body.source_path, job["destination_root"]):
+        raise HTTPException(status_code=400, detail="That's the drive this shoot is being copied to, so its footage would be on it twice. Choose the card.")
+    problem = post_ingest.destination_drive_problem(job["destination_root"])
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
+    files = await list_post_job_files(job_id, postgres_conn)
+    try:
+        plan = await asyncio.to_thread(post_ingest.plan_added_card, job, files, body.source_path)
+    except post_ingest.CardProblem as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    added = await post_db.add_post_job_card(job_id, body.source_path, body.source_volume_name, body.source_volume_uuid, plan["rows"], postgres_conn=postgres_conn)
+    if not added:
+        raise HTTPException(status_code=409, detail="This shoot just changed, so nothing was added. Try again.")
+    await record_tool_call("post_job_add_card_ui", {"job_id": job_id, "folder": plan["folder"], "files": len(plan["rows"]), "already": plan["already"]}, "ok", postgres_conn)
+    return {"added": len(plan["rows"]), "already": plan["already"], "folder": plan["folder"]}
+
+
+@app.post("/post/jobs/{job_id}/skip-unfinished")
+async def post_job_skip_unfinished(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Carries a stopped shoot on without the files that didn't copy. Their originals stay on the card."""
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    if not await post_db.skip_unfinished_post_job_files(job_id, postgres_conn=postgres_conn):
+        raise HTTPException(status_code=409, detail="Only a stopped shoot with at least one file safely copied can carry on without the rest.")
+    await record_tool_call("post_job_skip_unfinished_ui", {"job_id": job_id}, "ok", postgres_conn)
+    return {"ok": True}
 
 
 @app.post("/post/jobs/{job_id}/cancel")

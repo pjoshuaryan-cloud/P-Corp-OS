@@ -896,7 +896,14 @@ def _clamp_candidates_to_clip(candidates: list[dict], clip_duration: float | Non
     return clamped
 
 
-async def run_media_analysis(job_id: int, postgres_conn: Any = None) -> None:
+def shown_path(f: dict) -> str:
+    """A file's path as a person or a folder sees it. Two cards can both hold PRIVATE/M4ROOT/CLIP/C0001.MP4, so it comes from where the copy sits, which says "Card 2/" for any card after the first."""
+    marker = "/_INGESTED/"
+    destination = f.get("destination_path") or ""
+    return destination.split(marker, 1)[1] if marker in destination else f["relative_path"]
+
+
+async def run_media_analysis(job_id: int, postgres_conn: Any = None, only_new: bool = False) -> None:
     """Probes every file belonging to this job and stores the results.
     Runs every probe concurrently (asyncio.gather) -- unlike Phase 1's
     ingestion, these are lightweight subprocess calls reading only file
@@ -906,6 +913,9 @@ async def run_media_analysis(job_id: int, postgres_conn: Any = None) -> None:
     only after probe_file resolves each file's real media_type -- it's
     a real decode pass, so it's skipped outright for non-video files."""
     files = await list_post_job_files(job_id, postgres_conn=postgres_conn)
+    if only_new:   # another card joined the shoot: what's already been analysed stays as it is
+        done = {m["file_id"] for m in await list_post_job_file_metadata(job_id, postgres_conn=postgres_conn)}
+        files = [f for f in files if f["id"] not in done]
     if not files:
         await update_post_job_media_analyzed(job_id, postgres_conn=postgres_conn)
         return
@@ -959,12 +969,12 @@ async def compute_media_report(job_id: int, postgres_conn: Any = None) -> dict:
 
     for f in files:
         if f["source_checksum"]:
-            checksum_groups[f["source_checksum"]].append(f["relative_path"])
+            checksum_groups[f["source_checksum"]].append(shown_path(f))
         meta = metadata_by_file_id.get(f["id"])
         if meta is None:
             continue
         if meta["probe_error"]:
-            corrupt_files.append({"path": f["relative_path"], "error": meta["probe_error"]})
+            corrupt_files.append({"path": shown_path(f), "error": meta["probe_error"]})
             continue
         if meta["media_type"]:
             media_type_counts[meta["media_type"]] += 1
@@ -986,16 +996,16 @@ async def compute_media_report(job_id: int, postgres_conn: Any = None) -> dict:
         if meta["frame_rate"] and meta["media_type"] == "video":
             frame_rates[meta["frame_rate"]] += 1
             if meta["frame_rate"] > SLOW_MOTION_FPS_THRESHOLD:
-                slow_motion_files.append({"path": f["relative_path"], "frame_rate": meta["frame_rate"]})
+                slow_motion_files.append({"path": shown_path(f), "frame_rate": meta["frame_rate"]})
         # Phase 5 -- color profile only means anything for real video;
         # exposure/color-cast flags only exist when probe_exposure
         # actually ran (also video-only, see run_media_analysis).
         if meta["media_type"] == "video":
             color_profile_counts[meta.get("color_profile_guess") or "unknown"] += 1
             if meta.get("exposure_flag") in ("underexposed", "overexposed"):
-                flagged_exposure_files.append({"path": f["relative_path"], "flag": meta.get("exposure_flag")})
+                flagged_exposure_files.append({"path": shown_path(f), "flag": meta.get("exposure_flag")})
             if meta.get("color_cast_flag") in ("warm", "cool"):
-                flagged_color_cast_files.append({"path": f["relative_path"], "flag": meta.get("color_cast_flag")})
+                flagged_color_cast_files.append({"path": shown_path(f), "flag": meta.get("color_cast_flag")})
 
     duplicate_groups = [paths for paths in checksum_groups.values() if len(paths) > 1]
     # A real, useful signal: a shoot combining Log/HDR footage with
@@ -1081,7 +1091,7 @@ async def compute_proxy_recommendations(job_id: int, postgres_conn: Any = None) 
         if meta and recommend_proxy(meta):
             recommendations.append({
                 "file_id": f["id"],
-                "relative_path": f["relative_path"],
+                "relative_path": shown_path(f),
                 "width": meta.get("width"),
                 "height": meta.get("height"),
                 "bit_rate": meta.get("bit_rate"),
@@ -1225,7 +1235,7 @@ async def run_proxy_generation(job_id: int, postgres_conn: Any = None) -> None:
     async def transcode(row: dict) -> None:
         async with limiter:
             await mark_post_job_file_proxy_processing(row["id"], postgres_conn=postgres_conn)
-            output_path = proxies_folder / Path(row["relative_path"]).with_suffix(".mp4")
+            output_path = proxies_folder / Path(shown_path(row)).with_suffix(".mp4")
             try:
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 error = await _generate_proxy_file(row["destination_path"], output_path)

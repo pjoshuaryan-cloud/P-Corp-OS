@@ -150,7 +150,7 @@ s.append(PageBreak())
 s += section("One shoot, start to finish", "This is the full route, in order. The next page shows what to leave out for each kind of job. If there's a brief or run sheet, start with <b>Coverage Plans</b> before the shoot, and the crew can tick it off on their phones on the day.")
 s.append(steps([
     ("Copy the footage", "P Corp app, POST", [
-        ("Plug in the card and your drive. Fill in the profile, shoot name, drives, format, resolution and frame rate, then click <b>Create Job</b> and <b>Start</b>.", "It copies, checks every file against the original and analyses the media. A notification says when it's ready. Several cameras? Give each card its own folder inside one folder, and point the job at that. Don't merge cards: same-named clips could overwrite."),
+        ("Plug in the card and your drive. Fill in the profile, shoot name, drives, format, resolution and frame rate, then click <b>Create Job</b> and <b>Start</b>.", "It copies, checks every file against the original and analyses the media. A notification says when it's ready. More than one card? Once it's ready, swap cards and click <b>Add Another Card</b> before step 3."),
         ("Optional: click <b>View Report</b>.", "Cameras, frame rates, corrupt files, exact duplicates. Its exposure flags can miss problems on S-Log3."),
     ]),
     ("Set up Premiere", "plugin, More", [
@@ -391,21 +391,22 @@ s += section("If something goes wrong")
 s.append(table(["What you see", "What to do"], [
     ["The panel is gone or blank", "Load the plugin again in UXP Developer Tools. It needs this after every Premiere restart."],
     ["A new button is missing", "Reload the plugin after an update. It's under More."],
-    ["\"This project hasn't been logged yet\"", "Click Log This Shoot first, with the right project open."],
+    ["\"This project hasn't been logged yet\", or Link the shoot lists nothing", "Click Log This Shoot first, with the right project open."],
     ["\"Nothing to apply yet\"", "Tag clips or make a choice on the review page first."],
     ["A must-have says Missing, but you shot it", "Find the clip by eye, then click Covered. The check only sees sampled frames."],
     ["A shot says Not checked", "You changed it, or the check stopped before it got there. Click Check: only those shots are charged."],
-    ["Link the shoot lists nothing", "Click Log This Shoot first, with the project open."],
-    ["A phone says \"This link isn't active\"", "It was stopped or ran out. Make a new link on the Coverage page and send it again."],
+    ["A phone says \"This link isn't active\"", "It was stopped or ran out. Make a new link and send it again."],
     ["A phone says \"No signal\"", "Keep ticking. Ticks are saved and sent when signal returns."],
     ["\"Phones have an older list\"", "Click Send update on the Coverage page."],
-    ["Make phone link is greyed out", "Approve the list first."],
+    ["Make phone link or Plan Edit is greyed out", "Approve the list first. Plan Edit gives its reason just underneath, usually a missing song."],
+    ["\"The source and destination are the same drive\"", "Choose a different destination drive, so the footage isn't on it twice."],
+    ["\"Everything on that card is already in this shoot\"", "That card's been copied. Check you've put in the next one."],
+    ["\"A different card is connected\"", "Put back the card it was copying, then click Retry. Or click <b>Carry On Without Unfinished Files</b>."],
     ["A list or PDF says \"not approved yet\"", "A shot or time changed since you approved it, on the Mac or your phone. Click <b>Approve list</b>. The crew's link keeps working either way."],
     ["Your phone says \"This phone isn't set up\"", "It was turned off, or Safari's data was cleared. Make a new QR code on the Mac: Coverage Plans, My phone."],
     ["\"That QR code has been used or has run out\"", "Make a new one on the Mac. Each works once, for 15 minutes."],
     ["\"That's the most drafts allowed from a phone in a day\"", "Add shots by hand, start from a template, or draft on the Mac."],
     ["\"Run Prepare POST Project\" or no job found", "That button needs a P Corp shoot behind the project. See Two ways to start a shoot."],
-    ["Plan Edit is greyed out", "The reason shows just underneath, usually that it needs a song."],
     ["A shot's slot is empty after a build", "The panel names the clip: it isn't in the project. Import it and build again."],
     ["Flashes and zooms are missing", "Make an Adjustment Layer at your sequence's size, then build again."],
     ["The review page asks for a token", "Paste the same token you gave the plugin. It stays in that browser."],

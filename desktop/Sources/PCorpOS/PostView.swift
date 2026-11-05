@@ -89,7 +89,11 @@ struct PostView: View {
                                         }
                                     },
                                     onDetectHighlights: { Task { await client.detectHighlights(jobId: job.id) } },
-                                    onPlanEdit: { planningJob = job }
+                                    onPlanEdit: { planningJob = job },
+                                    sourceVolumes: client.sourceVolumes,
+                                    onFetchSources: { await client.fetchSources() },
+                                    onAddCard: { volume in await client.addCard(jobId: job.id, volume: volume) },
+                                    onSkipUnfinished: { Task { await client.skipUnfinished(jobId: job.id) } }
                                 )
                             }
                         }
@@ -181,6 +185,7 @@ struct PostView: View {
     // Optional narrowing of draftSourcePath (the whole drive) to one folder on it.
     @State private var draftSourceFolderPath: String?
     @State private var draftDestinationPath: String?
+    @State private var draftAllowSameDrive = false
     @State private var draftDeliverableFormat = postDeliverableFormatOptions[0]
     @State private var draftResolution = postResolutionOptions[0]
     @State private var draftFrameRate = postFrameRateOptions[2]  // defaults to "25", easily changed per shoot
@@ -188,8 +193,13 @@ struct PostView: View {
     /// Why Create Job is greyed out (the first thing still missing), or nil when the form is complete. The rule lives in PCorpKit so it can be tested.
     private var createJobBlocker: String? {
         PostFormRules.createJobBlocker(shootName: draftShootName, profile: draftProfile, clientName: draftClientName, sourcePath: draftSourcePath, destinationPath: draftDestinationPath)
+            ?? (sameDriveAllowed ? nil : sameDriveWarning)
     }
     private var canCreateJob: Bool { createJobBlocker == nil }
+    private var sameDriveWarning: String? {
+        PostFormRules.sameDriveWarning(sourcePath: draftSourcePath, destinationPath: draftDestinationPath, folderChosen: draftSourceFolderPath != nil)
+    }
+    private var sameDriveAllowed: Bool { draftAllowSameDrive && draftSourceFolderPath != nil }
 
     @ViewBuilder
     private var newShootForm: some View {
@@ -218,6 +228,10 @@ struct PostView: View {
                 sourceFolderRow(volumePath: volumePath)
             }
             volumePicker("Destination drive", selection: $draftDestinationPath, showFreeSpace: true)
+            if sameDriveWarning != nil && draftSourceFolderPath != nil {
+                Toggle("Copy to this drive anyway", isOn: $draftAllowSameDrive)
+                    .font(PCorpFont.body(11))
+            }
 
             Picker("Deliverable format", selection: $draftDeliverableFormat) {
                 ForEach(postDeliverableFormatOptions, id: \.self) { Text($0).tag($0) }
@@ -244,7 +258,8 @@ struct PostView: View {
         }
         .padding(12)
         .cardSurface(radius: 10)
-        .onChange(of: draftSourcePath) { _, _ in draftSourceFolderPath = nil }
+        .onChange(of: draftSourcePath) { _, _ in draftSourceFolderPath = nil; draftAllowSameDrive = false }
+        .onChange(of: draftDestinationPath) { _, _ in draftAllowSameDrive = false }
     }
 
     /// Without a chosen folder the job copies the ENTIRE source drive (right
@@ -337,11 +352,12 @@ struct PostView: View {
             clientName: draftProfile == "alpha_mode" ? draftClientName : nil,
             sourceVolumeName: client.sourceVolumes.first(where: { $0.path == sourcePath })?.name,
             sourceVolumeUuid: client.sourceVolumes.first(where: { $0.path == sourcePath })?.uuid,
-            deliverableFormat: draftDeliverableFormat, resolution: draftResolution, frameRate: draftFrameRate
+            deliverableFormat: draftDeliverableFormat, resolution: draftResolution, frameRate: draftFrameRate,
+            allowSameDrive: sameDriveAllowed
         )
         if let jobId = await client.createJob(draft) {
             toastCenter.show("POST job created", style: .success)
-            draftShootName = ""; draftClientName = ""; draftSourcePath = nil; draftSourceFolderPath = nil; draftDestinationPath = nil
+            draftShootName = ""; draftClientName = ""; draftSourcePath = nil; draftSourceFolderPath = nil; draftDestinationPath = nil; draftAllowSameDrive = false
             isAddingShoot = false
             _ = jobId
         }
@@ -364,9 +380,18 @@ private struct PostJobRow: View {
     let onViewProxyStatus: () -> Void
     let onDetectHighlights: () -> Void
     let onPlanEdit: () -> Void
+    let sourceVolumes: [SourceVolume]
+    let onFetchSources: () async -> Void
+    let onAddCard: (SourceVolume) async -> (card: AddedCard?, error: String?)
+    let onSkipUnfinished: () -> Void
     @Environment(\.appTheme) private var theme
+    @EnvironmentObject private var toastCenter: ToastCenter
 
     @State private var recommendedProxyCount: Int?
+    @State private var isAddingCard = false
+    @State private var cardPath: String?
+    @State private var cardError: String?
+    @State private var isConfirmingSkip = false
 
     private var statusColor: Color {
         switch job.status {
@@ -383,6 +408,11 @@ private struct PostJobRow: View {
     private var canStart: Bool { ["created", "ingest_failed", "cancelled"].contains(job.status) }
     private var canCancel: Bool { job.isActive }
     private var canAnalyzeMedia: Bool { job.status == "ingested" }
+    /// Cards go in before the Premiere project, which only imports what's there when it's made.
+    private var canAddCard: Bool { job.status == "ingested" && job.premiereProjectPath == nil }
+    private var canSkipUnfinished: Bool { ["ingest_failed", "cancelled"].contains(job.status) && job.filesCopied > 0 }
+    /// Every drive plugged in except the one this shoot is being copied to.
+    private var cardChoices: [SourceVolume] { sourceVolumes.filter { !job.destinationRoot.hasPrefix($0.path + "/") } }
     private var canCheckForProxies: Bool { job.status == "ingested" && job.mediaAnalyzedAt != nil }
     private var canPlanEdit: Bool {
         (job.status == "ingested" || job.status == "premiere_project_created") && job.mediaAnalyzedAt != nil
@@ -463,6 +493,39 @@ private struct PostJobRow: View {
                 Text(error).font(PCorpFont.body(10.5)).foregroundStyle(theme.statusRisk)
             }
 
+            if canAddCard {
+                if isAddingCard {
+                    addCardForm
+                } else {
+                    Button("Add Another Card") {
+                        isAddingCard = true
+                        cardPath = nil
+                        cardError = nil
+                        Task { await onFetchSources() }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+
+            if canSkipUnfinished {
+                if isConfirmingSkip {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Carry on with only the files that copied? The others stay on the card, and this shoot won't include them.")
+                            .font(PCorpFont.body(10.5))
+                            .foregroundStyle(theme.textSecondary)
+                        HStack(spacing: 8) {
+                            Button("Carry On Without Them") { isConfirmingSkip = false; onSkipUnfinished() }
+                                .buttonStyle(.bordered)
+                            Button("Cancel") { isConfirmingSkip = false }
+                                .buttonStyle(.bordered)
+                        }
+                    }
+                } else {
+                    Button("Carry On Without Unfinished Files") { isConfirmingSkip = true }
+                        .buttonStyle(.bordered)
+                }
+            }
+
             HStack(spacing: 8) {
                 if canStart {
                     Button(job.status == "created" ? "Start" : "Retry", action: onStart)
@@ -519,6 +582,51 @@ private struct PostJobRow: View {
         // count rather than showing a stale pre-generation figure.
         .task(id: "\(job.id)-\(job.status)-\(job.mediaAnalyzedAt ?? "")-\(job.proxiesGeneratedAt ?? "")") {
             recommendedProxyCount = canCheckForProxies ? await onFetchProxyRecommendations().count : nil
+        }
+    }
+
+    /// Inline rather than a sheet, for the same reason Plan Edit isn't one (see PlanEditView).
+    @ViewBuilder
+    private var addCardForm: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if cardChoices.isEmpty {
+                Text("No card found. Put it in, then click Look Again.").font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
+            } else {
+                Picker("Card", selection: $cardPath) {
+                    Text("Select…").tag(String?.none)
+                    ForEach(cardChoices) { volume in
+                        Text(volume.name).tag(String?.some(volume.path))
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                AsyncButton(action: addCard) { Text("Copy This Card") }
+                    .buttonStyle(.bordered)
+                    .disabled(cardPath == nil)
+                AsyncButton(action: { await onFetchSources() }) { Text("Look Again") }
+                    .buttonStyle(.bordered)
+                Button("Cancel") { isAddingCard = false }
+                    .buttonStyle(.bordered)
+            }
+            if let cardError {
+                Text(cardError).font(PCorpFont.body(10.5)).foregroundStyle(theme.statusRisk)
+            }
+            Text("It joins this shoot in a folder of its own, checked file by file. Anything already in the shoot is skipped.")
+                .font(PCorpFont.body(10.5))
+                .foregroundStyle(theme.textTertiary)
+        }
+    }
+
+    private func addCard() async {
+        guard let volume = cardChoices.first(where: { $0.path == cardPath }) else { return }
+        cardError = nil
+        let (card, error) = await onAddCard(volume)
+        if let card {
+            isAddingCard = false
+            let skipped = card.already > 0 ? " \(card.already) already in this shoot, so they're skipped." : ""
+            toastCenter.show("\(card.folder): copying \(card.added) files.\(skipped)", style: .success)
+        } else {
+            cardError = error
         }
     }
 

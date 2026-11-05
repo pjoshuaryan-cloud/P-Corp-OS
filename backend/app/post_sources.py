@@ -35,6 +35,14 @@ def _is_junk(name: str) -> bool:
     return name in _SKIP_ENTRIES or name.startswith("._")
 
 
+def same_drive(first: str, second: str) -> bool:
+    """Whether two paths are on one drive, by the device each really lives on, so a folder on the SSD counts as the SSD. If either can't be read, no: a missing drive has its own explanation."""
+    try:
+        return os.stat(first).st_dev == os.stat(second).st_dev
+    except OSError:
+        return False
+
+
 async def _diskutil_info_plist(path: str) -> dict | None:
     proc = await asyncio.create_subprocess_exec(
         "diskutil", "info", "-plist", path,

@@ -135,12 +135,13 @@ public struct PostJobDraft: Encodable {
     public var deliverableFormat: String?
     public var resolution: String?
     public var frameRate: String?
+    public var allowSameDrive: Bool
 
     public init(
         profile: String, shootName: String, sourcePath: String, destinationVolumePath: String,
         clientName: String? = nil, sourceVolumeName: String? = nil, sourceVolumeUuid: String? = nil,
         joshxProjectId: Int? = nil, alphaModeProjectId: Int? = nil,
-        deliverableFormat: String? = nil, resolution: String? = nil, frameRate: String? = nil
+        deliverableFormat: String? = nil, resolution: String? = nil, frameRate: String? = nil, allowSameDrive: Bool = false
     ) {
         self.profile = profile
         self.shootName = shootName
@@ -154,6 +155,7 @@ public struct PostJobDraft: Encodable {
         self.deliverableFormat = deliverableFormat
         self.resolution = resolution
         self.frameRate = frameRate
+        self.allowSameDrive = allowSameDrive
     }
 
     enum CodingKeys: String, CodingKey {
@@ -168,7 +170,15 @@ public struct PostJobDraft: Encodable {
         case alphaModeProjectId = "alpha_mode_project_id"
         case deliverableFormat = "deliverable_format"
         case frameRate = "frame_rate"
+        case allowSameDrive = "allow_same_drive"
     }
+}
+
+/// What adding a card will copy.
+public struct AddedCard: Decodable {
+    public let added: Int
+    public let already: Int
+    public let folder: String
 }
 
 public struct SourceVolume: Identifiable, Decodable {

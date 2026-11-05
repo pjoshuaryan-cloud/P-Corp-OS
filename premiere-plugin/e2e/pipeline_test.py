@@ -101,7 +101,7 @@ def run_flow(*, verify_outcome="ingested", analysis_raises=False, start="verifyi
             db["error_message"] = "2 file(s) failed to copy or verify."
         log.append("verify")
 
-    async def analyse(job_id, conn):
+    async def analyse(job_id, conn, only_new=False):
         log.append("analyse")
         if analysis_raises:
             raise RuntimeError("ffprobe fell over")

@@ -149,4 +149,5 @@ Not Premiere, but this needs real hardware. Use two real phones, ideally on real
 6. Turn the Mac back on and open Coverage Plans: both lists have come in, with their ticks.
 7. **Details**, **Stop link**: the second phone says the link isn't active. On the Mac, **My phone**, **Turn off**: your phone says it isn't set up, and the crew link you remade still works.
 8. On a throwaway list: **Details**, **Stop link**, then **Details**, **Delete list**. It leaves your phone, and the Mac keeps its copy, marked link stopped. On the Mac, pick that list and click **Delete list**: it leaves the dropdown. A live list offers no delete on either side.
-9. With two cameras: give each card its own folder inside one folder, point the job at that folder and build. Every shot should come from the planned camera, with no empty slots.
+9. With two cards: copy the first, then **Add Another Card** with the second in, all before **Prepare POST Project**. Add the first card again: it says it's already in the shoot. Build: every shot should come from the planned camera, with no empty slots.
+10. Pick the same drive as source and destination: **Create Job** stays greyed out and says why.

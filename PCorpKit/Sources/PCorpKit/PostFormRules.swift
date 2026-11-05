@@ -4,6 +4,14 @@ import Foundation
 /// greyed, and so it can be tested without a window. A greyed-out control with no explanation reads as broken; this gives the first thing still missing.
 public enum PostFormRules {
     /// Why "Create Job" can't be pressed yet, as a sentence saying what to do, or nil when the form is complete. The first missing thing wins, in the order the form is filled in.
+    /// Why one drive can't be both ends of a copy, or nil. It would leave the footage on that drive twice. Picking a folder on it can be allowed on purpose; a whole drive into itself never can.
+    public static func sameDriveWarning(sourcePath: String?, destinationPath: String?, folderChosen: Bool) -> String? {
+        guard let sourcePath, sourcePath == destinationPath else { return nil }
+        return folderChosen
+            ? "That folder is already on this drive, so its footage would be on it twice. Choose a different destination drive."
+            : "The source and destination are the same drive, so the footage would be on it twice. Choose a different destination drive."
+    }
+
     public static func createJobBlocker(shootName: String, profile: String, clientName: String, sourcePath: String?, destinationPath: String?) -> String? {
         if shootName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Give the shoot a name." }
         if profile == "alpha_mode" && clientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Alpha Mode shoots need a client name." }

@@ -10,6 +10,12 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
     if !ok { fails += 1 }
 }
 let blocker = PostFormRules.createJobBlocker
+let sameDrive = PostFormRules.sameDriveWarning
+
+check("two different drives raise no warning", sameDrive("/Volumes/Card", "/Volumes/SSD", false) == nil)
+check("nothing chosen yet raises no warning", sameDrive(nil, nil, false) == nil && sameDrive("/Volumes/SSD", nil, false) == nil)
+check("the same drive twice says so, and what to do", sameDrive("/Volumes/SSD", "/Volumes/SSD", false)?.contains("same drive") == true && sameDrive("/Volumes/SSD", "/Volumes/SSD", false)?.contains("Choose a different destination") == true)
+check("a folder on that drive is called what it is", sameDrive("/Volumes/SSD", "/Volumes/SSD", true)?.contains("That folder") == true)
 
 check("a complete form has nothing blocking it", blocker("GWM", "joshx", "", "/Volumes/A", "/Volumes/B") == nil)
 check("a complete Alpha Mode form (with a client) has nothing blocking it", blocker("GWM", "alpha_mode", "Two Tone", "/Volumes/A", "/Volumes/B") == nil)

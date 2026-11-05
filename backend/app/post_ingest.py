@@ -33,7 +33,9 @@ restarts from zero on resume, via `list_pending_post_job_files`'s own
 import asyncio
 import hashlib
 import os
+import re
 import shutil
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -50,7 +52,7 @@ from app.post_db import (
 from app.post_media import run_highlight_detection, run_media_analysis, run_proxy_generation
 from app.post_pipeline import notify
 from app.post_profiles import build_project_structure, compute_destination_root
-from app.post_sources import scan_source_tree
+from app.post_sources import _diskutil_info_plist, scan_source_tree
 from app.ssd_guard import DriveNotConnected, require_connected
 
 CHUNK_SIZE = 8 * 1024 * 1024  # 8MB -- frequent enough event-loop yields without excessive syscall overhead
@@ -100,7 +102,7 @@ def destination_drive_problem(destination_root: str) -> str | None:
     return None
 
 
-def check_destination_space(destination_root: str, pending_files: list[dict]) -> str | None:
+def check_destination_space(destination_root: str, pending_files: list[dict], advice: str = "Free up space on that drive, or delete this job and create it again with a different destination, then press Retry.") -> str | None:
     """Returns a user-facing explanation if the destination drive can't hold
     the files still to be copied (plus FREE_SPACE_RESERVE_BYTES of headroom),
     or None if there's room. Synchronous -- callers run it in a thread.
@@ -126,9 +128,82 @@ def check_destination_space(destination_root: str, pending_files: list[dict]) ->
     return (
         f"Not enough space on the destination drive: this job still needs about {_human_bytes(needed)} "
         f"(plus {_human_bytes(FREE_SPACE_RESERVE_BYTES)} of headroom) but only {_human_bytes(free)} is free. "
-        f"Free up space on that drive, or delete this job and create it again with a different destination, "
-        f"then press Retry."
+        f"{advice}"
     )
+
+
+async def source_card_problem(job: dict) -> str | None:
+    """Why the job's card can't be copied from right now, or None. Cards can mount under the same name and hold the same file names, so a retry with the wrong one in could otherwise read
+    its C0001.MP4 as this one's. A source with no recorded id, or that isn't a mounted drive, can't be checked this way, and the per-file size check still applies."""
+    expected, source = job.get("source_volume_uuid"), job.get("source_path") or ""
+    parts = source.split("/")
+    if not expected or len(parts) < 3 or parts[1] != "Volumes":
+        return None
+    name = parts[2]
+    info = await _diskutil_info_plist(f"/Volumes/{name}")
+    if info is None:
+        return f'"{name}" isn\'t connected. Put that card back in, then press Retry.'
+    actual = info.get("VolumeUUID")
+    if actual and actual != expected:
+        return f'A different card is connected as "{name}". Put back the card this was copying from, then press Retry.'
+    return None
+
+
+class CardProblem(Exception):
+    """Why a card can't be added to a shoot, in words for a person."""
+
+
+SAME_FILE_SAMPLE_BYTES = 1024 * 1024
+MIN_REAL_CLIP_BYTES = 5_000_000   # below this it's a camera's index or sidecar file, which changes even when no clip has
+
+
+def _same_file(source: str, destination: str, size: int) -> bool:
+    """Whether a file on a card is one the shoot already holds. Cameras reuse names, and a steady bitrate can make two clips the same size, so the bytes decide: all of a small file, or the
+    start, middle and end of a big one. If either can't be read, no: a clip copied twice beats a clip lost."""
+    sample = SAME_FILE_SAMPLE_BYTES
+    offsets = range(0, max(size, 1), sample) if size <= 3 * sample else (0, (size - sample) // 2, size - sample)
+    try:
+        with open(source, "rb") as a, open(destination, "rb") as b:
+            for offset in offsets:
+                a.seek(offset)
+                b.seek(offset)
+                if a.read(sample) != b.read(sample):
+                    return False
+        return True
+    except OSError:
+        return False
+
+
+def plan_added_card(job: dict, existing_files: list[dict], source_path: str) -> dict:
+    """What adding this card to a shoot would copy: every file that isn't already there, into a "Card N" folder of its own so same-named clips can't collide. Raises CardProblem if there's
+    nothing new or no room, before anything changes. Synchronous -- callers run it in a thread."""
+    _total, _bytes, scanned = scan_source_tree(source_path)
+    if not scanned:
+        raise CardProblem("No files found on that card.")
+    held: dict[tuple[str, int], list[str]] = defaultdict(list)
+    numbers = [1]
+    for f in existing_files:
+        if f.get("verified_at"):
+            held[(f["relative_path"], f["size_bytes"])].append(f["destination_path"])
+        match = re.search(r"/_INGESTED/Card (\d+)/", f["destination_path"])
+        if match:
+            numbers.append(int(match.group(1)))
+    fresh: list[tuple[str, int]] = []
+    already = 0
+    for relative, absolute, size in scanned:
+        if any(_same_file(absolute, destination, size) for destination in held.get((relative, size), ())):
+            already += 1
+        else:
+            fresh.append((relative, size))
+    if not fresh or (already and not any(size >= MIN_REAL_CLIP_BYTES for _, size in fresh)):
+        raise CardProblem("Everything on that card is already in this shoot, so there's nothing new to copy.")
+    folder = f"Card {max(numbers) + 1}"
+    staging = Path(job["destination_root"]) / "_INGESTED" / folder
+    rows = [(relative, str(staging / relative), size) for relative, size in fresh]
+    problem = check_destination_space(job["destination_root"], [{"size_bytes": size, "status": "pending"} for _, size in fresh], advice="Free up space on that drive, then add the card again.")
+    if problem:
+        raise CardProblem(problem)
+    return {"folder": folder, "rows": rows, "already": already}
 
 
 class _IngestWriteBehind:
@@ -341,7 +416,11 @@ async def run_ingest_job(job: dict, postgres_conn: Any = None) -> None:
 
     if job is not None and job["status"] == "ingesting":
         pending_files = await list_pending_post_job_files(job_id, postgres_conn=postgres_conn)
-        problem = destination_drive_problem(job["destination_root"]) or await asyncio.to_thread(check_destination_space, job["destination_root"], pending_files)
+        problem = (
+            destination_drive_problem(job["destination_root"])
+            or (await source_card_problem(job) if pending_files else None)
+            or await asyncio.to_thread(check_destination_space, job["destination_root"], pending_files)
+        )
         if problem:
             await update_post_job_status(
                 job_id, "ingest_failed", from_statuses=("ingesting",), error_message=problem, postgres_conn=postgres_conn
@@ -363,7 +442,7 @@ async def run_ingest_job(job: dict, postgres_conn: Any = None) -> None:
         if AUTO_ANALYSE_AFTER_INGEST and job is not None and job["status"] == "ingested" and not job.get("media_analyzed_at"):
             if await update_post_job_status(job_id, "analyzing_media", from_statuses=("ingested",), postgres_conn=postgres_conn):
                 try:
-                    await run_media_analysis(job_id, postgres_conn)
+                    await run_media_analysis(job_id, postgres_conn, only_new=True)
                     pipeline_finished = True
                 except Exception as exc:   # the copy is safe and verified; only the analysis stopped, and the button still runs it again
                     print(f"[post_ingest] automatic analysis of job {job_id} stopped: {exc!r}")
@@ -478,6 +557,8 @@ async def _run_copy_phase(job_id: int, postgres_conn: Any) -> None:
             source_path = source_root / file_row["relative_path"]
             writer.file_started(file_row["id"], file_row["relative_path"])
             try:
+                if await asyncio.to_thread(os.path.getsize, source_path) != file_row["size_bytes"]:   # cards share file names, so a swapped one mustn't pass for this one
+                    raise OSError(f"{file_row['relative_path']} isn't the size it was when scanned. Is the right card in?")
                 checksum = await _hash_and_copy_file(str(source_path), file_row["destination_path"], writer.add_bytes)
                 writer.file_copied(file_row["id"], checksum)
             except OSError as exc:

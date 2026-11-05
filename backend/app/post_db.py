@@ -742,6 +742,94 @@ async def create_post_job_files_batch(
         await db.commit()
 
 
+async def add_post_job_card(
+    job_id: int, source_path: str, source_volume_name: str | None, source_volume_uuid: str | None,
+    files: list[tuple[str, str, int]], postgres_conn: Any = None,
+) -> bool:
+    """Adds another card's files to a copied shoot and sends it back through copy, check and analysis, as one step. Refused (False) unless the shoot is copied, idle and has no Premiere
+    project yet. The job's source becomes this card, which is all the copy needs: earlier cards' files are already verified, and the resume query skips them."""
+    job_params = (source_path, source_volume_name, source_volume_uuid, len(files), sum(size for _, _, size in files), job_id)
+    if postgres_conn is not None:
+        try:
+            async with postgres_conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE post.jobs SET source_path = %s, source_volume_name = %s, source_volume_uuid = %s, total_files = total_files + %s, total_bytes = total_bytes + %s, "
+                    "media_analyzed_at = NULL, error_message = NULL, status = 'ready' "
+                    "WHERE id = %s AND deleted_at IS NULL AND status = 'ingested' AND premiere_project_path IS NULL",
+                    job_params,
+                )
+                if cur.rowcount == 0:
+                    await postgres_conn.rollback()
+                    return False
+                await cur.executemany(
+                    "INSERT INTO post.job_files (job_id, relative_path, destination_path, size_bytes, created_at) "
+                    "VALUES (%s, %s, %s, %s, (now() AT TIME ZONE 'utc'))",
+                    [(job_id, rel, dest, size) for rel, dest, size in files],
+                )
+            await postgres_conn.commit()
+            return True
+        except Exception:
+            await postgres_conn.rollback()
+            raise
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE post_jobs SET source_path = ?, source_volume_name = ?, source_volume_uuid = ?, total_files = total_files + ?, total_bytes = total_bytes + ?, "
+            "media_analyzed_at = NULL, error_message = NULL, status = 'ready' "
+            "WHERE id = ? AND deleted_at IS NULL AND status = 'ingested' AND premiere_project_path IS NULL",
+            job_params,
+        )
+        if cursor.rowcount == 0:
+            return False
+        await db.executemany(
+            "INSERT INTO post_job_files (job_id, relative_path, destination_path, size_bytes) VALUES (?, ?, ?, ?)",
+            [(job_id, rel, dest, size) for rel, dest, size in files],
+        )
+        await db.commit()
+    return True
+
+
+async def skip_unfinished_post_job_files(job_id: int, postgres_conn: Any = None) -> bool:
+    """Carries a stopped shoot on without the files that didn't copy, so one bad card or clip can't hold up the rest. Their originals stay on the card, and verified files aren't touched.
+    Refused (False) unless the shoot has stopped and at least one file is safe. It goes on to analysis, which brings it back to 'ingested'."""
+    if postgres_conn is not None:
+        kept = "FROM post.job_files WHERE job_id = %s AND deleted_at IS NULL AND verified_at IS NOT NULL"
+        try:
+            async with postgres_conn.cursor() as cur:
+                await cur.execute(
+                    f"UPDATE post.jobs SET total_files = (SELECT COUNT(*) {kept}), files_copied = (SELECT COUNT(*) {kept}), "
+                    f"total_bytes = (SELECT COALESCE(SUM(size_bytes), 0) {kept}), bytes_copied = (SELECT COALESCE(SUM(size_bytes), 0) {kept}), "
+                    "files_failed = 0, error_message = NULL, media_analyzed_at = NULL, status = 'analyzing_media' "
+                    f"WHERE id = %s AND deleted_at IS NULL AND status IN ('ingest_failed', 'cancelled') AND EXISTS (SELECT 1 {kept})",
+                    (job_id, job_id, job_id, job_id, job_id, job_id),
+                )
+                if cur.rowcount == 0:
+                    await postgres_conn.rollback()
+                    return False
+                await cur.execute(
+                    "UPDATE post.job_files SET deleted_at = (now() AT TIME ZONE 'utc')::text WHERE job_id = %s AND deleted_at IS NULL AND verified_at IS NULL",
+                    (job_id,),
+                )
+            await postgres_conn.commit()
+            return True
+        except Exception:
+            await postgres_conn.rollback()
+            raise
+    kept = "FROM post_job_files WHERE job_id = ? AND deleted_at IS NULL AND verified_at IS NOT NULL"
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            f"UPDATE post_jobs SET total_files = (SELECT COUNT(*) {kept}), files_copied = (SELECT COUNT(*) {kept}), "
+            f"total_bytes = (SELECT COALESCE(SUM(size_bytes), 0) {kept}), bytes_copied = (SELECT COALESCE(SUM(size_bytes), 0) {kept}), "
+            "files_failed = 0, error_message = NULL, media_analyzed_at = NULL, status = 'analyzing_media' "
+            f"WHERE id = ? AND deleted_at IS NULL AND status IN ('ingest_failed', 'cancelled') AND EXISTS (SELECT 1 {kept})",
+            (job_id, job_id, job_id, job_id, job_id, job_id),
+        )
+        if cursor.rowcount == 0:
+            return False
+        await db.execute("UPDATE post_job_files SET deleted_at = datetime('now') WHERE job_id = ? AND deleted_at IS NULL AND verified_at IS NULL", (job_id,))
+        await db.commit()
+    return True
+
+
 async def list_pending_post_job_files(job_id: int, postgres_conn: Any = None) -> list[dict]:
     """The resume query -- files not yet fully verified. A resumed job
     calls this and continues only these rows; files already verified in

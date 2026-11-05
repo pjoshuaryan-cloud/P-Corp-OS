@@ -156,6 +156,39 @@ public final class PostClient: ObservableObject {
         }
     }
 
+    /// Adds another card to a copied shoot. What it will copy, or why it can't.
+    public func addCard(jobId: Int, volume: SourceVolume) async -> (card: AddedCard?, error: String?) {
+        struct Body: Encodable {
+            let source_path: String
+            let source_volume_name: String
+            let source_volume_uuid: String?
+        }
+        var request = URLRequest(url: url("/post/jobs/\(jobId)/add-card"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(Body(source_path: volume.path, source_volume_name: volume.name, source_volume_uuid: volume.uuid))
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                return (nil, (try? JSONDecoder().decode(ErrorDetail.self, from: data))?.detail ?? "Request failed (\(http.statusCode)).")
+            }
+            let card = try JSONDecoder().decode(AddedCard.self, from: data)
+            await fetch()
+            return (card, nil)
+        } catch {
+            return (nil, "Couldn't reach the backend — is it running?")
+        }
+    }
+
+    /// Carries a stopped shoot on without the files that didn't copy.
+    public func skipUnfinished(jobId: Int) async {
+        var request = URLRequest(url: url("/post/jobs/\(jobId)/skip-unfinished"))
+        request.httpMethod = "POST"
+        let writeError = await performWrite(request)
+        await fetch()
+        if let writeError { errorMessage = writeError }
+    }
+
     public func startJob(id: Int) async {
         var request = URLRequest(url: url("/post/jobs/\(id)/start"))
         request.httpMethod = "POST"
