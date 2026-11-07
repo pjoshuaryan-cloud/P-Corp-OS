@@ -80,4 +80,35 @@ public final class PersonalClient: ObservableObject {
         await fetch()
         if let writeError { errorMessage = writeError }
     }
+
+    // ---- the Personal screen's own buttons (2026-11-07): one row each, by id
+
+    /// Removes exactly this goal (hidden on the backend, not wiped).
+    public func removeGoal(id: Int) async {
+        var request = URLRequest(url: BackendHost.url(path: "/personal/goals/\(id)"))
+        request.httpMethod = "DELETE"
+        let writeError = await performWrite(request)
+        await fetch()
+        if let writeError { errorMessage = writeError }
+    }
+
+    /// Removes exactly this habit (hidden on the backend, not wiped).
+    public func removeHabit(id: Int) async {
+        var request = URLRequest(url: BackendHost.url(path: "/personal/habits/\(id)"))
+        request.httpMethod = "DELETE"
+        let writeError = await performWrite(request)
+        await fetch()
+        if let writeError { errorMessage = writeError }
+    }
+
+    /// Marks a goal done, or back to active.
+    public func setGoalDone(id: Int, done: Bool) async {
+        var request = URLRequest(url: BackendHost.url(path: "/personal/goals/\(id)/status"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(["status": done ? "done" : "active"])
+        let writeError = await performWrite(request)
+        await fetch()
+        if let writeError { errorMessage = writeError }
+    }
 }

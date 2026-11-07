@@ -79,7 +79,7 @@ struct PersonalView: View {
                                 emptyRow("Nothing yet — tell Frank about a goal, or add one above.")
                             } else {
                                 ForEach(dashboard.goals) { goal in
-                                    GoalRow(goal: goal)
+                                    GoalRow(goal: goal, client: client)
                                 }
                             }
                         }
@@ -89,7 +89,7 @@ struct PersonalView: View {
                                 emptyRow("Nothing yet — tell Frank about a habit, or add one above.")
                             } else {
                                 ForEach(dashboard.habits) { habit in
-                                    HabitRow(habit: habit)
+                                    HabitRow(habit: habit, client: client)
                                 }
                             }
                         }
@@ -305,33 +305,70 @@ struct PersonalView: View {
 
 private struct GoalRow: View {
     let goal: PersonalGoal
+    @ObservedObject var client: PersonalClient
     @Environment(\.appTheme) private var theme
+    /// Remove asks once, in the row, before anything goes (2026-11-07).
+    @State private var confirmingRemove = false
+
+    private var isDone: Bool { goal.status.lowercased() == "done" }
 
     var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(goal.title)
-                    .font(PCorpFont.body(13.5, weight: .semibold))
-                    .foregroundStyle(theme.textPrimary)
-                if let target = goal.targetDate {
-                    Text("Target: \(target)")
-                        .font(PCorpFont.body(11.5))
-                        .foregroundStyle(theme.textSecondary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(goal.title)
+                        .font(PCorpFont.body(13.5, weight: .semibold))
+                        .foregroundStyle(isDone ? theme.textSecondary : theme.textPrimary)
+                    if let target = goal.targetDate {
+                        Text("Target: \(target)")
+                            .font(PCorpFont.body(11.5))
+                            .foregroundStyle(theme.textSecondary)
+                    }
+                    if let notes = goal.notes {
+                        Text(notes)
+                            .font(PCorpFont.body(11.5))
+                            .foregroundStyle(theme.textSecondary)
+                    }
                 }
-                if let notes = goal.notes {
-                    Text(notes)
-                        .font(PCorpFont.body(11.5))
-                        .foregroundStyle(theme.textSecondary)
+                Spacer()
+                HStack(spacing: 4) {
+                    if isDone { Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)) }
+                    Text(goal.status.capitalized)
+                        .font(PCorpFont.label(9))
+                        .trackedLabel(1.0)
                 }
-            }
-            Spacer()
-            Text(goal.status.capitalized)
-                .font(PCorpFont.label(9))
-                .trackedLabel(1.0)
-                .foregroundStyle(theme.textSecondary)
+                .foregroundStyle(isDone ? theme.statusGood : theme.textSecondary)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(Capsule().fill(theme.textPrimary.opacity(0.05)))
+                Menu {
+                    Button(isDone ? "Mark not done" : "Mark done") {
+                        Task { await client.setGoalDone(id: goal.id, done: !isDone) }
+                    }
+                    Button("Remove", role: .destructive) { confirmingRemove = true }
+                } label: {
+                    Image(systemName: "ellipsis.circle").font(.system(size: 15)).foregroundStyle(theme.textSecondary)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .fixedSize()
+                .accessibilityLabel("Actions for \(goal.title)")
+            }
+            if confirmingRemove {
+                HStack(spacing: 8) {
+                    Text("Remove this goal?").font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                    Spacer()
+                    AsyncButton(action: {
+                        await client.removeGoal(id: goal.id)
+                        confirmingRemove = false
+                    }) { Text("Remove").lineLimit(1) }
+                    .buttonStyle(.actionFilled)
+                    .fixedSize()
+                    Button { confirmingRemove = false } label: { Text("Keep").lineLimit(1) }
+                        .buttonStyle(.actionTinted)
+                        .fixedSize()
+                }
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -341,29 +378,57 @@ private struct GoalRow: View {
 
 private struct HabitRow: View {
     let habit: PersonalHabit
+    @ObservedObject var client: PersonalClient
     @Environment(\.appTheme) private var theme
+    @State private var confirmingRemove = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(habit.title)
-                    .font(PCorpFont.body(13.5, weight: .semibold))
-                    .foregroundStyle(theme.textPrimary)
-                if let notes = habit.notes {
-                    Text(notes)
-                        .font(PCorpFont.body(11.5))
-                        .foregroundStyle(theme.textSecondary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(habit.title)
+                        .font(PCorpFont.body(13.5, weight: .semibold))
+                        .foregroundStyle(theme.textPrimary)
+                    if let notes = habit.notes {
+                        Text(notes)
+                            .font(PCorpFont.body(11.5))
+                            .foregroundStyle(theme.textSecondary)
+                    }
                 }
+                Spacer()
+                if let cadence = habit.cadence {
+                    Text(cadence.capitalized)
+                        .font(PCorpFont.label(9))
+                        .trackedLabel(1.0)
+                        .foregroundStyle(theme.textSecondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(theme.textPrimary.opacity(0.05)))
+                }
+                Menu {
+                    Button("Remove", role: .destructive) { confirmingRemove = true }
+                } label: {
+                    Image(systemName: "ellipsis.circle").font(.system(size: 15)).foregroundStyle(theme.textSecondary)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .fixedSize()
+                .accessibilityLabel("Actions for \(habit.title)")
             }
-            Spacer()
-            if let cadence = habit.cadence {
-                Text(cadence.capitalized)
-                    .font(PCorpFont.label(9))
-                    .trackedLabel(1.0)
-                    .foregroundStyle(theme.textSecondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(theme.textPrimary.opacity(0.05)))
+            if confirmingRemove {
+                HStack(spacing: 8) {
+                    Text("Remove this habit?").font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                    Spacer()
+                    AsyncButton(action: {
+                        await client.removeHabit(id: habit.id)
+                        confirmingRemove = false
+                    }) { Text("Remove").lineLimit(1) }
+                    .buttonStyle(.actionFilled)
+                    .fixedSize()
+                    Button { confirmingRemove = false } label: { Text("Keep").lineLimit(1) }
+                        .buttonStyle(.actionTinted)
+                        .fixedSize()
+                }
             }
         }
         .padding(14)

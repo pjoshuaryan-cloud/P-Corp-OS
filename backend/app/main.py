@@ -5060,6 +5060,48 @@ async def personal_habit_create(
     return {"title": title}
 
 
+class PersonalGoalStatus(BaseModel):
+    status: str
+
+
+@app.delete("/personal/goals/{goal_id}")
+async def personal_goal_remove(goal_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    # The Personal screen's Remove button (2026-11-07): exactly this goal, by id, never a title match. Hidden, not wiped.
+    from app.personal_db import remove_goal_by_id
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    title = await remove_goal_by_id(goal_id, postgres_conn)
+    if title is None:
+        raise HTTPException(status_code=404, detail="That goal isn't there any more.")
+    await record_tool_call("delete_goal_ui", {"id": goal_id, "title": title}, "ok", postgres_conn)
+    return {"removed": title}
+
+
+@app.post("/personal/goals/{goal_id}/status")
+async def personal_goal_status(goal_id: int, body: PersonalGoalStatus, request: Request, _: None = Depends(verify_token)) -> dict:
+    # The Personal screen's Done / Not done button (2026-11-07). The same status Frank's update_goal_status sets.
+    from app.personal_db import GOAL_STATUSES, set_goal_status_by_id
+    if body.status not in GOAL_STATUSES:
+        raise HTTPException(status_code=422, detail="A goal is either active or done.")
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    title = await set_goal_status_by_id(goal_id, body.status, postgres_conn)
+    if title is None:
+        raise HTTPException(status_code=404, detail="That goal isn't there any more.")
+    await record_tool_call("update_goal_status_ui", {"id": goal_id, "title": title, "status": body.status}, "ok", postgres_conn)
+    return {"title": title, "status": body.status}
+
+
+@app.delete("/personal/habits/{habit_id}")
+async def personal_habit_remove(habit_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    # The Personal screen's Remove button (2026-11-07): exactly this habit, by id. Hidden, not wiped.
+    from app.personal_db import remove_habit_by_id
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    title = await remove_habit_by_id(habit_id, postgres_conn)
+    if title is None:
+        raise HTTPException(status_code=404, detail="That habit isn't there any more.")
+    await record_tool_call("delete_habit_ui", {"id": habit_id, "title": title}, "ok", postgres_conn)
+    return {"removed": title}
+
+
 @app.get("/joshx/dashboard")
 async def joshx_dashboard(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the desktop "Joshx" section -- Josh's independent freelance

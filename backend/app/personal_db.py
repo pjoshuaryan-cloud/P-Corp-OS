@@ -277,6 +277,78 @@ async def _delete_habit_postgres(conn: Any, identifier: str) -> str | None:
     return row[1]
 
 
+# ---- by id, for the Personal screen's own buttons (2026-11-07) -------------------------------------------------------------------------------
+# Frank's tools above find a goal or habit by its title, loosely, which suits talking to him. A button names one row exactly, so these take
+# its id and touch only that row. Removing is the same soft delete as Frank's: hidden, never wiped, so a wrong tap can be undone by hand.
+
+GOAL_STATUSES = {"active", "done"}
+
+
+async def remove_goal_by_id(goal_id: int, postgres_conn: Any = None) -> str | None:
+    """Hides one goal. Its title, or None if there's no such goal (or it's already removed)."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE personal.goals SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s AND deleted_at IS NULL RETURNING title",
+                (goal_id,),
+            )
+            row = await cur.fetchone()
+        await postgres_conn.commit()
+        return row[0] if row else None
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT title FROM goals WHERE id = ? AND deleted_at IS NULL", (goal_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        await db.execute("UPDATE goals SET deleted_at = datetime('now') WHERE id = ?", (goal_id,))
+        await db.commit()
+        return row[0]
+
+
+async def remove_habit_by_id(habit_id: int, postgres_conn: Any = None) -> str | None:
+    """Hides one habit. Its title, or None if there's no such habit (or it's already removed)."""
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE personal.habits SET deleted_at = (now() AT TIME ZONE 'utc') WHERE id = %s AND deleted_at IS NULL RETURNING title",
+                (habit_id,),
+            )
+            row = await cur.fetchone()
+        await postgres_conn.commit()
+        return row[0] if row else None
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT title FROM habits WHERE id = ? AND deleted_at IS NULL", (habit_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        await db.execute("UPDATE habits SET deleted_at = datetime('now') WHERE id = ?", (habit_id,))
+        await db.commit()
+        return row[0]
+
+
+async def set_goal_status_by_id(goal_id: int, status: str, postgres_conn: Any = None) -> str | None:
+    """Marks one goal done, or active again. Its title, or None if there's no such goal."""
+    if status not in GOAL_STATUSES:
+        raise ValueError(f"status must be one of {sorted(GOAL_STATUSES)}")
+    if postgres_conn is not None:
+        async with postgres_conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE personal.goals SET status = %s WHERE id = %s AND deleted_at IS NULL RETURNING title",
+                (status, goal_id),
+            )
+            row = await cur.fetchone()
+        await postgres_conn.commit()
+        return row[0] if row else None
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT title FROM goals WHERE id = ? AND deleted_at IS NULL", (goal_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        await db.execute("UPDATE goals SET status = ? WHERE id = ?", (status, goal_id))
+        await db.commit()
+        return row[0]
+
+
 async def dashboard_snapshot(postgres_conn: Any = None) -> dict:
     """Backs GET /personal/dashboard (the desktop tab).
 
