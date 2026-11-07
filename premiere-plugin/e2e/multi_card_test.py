@@ -209,6 +209,35 @@ def main_tests():
     empty_b.write_bytes(b"")
     check("two empty files are the same", post_ingest._same_file(str(empty_a), str(empty_b), 0))
 
+    # ---- a first copy from a folder on the card, then the whole card: its clips are found wherever they sat
+    held_clip = tmp / "held" / "M4ROOT" / "CLIP" / "C0001.MP4"
+    held_clip.parent.mkdir(parents=True)
+    held_clip.write_bytes(a1)
+    from_folder = [{"relative_path": "M4ROOT/CLIP/C0001.MP4", "size_bytes": len(a1), "destination_path": str(held_clip), "verified_at": "2026-11-07"}]
+    whole = card(tmp / "wholeA", {"C0001.MP4": a1})
+    try:
+        post_ingest.plan_added_card({"destination_root": str(tmp / "dest")}, from_folder, whole)
+        check("a card first copied from a folder on it is recognised when added whole", False)
+    except post_ingest.CardProblem as exc:
+        check("a card first copied from a folder on it is recognised when added whole", "already in this shoot" in str(exc), str(exc))
+    other_folder = card(tmp / "otherfolder", {"C0001.MP4": bytes(end_differs)})
+    plan = post_ingest.plan_added_card({"destination_root": str(tmp / "dest")}, from_folder, other_folder)
+    check("but a clip with that name and size and different bytes, in another folder, is still copied", any(r[0].endswith("C0001.MP4") for r in plan["rows"]), plan["rows"])
+
+    # ---- the report doesn't call a card's sidecar files corrupt
+    import aiosqlite
+    files_now = asyncio.run(post_db.list_post_job_files(jid, None))
+    xml = next(f for f in files_now if f["relative_path"].endswith("MEDIAPRO.XML"))
+    mp4 = next(f for f in files_now if f["relative_path"].endswith("C0002.MP4"))
+    async def mark_unreadable():
+        async with aiosqlite.connect(post_db.DB_PATH) as db:
+            await db.execute("UPDATE post_job_file_metadata SET probe_error = 'Invalid data found when processing input' WHERE file_id IN (?, ?)", (xml["id"], mp4["id"]))
+            await db.commit()
+    asyncio.run(mark_unreadable())
+    corrupt = [c["path"] for c in asyncio.run(post_media.compute_media_report(jid, None))["corrupt_files"]]
+    check("a clip ffprobe can't read is still reported as corrupt", post_media.shown_path(mp4) in corrupt, corrupt)
+    check("a camera's XML sidecar isn't", not any(p.endswith(".XML") for p in corrupt), corrupt)
+
     # ---- no room
     keep_usage = post_ingest.shutil.disk_usage
     post_ingest.shutil.disk_usage = lambda p: type("U", (), {"free": 10 * MB})()

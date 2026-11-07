@@ -175,8 +175,9 @@ def _same_file(source: str, destination: str, size: int) -> bool:
 
 
 def plan_added_card(job: dict, existing_files: list[dict], source_path: str) -> dict:
-    """What adding this card to a shoot would copy: every file that isn't already there, into a "Card N" folder of its own so same-named clips can't collide. Raises CardProblem if there's
-    nothing new or no room, before anything changes. Synchronous -- callers run it in a thread."""
+    """What adding this card to a shoot would copy: every file that isn't already there, into a "Card N" folder of its own so same-named clips can't collide. A file already there is found
+    by its name and size wherever it sat, because an earlier copy may have started from a folder on the card rather than the whole card, and then the bytes decide. Raises CardProblem if
+    there's nothing new or no room, before anything changes. Synchronous -- callers run it in a thread."""
     _total, _bytes, scanned = scan_source_tree(source_path)
     if not scanned:
         raise CardProblem("No files found on that card.")
@@ -184,14 +185,14 @@ def plan_added_card(job: dict, existing_files: list[dict], source_path: str) -> 
     numbers = [1]
     for f in existing_files:
         if f.get("verified_at"):
-            held[(f["relative_path"], f["size_bytes"])].append(f["destination_path"])
+            held[(Path(f["relative_path"]).name, f["size_bytes"])].append(f["destination_path"])
         match = re.search(r"/_INGESTED/Card (\d+)/", f["destination_path"])
         if match:
             numbers.append(int(match.group(1)))
     fresh: list[tuple[str, int]] = []
     already = 0
     for relative, absolute, size in scanned:
-        if any(_same_file(absolute, destination, size) for destination in held.get((relative, size), ())):
+        if any(_same_file(absolute, destination, size) for destination in held.get((Path(relative).name, size), ())):
             already += 1
         else:
             fresh.append((relative, size))

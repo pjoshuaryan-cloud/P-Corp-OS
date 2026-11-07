@@ -896,6 +896,11 @@ def _clamp_candidates_to_clip(candidates: list[dict], clip_duration: float | Non
     return clamped
 
 
+# Files a probe failing on means a damaged clip. Anything else on a card (Sony's XML sidecars, index and thumbnail files, raw photos ffprobe can't read) isn't footage, so its probe
+# failing says nothing about whether it's damaged.
+PROBED_EXTENSIONS = {".mp4", ".mov", ".mxf", ".m4v", ".mts", ".m2ts", ".avi", ".mkv", ".wav", ".mp3", ".aac", ".m4a", ".aif", ".aiff", ".flac"}
+
+
 def shown_path(f: dict) -> str:
     """A file's path as a person or a folder sees it. Two cards can both hold PRIVATE/M4ROOT/CLIP/C0001.MP4, so it comes from where the copy sits, which says "Card 2/" for any card after the first."""
     marker = "/_INGESTED/"
@@ -974,7 +979,8 @@ async def compute_media_report(job_id: int, postgres_conn: Any = None) -> dict:
         if meta is None:
             continue
         if meta["probe_error"]:
-            corrupt_files.append({"path": shown_path(f), "error": meta["probe_error"]})
+            if Path(f["relative_path"]).suffix.lower() in PROBED_EXTENSIONS:
+                corrupt_files.append({"path": shown_path(f), "error": meta["probe_error"]})
             continue
         if meta["media_type"]:
             media_type_counts[meta["media_type"]] += 1
