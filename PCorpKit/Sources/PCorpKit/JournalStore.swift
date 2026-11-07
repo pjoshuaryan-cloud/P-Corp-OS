@@ -42,7 +42,7 @@ public struct JournalEntry: Codable, Identifiable, Equatable, Sendable {
 }
 
 public enum JournalDefaults {
-    public static let categories = ["Notes to self", "Ideas", "Feelings"]
+    public static let categories = ["Notes to self", "Ideas", "Feelings", "Finance"]
     public static let categoriesID = "m-categories"
 }
 
@@ -136,9 +136,12 @@ public actor JournalEngine {
         try? Data(contentsOf: path(id))
     }
 
-    public func entryIDs() -> [String] {
+    public func entryIDs() -> [String] { ids(prefix: "e-") }
+
+    /// The items kept here whose names start this way: "e-" notes, "h-" highlights.
+    public func ids(prefix: String) -> [String] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent("items").path)) ?? []
-        return names.filter { $0.hasPrefix("e-") && $0.hasSuffix(".sealed") }.map { String($0.dropLast(".sealed".count)) }.filter { !state.deleted.contains($0) }
+        return names.filter { $0.hasPrefix(prefix) && $0.hasSuffix(".sealed") }.map { String($0.dropLast(".sealed".count)) }.filter { !state.deleted.contains($0) }
     }
 
     public var pendingCount: Int { state.outbox.count }
@@ -183,9 +186,17 @@ public actor JournalEngine {
     /// Sends what's waiting, then takes in what the other device changed. Notes and the category list come down straight away; a recording only when it's played.
     public func sync() async throws -> SyncReport {
         var report = SyncReport()
-        while let next = state.outbox.first {
-            try await send(next)
-            state.outbox.removeFirst()
+        // An item the server turns away (too big, or a kind an older server doesn't know yet) stays queued for next time, but doesn't hold
+        // up everything queued behind it. No signal stops the whole sync, as before.
+        var refused: [Pending] = []
+        while let next = state.outbox.first(where: { !refused.contains($0) }) {
+            do {
+                try await send(next)
+            } catch JournalHTTP.Failure.server(let status, _) where (400..<500).contains(status) && status != 401 && status != 403 {
+                refused.append(next)
+                continue
+            }
+            state.outbox.removeAll { $0 == next }
             try persist()
             report.sent += 1
         }
@@ -209,11 +220,14 @@ public actor JournalEngine {
             state.versions[item.id] = item.version
             try persist()
         }
+        if !refused.isEmpty { throw SyncFailure.refused }
         return report
     }
 
     public enum SyncFailure: Error, Equatable {
         case keptChanging
+        /// The server turned something away. It's still kept here and queued.
+        case refused
     }
 
     private func send(_ pending: Pending) async throws {

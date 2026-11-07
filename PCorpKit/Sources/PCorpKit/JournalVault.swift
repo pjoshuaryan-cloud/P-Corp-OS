@@ -29,6 +29,13 @@ public final class JournalVault: ObservableObject {
     /// While Face ID or Touch ID is asking. The prompt takes focus, which mustn't count as leaving the journal.
     @Published public private(set) var authenticating = false
     @Published public var message: String?
+    /// A quiet word about something that went right, like where a note was filed.
+    @Published public var notice: String?
+    /// Highlights his Mac wrote, by period name, decrypted into memory only while the journal is open.
+    @Published public private(set) var stored: [String: JournalHighlight] = [:]
+    /// Periods the Mac is writing a summary for right now.
+    @Published public private(set) var writingHighlights: Set<String> = []
+    private var digests: [String: JournalDigest] = [:]
 
     /// Locks itself after this long without being touched.
     public static let autoLock: TimeInterval = 5 * 60
@@ -171,6 +178,8 @@ public final class JournalVault: ObservableObject {
         touch()
         await readAll()
         await refresh()
+        JournalReminders.apply()
+        await tidyHighlights()
     }
 
     /// Forgets the key and every decrypted note. What's saved stays saved, sealed.
@@ -179,7 +188,11 @@ public final class JournalVault: ObservableObject {
         lockWatch = nil
         key = nil
         entries = []
+        stored = [:]
+        digests = [:]
         message = nil
+        notice = nil
+        JournalSorter.forget()
         if phase == .open || { if case .writeDown = phase { return true } else { return false } }() {
             phase = JournalKeychain.hasKey() ? .locked : .elsewhere
         }
@@ -213,6 +226,12 @@ public final class JournalVault: ObservableObject {
             found.append(entry)
         }
         entries = found.sorted { $0.createdAt > $1.createdAt }
+        var highlights: [String: JournalHighlight] = [:]
+        for id in await engine.ids(prefix: "h-") {
+            guard let sealed = await engine.sealed(id), let plain = try? JournalCrypto.open(sealed, id: id, key: key), let h = try? decoder.decode(JournalHighlight.self, from: plain) else { continue }
+            highlights[id] = h
+        }
+        stored = highlights
         if let sealed = await engine.sealed(JournalDefaults.categoriesID), let plain = try? JournalCrypto.open(sealed, id: JournalDefaults.categoriesID, key: key), let list = try? decoder.decode(JournalCategoryList.self, from: plain), !list.names.isEmpty {
             categories = list.names
         } else {
@@ -237,9 +256,14 @@ public final class JournalVault: ObservableObject {
         try await engine.save(id, sealed: try JournalCrypto.seal(plain, id: id, key: key))
     }
 
-    public func save(_ entry: JournalEntry) async {
+    /// Saves a note. With `sort`, it's filed first by what it says, on this device (JournalSorter).
+    public func save(_ entry: JournalEntry, sort: Bool = false) async {
         touch()
         var changed = entry
+        if sort {
+            changed.category = await JournalSorter.category(for: changed.words, categories: categories, history: entries.filter { $0.id != entry.id })
+            notice = "Filed under \(changed.category). Tap the note to move it."
+        }
         changed.updatedAt = Date()
         do {
             try await keep(changed.id, try encoder.encode(changed))
@@ -254,7 +278,8 @@ public final class JournalVault: ObservableObject {
     }
 
     /// A voice note: its words worked out on this device, its recording sealed, and the temporary file deleted whatever happens.
-    public func addVoiceNote(file: URL, duration: TimeInterval, category: String, title: String) async {
+    /// A nil category files it by what was said.
+    public func addVoiceNote(file: URL, duration: TimeInterval, category: String?, title: String) async {
         touch()
         busy = true
         defer {
@@ -273,7 +298,7 @@ public final class JournalVault: ObservableObject {
             message = "The recording couldn't be saved."
             return
         }
-        await save(JournalEntry(category: category, title: title, transcript: words, audioID: audioID, duration: duration))
+        await save(JournalEntry(category: category ?? categories.first ?? "Notes to self", title: title, transcript: words, audioID: audioID, duration: duration), sort: category == nil)
     }
 
     public func delete(_ entry: JournalEntry) async {
@@ -286,7 +311,82 @@ public final class JournalVault: ObservableObject {
             return
         }
         entries.removeAll { $0.id == entry.id }
+        // A summary that drew on a deleted note goes too, so nothing of it is left. The Mac writes a fresh one from what's left.
+        for h in stored.values where entry.createdAt >= h.start && entry.createdAt < h.end {
+            try? await engine.remove(h.id)
+            stored[h.id] = nil
+        }
         await refresh()
+    }
+
+    // ---- highlights
+
+    public func notes(in period: JournalPeriod) -> [JournalEntry] {
+        entries.filter { period.contains($0.createdAt) }
+    }
+
+    /// What a period's notes add up to, counted on this device. Kept until a note in it changes.
+    public func digest(_ period: JournalPeriod) -> JournalDigest {
+        let notes = notes(in: period)
+        let basis = JournalDigest.basis(of: notes)
+        if let known = digests[period.id], known.basis == basis { return known }
+        let made = JournalDigest.make(notes)
+        digests[period.id] = made
+        return made
+    }
+
+    /// The Mac's written highlight for a period, only while it still matches the notes in it.
+    public func written(_ period: JournalPeriod) -> JournalHighlight? {
+        guard let h = stored[period.id], h.basis == JournalDigest.basis(of: notes(in: period)) else { return nil }
+        return h
+    }
+
+    /// Finished weeks or months that have notes in them, newest first.
+    public func periods(_ kind: JournalPeriod.Kind, now: Date = Date()) -> [JournalPeriod] {
+        guard let earliest = entries.map(\.createdAt).min() else { return [] }
+        var found: [JournalPeriod] = []
+        var period = JournalPeriod.latest(kind, before: now)
+        var steps = 0
+        while period.end > earliest && steps < 600 {
+            if entries.contains(where: { period.contains($0.createdAt) }) { found.append(period) }
+            period = period.previous()
+            steps += 1
+        }
+        return found
+    }
+
+    /// Has the Mac's on-device model write a period's highlight, and keeps it sealed so the iPhone gets it too. Does nothing where there's
+    /// no model, when there's already a current one, or when the period has no notes.
+    public func writeHighlight(_ period: JournalPeriod) async {
+        guard key != nil, JournalModel.available, written(period) == nil, !writingHighlights.contains(period.id) else { return }
+        let notes = notes(in: period)
+        guard !notes.isEmpty else { return }
+        let basis = JournalDigest.basis(of: notes)
+        writingHighlights.insert(period.id)
+        defer { writingHighlights.remove(period.id) }
+        guard let made = await JournalModel.write(period, entries: notes) else { return }
+        // Locked, or a note in the period changed, while it was writing: what it wrote isn't wanted.
+        guard key != nil, JournalDigest.basis(of: self.notes(in: period)) == basis else { return }
+        let highlight = JournalHighlight(id: period.id, kind: period.kind, start: period.start, end: period.end, basis: basis, writtenAt: Date(), summary: made.summary, remember: made.remember)
+        do {
+            try await keep(highlight.id, try encoder.encode(highlight))
+        } catch {
+            return
+        }
+        stored[highlight.id] = highlight
+        await refresh()
+    }
+
+    /// Highlights of periods whose notes are all gone are deleted, and the Mac writes the latest week's and month's.
+    private func tidyHighlights() async {
+        for h in stored.values where notes(in: JournalPeriod(kind: h.kind, start: h.start, end: h.end)).isEmpty {
+            try? await engine.remove(h.id)
+            stored[h.id] = nil
+        }
+        guard JournalModel.available else { return }
+        for kind in [JournalPeriod.Kind.week, .month] {
+            if let latest = periods(kind).first { await writeHighlight(latest) }
+        }
     }
 
     /// A voice note's recording, decrypted into memory only.

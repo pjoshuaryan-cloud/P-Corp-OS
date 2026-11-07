@@ -41,6 +41,12 @@ public struct JournalView: View {
     @State private var lastGroupCheck = ""
     @State private var scanning = false
     @State private var confirmForget = false
+    /// How far back each highlight card has been stepped: 0 is the latest.
+    @State private var weekStep = 0
+    @State private var monthStep = 0
+    /// Highlight cards are folded to a line until tapped, so writing a quick note never means scrolling past them.
+    @State private var openHighlights: Set<JournalPeriod.Kind> = []
+    @State private var remindersOn = JournalReminders.enabled
 
     public init(onClose: @escaping () -> Void) {
         self.onClose = onClose
@@ -108,6 +114,9 @@ public struct JournalView: View {
         expandedID = nil
         confirmDeleteID = nil
         confirmForget = false
+        weekStep = 0
+        monthStep = 0
+        openHighlights = []
         vault.lock()
     }
 
@@ -145,6 +154,12 @@ public struct JournalView: View {
                 Menu {
                     Button("Show recovery key") { Task { shownCode = await vault.recoveryCode() } }
                     Button("Categories") { categoryDraft = vault.categories; editingCategories = true }
+                    if JournalReminders.supported {
+                        Button(remindersOn ? "Turn weekly and monthly reminders off" : "Turn weekly and monthly reminders on") {
+                            JournalReminders.enabled.toggle()
+                            remindersOn = JournalReminders.enabled
+                        }
+                    }
                     Button("Remove from this device", role: .destructive) { confirmForget = true }
                 } label: {
                     Image(systemName: "ellipsis.circle").font(.system(size: 16))
@@ -305,7 +320,12 @@ public struct JournalView: View {
         if let note = vault.syncNote {
             Text(note).font(PCorpFont.body(11.5)).foregroundStyle(theme.textTertiary)
         }
+        highlightCard(.week, step: $weekStep)
+        highlightCard(.month, step: $monthStep)
         composeArea
+        if let notice = vault.notice {
+            Text(notice).font(PCorpFont.body(11.5)).foregroundStyle(theme.textTertiary)
+        }
         filters
         TextField("Search your journal", text: $search)
             .textFieldStyle(.roundedBorder)
@@ -395,7 +415,8 @@ public struct JournalView: View {
             HStack(spacing: 10) {
                 AsyncButton(action: startRecording) { Label("Record", systemImage: "mic.fill") }.buttonStyle(.actionFilled)
                 Button {
-                    draftCategory = vault.categories.first ?? ""
+                    vault.notice = nil
+                    draftCategory = ""
                     composer = .text
                 } label: { Label("Write", systemImage: "square.and.pencil") }
                 .buttonStyle(.actionTinted)
@@ -420,7 +441,7 @@ public struct JournalView: View {
                         AsyncButton(action: {
                             let made = recorded
                             self.recorded = nil
-                            await vault.addVoiceNote(file: made.url, duration: made.duration, category: draftCategory, title: draftTitle)
+                            await vault.addVoiceNote(file: made.url, duration: made.duration, category: draftCategory.isEmpty ? nil : draftCategory, title: draftTitle)
                             dropDrafts()
                         }) { Text("Save voice note") }.buttonStyle(.actionFilled).disabled(vault.busy)
                         Button("Discard") { dropDrafts() }.buttonStyle(.actionTinted)
@@ -452,12 +473,12 @@ public struct JournalView: View {
                 HStack(spacing: 8) {
                     AsyncButton(action: {
                         if var changed = editing {
-                            changed.category = draftCategory
+                            if !draftCategory.isEmpty { changed.category = draftCategory }
                             changed.title = draftTitle
                             changed.text = draftText
-                            await vault.save(changed)
+                            await vault.save(changed, sort: draftCategory.isEmpty)
                         } else {
-                            await vault.save(JournalEntry(category: draftCategory, title: draftTitle, text: draftText))
+                            await vault.save(JournalEntry(category: draftCategory, title: draftTitle, text: draftText), sort: draftCategory.isEmpty)
                         }
                         dropDrafts()
                     }) { Text("Save") }
@@ -472,6 +493,7 @@ public struct JournalView: View {
     private var detailsFields: some View {
         VStack(alignment: .leading, spacing: 8) {
             Picker("Category", selection: $draftCategory) {
+                Text("Sort it for me").tag("")
                 ForEach(vault.categories, id: \.self) { Text($0).tag($0) }
             }
             .pickerStyle(.menu)
@@ -493,7 +515,8 @@ public struct JournalView: View {
 
     private func startRecording() async {
         vault.message = nil
-        draftCategory = vault.categories.first ?? ""
+        vault.notice = nil
+        draftCategory = ""
         if let problem = await recorder.start() {
             vault.message = problem
             return
@@ -527,6 +550,111 @@ public struct JournalView: View {
                 .foregroundStyle(selected ? theme.accentText : theme.textPrimary)
         }
         .buttonStyle(.plain)
+    }
+
+    // ---- highlights
+
+    @ViewBuilder private func highlightCard(_ kind: JournalPeriod.Kind, step: Binding<Int>) -> some View {
+        let list = vault.periods(kind)
+        if !list.isEmpty {
+            let index = min(step.wrappedValue, list.count - 1)
+            let period = list[index]
+            let digest = vault.digest(period)
+            let written = vault.written(period)
+            let isOpen = openHighlights.contains(kind)
+            card {
+                HStack(alignment: .top, spacing: 8) {
+                    Button {
+                        if isOpen { openHighlights.remove(kind) } else { openHighlights.insert(kind) }
+                    } label: {
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: isOpen ? "chevron.down" : "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(theme.textTertiary).padding(.top, 4)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(period.title).font(PCorpFont.body(14.5, weight: .semibold)).foregroundStyle(theme.textPrimary)
+                                Text(isOpen ? period.span : period.span + " · " + Self.preview(digest, written)).font(PCorpFont.body(11.5)).foregroundStyle(theme.textTertiary).lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isOpen ? "Fold \(period.title)" : "Open \(period.title)")
+                    Button { step.wrappedValue = index + 1 } label: { Image(systemName: "chevron.left") }
+                        .buttonStyle(.plain).foregroundStyle(theme.textSecondary)
+                        .disabled(index + 1 >= list.count).opacity(index + 1 >= list.count ? 0.3 : 1)
+                        .accessibilityLabel(kind == .week ? "Earlier week" : "Earlier month")
+                    Button { step.wrappedValue = index - 1 } label: { Image(systemName: "chevron.right") }
+                        .buttonStyle(.plain).foregroundStyle(theme.textSecondary)
+                        .disabled(index == 0).opacity(index == 0 ? 0.3 : 1)
+                        .accessibilityLabel(kind == .week ? "Later week" : "Later month")
+                }
+                if !isOpen {
+                    EmptyView()
+                } else if let written {
+                    Text(written.summary).font(PCorpFont.body(13.5)).foregroundStyle(theme.textPrimary).fixedSize(horizontal: false, vertical: true)
+                } else if vault.writingHighlights.contains(period.id) {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(Self.writingLine).font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                    }
+                }
+                if isOpen {
+                Text(Self.countLine(digest)).font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                if let mood = digest.moodLine {
+                    Text(mood).font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                }
+                if !digest.themes.isEmpty {
+                    Text("You kept coming back to: " + digest.themes.joined(separator: ", ")).font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                }
+                if let written, !written.remember.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("WORTH REMEMBERING").font(PCorpFont.label(9.5)).foregroundStyle(theme.textTertiary)
+                        ForEach(written.remember, id: \.self) { item in
+                            Text("• " + item).font(PCorpFont.body(12.5)).foregroundStyle(theme.textPrimary).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                if !digest.standouts.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("IN YOUR WORDS").font(PCorpFont.label(9.5)).foregroundStyle(theme.textTertiary)
+                        ForEach(digest.standouts, id: \.self) { line in
+                            Text("“" + line + "”").font(PCorpFont.body(12.5)).italic().foregroundStyle(theme.textPrimary).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                if written == nil && !JournalModel.available {
+                    Text("A written summary is added when you open your journal on your Mac.").font(PCorpFont.body(11)).foregroundStyle(theme.textTertiary)
+                }
+                }
+            }
+            .task(id: period.id + digest.basis) { await vault.writeHighlight(period) }
+        }
+    }
+
+    #if os(macOS)
+    private static let writingLine = "Writing a summary on this Mac…"
+    #else
+    private static let writingLine = "Writing a summary on this iPhone…"
+    #endif
+
+    /// The one line a folded card shows: the start of the Mac's summary, or the counts.
+    private static func preview(_ d: JournalDigest, _ written: JournalHighlight?) -> String {
+        if let written { return written.summary }
+        var bits = [d.notes == 1 ? "1 note" : "\(d.notes) notes"]
+        if d.mood != nil, let line = d.moodLine?.replacingOccurrences(of: "Mood: ", with: "").split(separator: ".").first { bits.append(String(line)) }
+        if !d.themes.isEmpty { bits.append(d.themes.prefix(2).joined(separator: ", ")) }
+        return bits.joined(separator: " · ")
+    }
+
+    private static func countLine(_ d: JournalDigest) -> String {
+        var parts = [d.notes == 1 ? "1 note" : "\(d.notes) notes"]
+        if d.voiceNotes > 0 {
+            let voice = d.voiceNotes == 1 ? "1 voice note" : "\(d.voiceNotes) voice notes"
+            parts.append(d.voiceMinutes > 0 ? "\(voice) (\(d.voiceMinutes) min)" : voice)
+        }
+        let line = parts.joined(separator: " · ")
+        let cats = d.categories.map { "\($0.category) \($0.notes)" }.joined(separator: " · ")
+        return cats.isEmpty ? line : line + "\n" + cats
     }
 
     // ---- one note
@@ -569,42 +697,58 @@ public struct JournalView: View {
         if entry.audioID != nil && entry.transcript == nil {
             Text("No words were worked out for this one on the device it was recorded on. Play it to hear it.").font(PCorpFont.body(11.5)).foregroundStyle(theme.textTertiary)
         }
-        HStack(spacing: 8) {
-            if entry.audioID != nil {
-                AsyncButton(action: {
-                    if player.playingID == entry.id {
-                        player.stop()
-                    } else if let audio = await vault.audio(for: entry) {
-                        player.play(audio, id: entry.id)
+        // One row when it fits; on a narrow phone, delete moves to its own line rather than squeezing a button until its word breaks.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                mainActions(entry)
+                Spacer(minLength: 8)
+                deleteActions(entry)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) { mainActions(entry) }
+                HStack(spacing: 8) { deleteActions(entry) }
+            }
+        }
+    }
+
+    @ViewBuilder private func mainActions(_ entry: JournalEntry) -> some View {
+        if entry.audioID != nil {
+            AsyncButton(action: {
+                if player.playingID == entry.id {
+                    player.stop()
+                } else if let audio = await vault.audio(for: entry) {
+                    player.play(audio, id: entry.id)
+                }
+            }) { Label(player.playingID == entry.id ? "Stop" : "Play", systemImage: player.playingID == entry.id ? "stop.fill" : "play.fill").lineLimit(1) }
+            .buttonStyle(.actionFilled)
+            .fixedSize()
+        }
+        if confirmDeleteID != entry.id {
+            Menu {
+                ForEach(vault.categories, id: \.self) { name in
+                    Button(name) {
+                        var moved = entry
+                        moved.category = name
+                        Task { await vault.save(moved) }
                     }
-                }) { Label(player.playingID == entry.id ? "Stop" : "Play", systemImage: player.playingID == entry.id ? "stop.fill" : "play.fill") }
-                .buttonStyle(.actionFilled)
-            }
-            if confirmDeleteID != entry.id {
-                Menu {
-                    ForEach(vault.categories, id: \.self) { name in
-                        Button(name) {
-                            var moved = entry
-                            moved.category = name
-                            Task { await vault.save(moved) }
-                        }
-                    }
-                } label: { Text("Category") }
-                .menuStyle(.button)
-                .fixedSize()
-                Button("Edit") { startEditing(entry) }.buttonStyle(.actionTinted)
-            }
-            Spacer()
-            if confirmDeleteID == entry.id {
-                AsyncButton(action: {
-                    if player.playingID == entry.id { player.stop() }
-                    await vault.delete(entry)
-                    confirmDeleteID = nil
-                }) { Text("Delete for good") }.buttonStyle(.actionFilled)
-                Button("Keep") { confirmDeleteID = nil }.buttonStyle(.actionTinted)
-            } else {
-                Button("Delete") { confirmDeleteID = entry.id }.buttonStyle(.actionTinted)
-            }
+                }
+            } label: { Text("Category").lineLimit(1) }
+            .menuStyle(.button)
+            .fixedSize()
+            Button { startEditing(entry) } label: { Text("Edit").lineLimit(1) }.buttonStyle(.actionTinted).fixedSize()
+        }
+    }
+
+    @ViewBuilder private func deleteActions(_ entry: JournalEntry) -> some View {
+        if confirmDeleteID == entry.id {
+            AsyncButton(action: {
+                if player.playingID == entry.id { player.stop() }
+                await vault.delete(entry)
+                confirmDeleteID = nil
+            }) { Text("Delete for good").lineLimit(1) }.buttonStyle(.actionFilled).fixedSize()
+            Button { confirmDeleteID = nil } label: { Text("Keep").lineLimit(1) }.buttonStyle(.actionTinted).fixedSize()
+        } else {
+            Button { confirmDeleteID = entry.id } label: { Text("Delete").lineLimit(1) }.buttonStyle(.actionTinted).fixedSize()
         }
     }
 

@@ -116,7 +116,14 @@ def main_tests():
     check("but a recording that size is fine", web.put(f"/journal/items/{big_audio}", params={**T, "version": 1}, content=b"x" * (jdb.LIMITS["e"] + 1)).status_code == 200)
     check("a recording past its limit is refused", web.put(f"/journal/items/{'a-' + secrets.token_hex(16)}", params={**T, "version": 1}, content=b"x" * (jdb.LIMITS["a"] + 1)).status_code == 413)
     check("the category list saves under its own name", web.put("/journal/items/m-categories", params={**T, "version": 1}, content=b"sealed list").status_code == 200)
-    for bad in ("e-xyz", "e-" + "A" * 32, "x-" + "a" * 32, "m-other", "..%2F..%2Fsecrets", "e-" + "a" * 31):
+    # Highlights the Mac writes of a week or month (2026-11-07), sealed like everything else.
+    week_h = "h-week-2026-11-08"
+    check("a sealed weekly highlight saves under its period's name", web.put(f"/journal/items/{week_h}", params={**T, "version": 1}, content=os.urandom(900)).status_code == 200)
+    check("so does a monthly one", web.put("/journal/items/h-month-2026-11-25", params={**T, "version": 1}, content=os.urandom(900)).status_code == 200)
+    check("a highlight is listed as one", {i["id"]: i["kind"] for i in web.get("/journal/index", params=T).json()["items"]}.get(week_h) == "highlight")
+    check("a highlight past its limit is refused", web.put("/journal/items/h-week-2026-11-15", params={**T, "version": 1}, content=b"x" * (jdb.LIMITS["h"] + 1)).status_code == 413)
+    for bad in ("e-xyz", "e-" + "A" * 32, "x-" + "a" * 32, "m-other", "..%2F..%2Fsecrets", "e-" + "a" * 31,
+                "h-day-2026-11-08", "h-week-26-11-08", "h-week-2026-11-08x", "h-week-2026-11-8"):
         check(f"a made-up name ({bad[:12]}) is refused", web.get(f"/journal/items/{bad}", params=T).status_code == 404 and web.put(f"/journal/items/{bad}", params={**T, "version": 1}, content=b"x").status_code == 404)
     listed = web.get("/journal/index", params=T).json()["items"]
     check("the index lists names, kinds, sizes and versions, never contents", all(set(i) == {"id", "kind", "size", "version", "updated_at", "deleted"} for i in listed) and {i["id"]: i["kind"] for i in listed}[item] == "entry", listed[:2])

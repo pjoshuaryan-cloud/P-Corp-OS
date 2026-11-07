@@ -102,11 +102,27 @@ Authentication, security, and permissions are explicitly owned by Layer 1 (P Cor
   - Anyone with it can read the journal.
 - **Removing it from a device** deletes that device's key and copies, after Face ID or Touch ID. It refuses while any note hasn't reached the server yet, because that device's copy would be the only one.
 
+**Added the same evening: sorting and highlights, still on his devices only.** He asked for notes to be filed by what they say, and for "your thoughts this week" and "what you thought this month" highlights. Asked first, he chose to keep everything on his devices over letting Claude read the journal. Code: `PCorpKit/Sources/PCorpKit/JournalInsight.swift`. Tests: in the same two journal test files.
+- **Who reads it.** Only his devices, and only while the journal is open and unlocked.
+  - The Mac uses Apple's on-device model (FoundationModels). It runs on the Mac and nothing is sent anywhere.
+  - His iPhone 15 can't run that model. It uses Apple's built-in on-device language tools and word lists instead.
+  - Frank, the backend and Anthropic still never see a word of it.
+- **Filing:** done as a note is saved, unless he picks a category himself. On made-up test notes the Mac got about 9 in 10 right, and so did the iPhone. Filing learns from the notes he's already put in each category.
+- **Highlights:** counts, mood, recurring themes and a few of his own sentences, worked out on whichever device he's on.
+  - Mood comes only from feeling words he wrote. Apple's built-in sentiment scoring was tried and rejected: it rated "I feel really anxious" as upbeat.
+  - The Mac also writes a short summary and up to three things worth remembering. It's sealed like a note and synced as an `h-week-YYYY-MM-DD` or `h-month-YYYY-MM-DD` item.
+  - A summary is only shown while it still matches the notes it came from. Deleting a note deletes the summary of its week or month too, so nothing of it is left.
+- **What the server learns that's new:** which weeks and months have a written summary, and how big each one is. Item dates already showed when he wrote.
+- **Reminders:** on the iPhone only, Sunday at 7pm and the 25th at 7pm. They say only that highlights are ready, never anything from the journal. They can be turned off in the journal's menu.
+- **Sync:** an item the server turns away no longer holds up the others queued behind it. It stays queued.
+
 **Accepted, knowingly:**
+- The Mac's summaries can blur a plan into something done ("you invoiced" for "invoice once approved"). His own sentences are shown under every summary.
+- Apple's safety filter blocks words like "shoot" when the model replies in a set structure, so the summary asks for plain text and is split up on the Mac. If the model still declines, the card shows the counted highlights only.
 - Nobody can recover it for him. Losing both devices and the recovery key loses the journal.
 - Anyone with the main token can't read it, but could delete it or overwrite it with junk on the server, and both devices would follow: a deleted note disappears and a junk one won't open. That's a loss, never a leak. Reading it needs one of his unlocked devices or the recovery key.
 - What he types goes through the iPhone's keyboard like anywhere else. A third-party keyboard given "Full Access" could see it. Screenshots aren't blocked.
-- **Not proven yet:** real Face ID and Touch ID, transcription on his phone, the QR scan, a real Mac build, and the live database. The Simulator has no Face ID, so it skips the prompt, and only a Simulator build can do that.
+- **Proven on his devices on 2026-11-07:** Face ID, Touch ID, the QR scan, and recording, transcription and playback on the iPhone. **Not yet:** sorting and highlights on his real devices, and the reminders actually firing. Those were tested in the Simulator and on the Mac's own model, with made-up notes.
 
 ## Open questions
 

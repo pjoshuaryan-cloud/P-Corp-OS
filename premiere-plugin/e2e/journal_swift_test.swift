@@ -69,6 +69,8 @@ final class FakeServer: JournalTransport, @unchecked Sendable {
     var check: String?
     var offline = false
     var gets = 0
+    /// Items this server turns away, the way a real one answers 413 or an older one 404.
+    var refuse: Set<String> = []
     struct Offline: Error {}
     func state() async throws -> String? { if offline { throw Offline() }; return check }
     func setUp(keyCheck: String) async throws -> JournalSetupResult {
@@ -81,9 +83,10 @@ final class FakeServer: JournalTransport, @unchecked Sendable {
         return items.map { JournalIndexItem(id: $0.key, kind: $0.value.kind, size: $0.value.data?.count ?? 0, version: $0.value.version, deleted: $0.value.data == nil) }
     }
     func get(_ id: String) async throws -> Data? { if offline { throw Offline() }; gets += 1; return items[id]?.data }
-    func kind(_ id: String) -> String { id.hasPrefix("a-") ? "audio" : id.hasPrefix("m-") ? "meta" : "entry" }
+    func kind(_ id: String) -> String { id.hasPrefix("a-") ? "audio" : id.hasPrefix("m-") ? "meta" : id.hasPrefix("h-") ? "highlight" : "entry" }
     func put(_ id: String, data: Data, version: Int) async throws -> JournalWriteResult {
         if offline { throw Offline() }
+        if refuse.contains(id) { throw JournalHTTP.Failure.server(413, "too big") }
         let stored = items[id]?.version ?? 0
         guard version > stored else { return .conflict(stored) }
         items[id] = (data, version, kind(id))
@@ -199,6 +202,103 @@ run {
     check("the server still has everything", server.items["e-aaa"]?.data != nil)
 }
 
+// ---- sorting, highlights and reminders (2026-11-07), all worked out on the device
+let cal = Calendar.current
+func local(_ y: Int, _ m: Int, _ d: Int, _ h: Int, _ min: Int = 0) -> Date { cal.date(from: DateComponents(year: y, month: m, day: d, hour: h, minute: min))! }
+let satNight = local(2026, 11, 7, 21)
+let lastWeek = JournalPeriod.latest(.week, before: satNight)
+check("on a Saturday night the latest finished week ended last Sunday at 7pm", lastWeek.end == local(2026, 11, 1, 19) && lastWeek.start == local(2026, 10, 25, 19), "\(lastWeek.start) – \(lastWeek.end)")
+check("and is named for the day it ended", lastWeek.id == "h-week-2026-11-01", lastWeek.id)
+let justAfter = JournalPeriod.latest(.week, before: local(2026, 11, 8, 19, 1))
+check("a minute after Sunday 7pm, that week is the latest", justAfter.id == "h-week-2026-11-08" && justAfter.contains(local(2026, 11, 8, 18, 59)) && !justAfter.contains(local(2026, 11, 8, 19, 0)))
+check("a note at 7pm on Sunday belongs to the next week", JournalPeriod.latest(.week, before: local(2026, 11, 15, 20)).contains(local(2026, 11, 8, 19, 0)))
+let month = JournalPeriod.latest(.month, before: satNight)
+check("the latest finished month ran 25 Sep 7pm to 25 Oct 7pm", month.start == local(2026, 9, 25, 19) && month.end == local(2026, 10, 25, 19) && month.id == "h-month-2026-10-25", month.id)
+check("a week steps back seven days, a month one month", lastWeek.previous().end == lastWeek.start && month.previous().id == "h-month-2026-09-25")
+check("the server accepts the names it makes", ["h-week-2026-11-01", "h-month-2026-10-25"].allSatisfy { $0.range(of: #"^h-(week|month)-\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil })
+
+let weekNotes = [
+    JournalEntry(category: "Feelings", text: "Nervous about the JD shoot. Chest tight all evening.", now: local(2026, 11, 2, 21)),
+    JournalEntry(category: "Notes to self", text: "Charge batteries and send the JD shot list.", now: local(2026, 11, 3, 8)),
+    JournalEntry(category: "Feelings", transcript: "The JD shoot went really well. I'm proud of the team and relieved.", audioID: "a-1", duration: 130, now: local(2026, 11, 6, 22)),
+]
+let digest = JournalDigest.make(weekNotes)
+check("a digest counts notes, voice notes and minutes", digest.notes == 3 && digest.voiceNotes == 1 && digest.voiceMinutes == 2, "\(digest.notes) \(digest.voiceNotes) \(digest.voiceMinutes)")
+check("and notes by category, biggest first", digest.categories.first == JournalDigest.Count(category: "Feelings", notes: 2))
+check("the hardest day is the nervous one, the best the proud one", digest.hardestDay == cal.startOfDay(for: local(2026, 11, 2, 21)) && digest.bestDay == cal.startOfDay(for: local(2026, 11, 6, 22)))
+check("a short name he keeps using is a theme", digest.themes.contains("JD"), "\(digest.themes)")
+check("its quotes are what he felt, not his to-do list", !digest.standouts.contains { $0.contains("Charge batteries") } && !digest.standouts.isEmpty, "\(digest.standouts)")
+var edited = weekNotes
+edited[0].updatedAt = edited[0].updatedAt.addingTimeInterval(60)
+check("editing a note changes what a summary was made from", JournalDigest.basis(of: edited) != digest.basis && JournalDigest.basis(of: weekNotes) == digest.basis)
+check("no mood line from fewer than two feeling words", JournalDigest.make([JournalEntry(category: "Finance", text: "Invoice JD R18,500.")]).mood == nil)
+check("'not happy' counts as heavy", JournalDigest.feeling("I'm not happy with how it went").score == -1)
+check("'proud' and 'relieved' count as upbeat", JournalDigest.feeling("Proud and relieved").score == 1)
+
+let reply = JournalModel.parse("**SUMMARY:**\n\nyou were nervous, then proud.\n\n**REMEMBER:**\n- pitch the mini series\n- Invoice JD\n- none\n- a fourth\n- a fifth")
+check("the Mac's written reply is read: summary capitalised, markdown dropped", reply?.summary == "You were nervous, then proud.", "\(String(describing: reply?.summary))")
+check("up to three things worth remembering, 'none' left out", reply?.remember == ["Pitch the mini series", "Invoice JD", "A fourth"], "\(String(describing: reply?.remember))")
+check("'none' alone means nothing to remember", JournalModel.parse("SUMMARY: A quiet week.\nREMEMBER:\n- none")?.remember == [])
+check("a reply with no summary is no highlight", JournalModel.parse("Sorry, I can't help with that.") == nil)
+
+check("Finance is one of the starting categories", JournalDefaults.categories == ["Notes to self", "Ideas", "Feelings", "Finance"])
+let sortChecks: [(String, String)] = [
+    ("Charge the Sony batteries and pack the lav mics tonight.", "Notes to self"), ("Text Lerato the call sheet before 9.", "Notes to self"),
+    ("Return the borrowed tripod to Sipho on Friday.", "Notes to self"), ("Renew the domain for alphamode.media before April.", "Notes to self"),
+    ("Clean the sensor on the A7S before Monday.", "Notes to self"), ("Send Frank the brief for the next shoot.", "Notes to self"),
+    ("We could run a workshop teaching small businesses to film on their phones.", "Ideas"), ("A documentary following three taxi drivers for a day.", "Ideas"),
+    ("Turn the JD behind-the-scenes into a mini series for TikTok.", "Ideas"), ("Offer clients a same-day social cut as an add-on.", "Ideas"),
+    ("What about a monthly newsletter with our best frames?", "Ideas"), ("Maybe partner with a music producer for original tracks on every reel.", "Ideas"),
+    ("Can't sleep. My mind won't stop racing about everything.", "Feelings"), ("Felt so loved at dinner tonight with the family.", "Feelings"),
+    ("I'm disappointed in how I handled that client call.", "Feelings"), ("Worried about my dad's health.", "Feelings"),
+    ("Nervous but ready for tomorrow.", "Feelings"), ("Really content tonight, nothing to fix.", "Feelings"),
+    ("The Lexar card cost R1,899, put it on the business account.", "Finance"), ("We made R42k this month, best month so far.", "Finance"),
+    ("Medical aid went up again, R600 more a month.", "Finance"), ("Set aside 30 percent of every payment for tax.", "Finance"),
+    ("Paid the SARS bill, R4,350.", "Finance"), ("Need R20k for the new lens, saving R2k a month.", "Finance"),
+]
+run {
+    var right = 0
+    for (text, want) in sortChecks where await JournalSorter.matcher.pick(text, categories: JournalDefaults.categories, examples: [:]) == want { right += 1 }
+    check("the iPhone's built-in sorting files at least 21 of 24 made-up notes right", right >= 21, "\(right)/24")
+    let mine = [JournalEntry(category: "Shoots", text: "Wrapped the JD store opening, 412 clips on the Lexar.")]
+    var examples: [String: [String]] = [:]
+    for e in mine { examples[e.category, default: []].append(e.words) }
+    let custom = await JournalSorter.matcher.pick("Wrapped the Birkenstock shoot, 300 clips on the card.", categories: JournalDefaults.categories + ["Shoots"], examples: examples)
+    check("a category of his own learns from the notes he's filed in it", custom == "Shoots", "\(String(describing: custom))")
+    let empty = await JournalSorter.category(for: "   ", categories: JournalDefaults.categories, history: [])
+    check("a note with no words goes in the first category", empty == "Notes to self")
+}
+
+check("reminders only exist on the iPhone", !JournalReminders.supported)
+
+run {
+    let server = FakeServer()
+    let engine = JournalEngine(folder: folder("refused"), transport: server)
+    let key = JournalCrypto.newKey()
+    let big = JournalEntry.newID(prefix: "e"), small = JournalEntry.newID(prefix: "e")
+    server.refuse = [big]
+    try await engine.save(big, sealed: try JournalCrypto.seal(Data("too big".utf8), id: big, key: key))
+    try await engine.save(small, sealed: try JournalCrypto.seal(Data("fine".utf8), id: small, key: key))
+    var failure: Error?
+    do { _ = try await engine.sync() } catch { failure = error }
+    check("an item the server turns away doesn't hold up the ones behind it", server.items[small] != nil)
+    check("it stays queued, and the sync says so", server.items[big] == nil && (failure as? JournalEngine.SyncFailure) == .refused)
+    let waiting = await engine.pendingCount
+    check("only the refused one is still waiting", waiting == 1, "\(waiting)")
+    server.refuse = []
+    _ = try await engine.sync()
+    let after = await engine.pendingCount
+    check("and it goes once the server takes it", server.items[big] != nil && after == 0)
+    let h = "h-week-2026-11-08"
+    try await engine.save(h, sealed: try JournalCrypto.seal(Data("{}".utf8), id: h, key: key))
+    _ = try await engine.sync()
+    let phone = JournalEngine(folder: folder("refused-phone"), transport: server)
+    _ = try await phone.sync()
+    let highlightIDs = await phone.ids(prefix: "h-")
+    let noteIDs = await phone.entryIDs()
+    check("a highlight syncs to the other device like a note, and isn't listed as one", highlightIDs == [h] && !noteIDs.contains(h))
+}
+
 // ---- the real backend code, on a throwaway server
 if let port = ProcessInfo.processInfo.environment["JOURNAL_TEST_PORT"].flatMap(Int.init) {
     BackendHost.environment = .local
@@ -240,6 +340,12 @@ if let port = ProcessInfo.processInfo.environment["JOURNAL_TEST_PORT"].flatMap(I
         _ = try await mac.sync()
         let macAfter = await mac.entryIDs()
         check("a deletion goes through it too", !macAfter.contains(id))
+        let h = "h-week-2026-11-08"
+        try await mac.save(h, sealed: try JournalCrypto.seal(Data("{\"summary\":\"a week\"}".utf8), id: h, key: realKey))
+        _ = try await mac.sync()
+        _ = try await phone.sync()
+        let got = await phone.sealed(h)
+        check("a sealed highlight goes through the real server code too", got.flatMap { try? JournalCrypto.open($0, id: h, key: realKey) } == Data("{\"summary\":\"a week\"}".utf8))
     }
 } else {
     print("SKIP the real server: JOURNAL_TEST_PORT isn't set")

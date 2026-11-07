@@ -7,7 +7,9 @@ bytes, a size, and when each was saved. Nothing here can decrypt, and
 nothing here is offered to Frank as a tool or as context: keep it that way.
 
 One table of sealed items, named by the device that made them: "e-..." a
-note, "a-..." its recording, "m-categories" his list of categories. Each
+note, "a-..." its recording, "m-categories" his list of categories, and
+"h-week-YYYY-MM-DD" / "h-month-YYYY-MM-DD" a highlight his Mac wrote of a
+week or month (on the Mac itself, with Apple's on-device model). Each
 carries a version the devices count up, so the newer copy wins and a
 deletion is remembered as a tombstone for the other device to find. One
 more row holds a check value derived from the key, so a second device can
@@ -28,11 +30,11 @@ import aiosqlite
 
 DB_PATH = Path(__file__).parent.parent / "data" / "journal.db"
 
-ITEM_ID = re.compile(r"^(?:[ea]-[0-9a-f]{32}|m-categories)$")
+ITEM_ID = re.compile(r"^(?:[ea]-[0-9a-f]{32}|m-categories|h-(?:week|month)-\d{4}-\d{2}-\d{2})$")
 KEY_CHECK = re.compile(r"^[0-9a-f]{64}$")
-KINDS = {"e": "entry", "a": "audio", "m": "meta"}
+KINDS = {"e": "entry", "a": "audio", "m": "meta", "h": "highlight"}
 # Biggest sealed item of each kind. A voice note of about half an hour fits; a note's text is far smaller.
-LIMITS = {"e": 512 * 1024, "a": 30 * 1024 * 1024, "m": 64 * 1024}
+LIMITS = {"e": 512 * 1024, "a": 30 * 1024 * 1024, "m": 64 * 1024, "h": 64 * 1024}
 
 
 def now_iso() -> str:
