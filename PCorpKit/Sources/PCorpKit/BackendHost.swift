@@ -26,7 +26,7 @@ public enum PCorpEnvironment {
     /// scheme's default").
     var port: Int? {
         switch self {
-        case .local: return 8731
+        case .local: return BackendHost.localPort
         case .staging, .production: return nil
         }
     }
@@ -55,6 +55,8 @@ public enum PCorpEnvironment {
 /// threat model.
 public enum BackendHost {
     public static var localHost: String = "127.0.0.1"
+    /// The real backend's port. Only a test points this elsewhere, at a throwaway server, so it never touches the real one.
+    public static var localPort: Int = 8731
 
     /// Which environment every client currently targets. Defaults to
     /// `.local` on both platforms -- unchanged behavior from before this

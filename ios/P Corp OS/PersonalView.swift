@@ -40,12 +40,24 @@ struct PersonalView: View {
     @State private var newPersonPhone = ""
     @State private var newPersonCompany = ""
 
+    /// The private journal (2026-11-07) opens over the rest of Personal, and locks again when he leaves it.
+    @State private var showingJournal = false
+
     var body: some View {
+        if showingJournal {
+            JournalView(onClose: { showingJournal = false })
+        } else {
+            personalContent
+        }
+    }
+
+    private var personalContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().overlay(theme.divider)
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    journalCard
                     if client.isLoading && client.dashboard == nil {
                         SkeletonList()
                     } else if let error = client.errorMessage {
@@ -111,6 +123,25 @@ struct PersonalView: View {
             await client.fetch()
             await peopleClient.fetch()
         }
+    }
+
+    private var journalCard: some View {
+        Button { showingJournal = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "lock.fill").font(.system(size: 15)).foregroundStyle(theme.textSecondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Journal").font(PCorpFont.body(14, weight: .semibold)).foregroundStyle(theme.textPrimary)
+                    Text("Voice notes, ideas and feelings. Private, and opens with Face ID.").font(PCorpFont.body(12)).foregroundStyle(theme.textSecondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(theme.textTertiary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .cardSurface(radius: Radius.md)
+        }
+        .buttonStyle(.plain)
     }
 
     private var header: some View {

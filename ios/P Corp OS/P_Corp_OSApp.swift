@@ -35,6 +35,17 @@ struct P_Corp_OSApp: App {
             KeychainTokenStore.load()
         }
 
+        // A Simulator test run can point at a throwaway server on this Mac with a made-up token, never the real backend or Render. Compiled out of every build for a real phone.
+        #if targetEnvironment(simulator)
+        let testRun = ProcessInfo.processInfo.environment
+        if let port = testRun["PCORP_TEST_PORT"].flatMap(Int.init), let token = testRun["PCORP_TEST_TOKEN"] {
+            BackendHost.environment = .local
+            BackendHost.localHost = "127.0.0.1"
+            BackendHost.localPort = port
+            AuthToken.provider = { token }
+        }
+        #endif
+
         // One-time cleanup: the first pass stored the token in
         // UserDefaults (plaintext plist) before this migration. Leaving
         // that copy behind would defeat the point of moving to Keychain,

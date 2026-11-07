@@ -77,6 +77,37 @@ Authentication, security, and permissions are explicitly owned by Layer 1 (P Cor
 
 **Changed the same day, knowingly:** the shared database used to hold only a link's hash, and now also holds the full link in `meta`, because a list has to be re-sendable from a phone with no Mac. Someone able to read that database could already read every shot list and tick in it. All this adds is that they could also tick. The phone-login key and setup codes are still hash-only.
 
+## Decided (2026-11-07)
+
+**The private journal in Personal: voice notes and writing that only he can read.** His choices, asked before building: encrypted on both his iPhone and his Mac, Frank never sees it, and Face ID or Touch ID every time it opens. Code: `PCorpKit/Sources/PCorpKit/Journal*.swift`, `backend/app/journal_db.py`, the `/journal/` routes in `main.py`. Tests: `premiere-plugin/e2e/journal_test.py` (the server's rules, on SQLite and on a throwaway Postgres) and `journal_swift_test.swift` (encryption, the recovery key, two devices syncing, through the real routes on a throwaway server).
+
+- **Encrypted on the device, before anything is saved.** A 256-bit key, made on the device that starts the journal, seals each note, recording and the category list with ChaChaPoly. Each item is sealed with its own name, so one can't be swapped for another or changed without it failing to open. The key never leaves his two devices. The server, the shared database and its backups hold only sealed bytes.
+- **What the server can see:** how many items there are, which are written notes and which are recordings, their sizes, when each changed and which were deleted. A recording's size gives its rough length. It can't see words, titles, categories, transcripts or sound. It also keeps a check value of the key, a keyed hash, so a second device can't start a second journal and a wrong recovery key is caught. The key can't be worked out from it.
+- **Frank never sees it.** It isn't a tool, it isn't in his context, memory or search, and nothing in the backend except the `/journal/` routes touches it. Those routes can't read it anyway, because the backend never has the key, so a bug or a prompt-injected Frank can't either. The routes need the main token. The phone login and crew links don't work there.
+- **Where the key is kept:**
+  - On the iPhone, the Keychain item itself demands Face ID or the passcode before it can be read. It's not in iCloud Keychain, and it can't be moved to another phone, even through a backup.
+  - On the Mac, the app has no entitlement for that kind of item, so the key is in his login Keychain. The app asks for Touch ID or his password before reading it. That check is the app's own, not enforced by the Keychain, so on the Mac the real protection is his login password.
+- **On each device:**
+  - The device keeps only sealed copies. On the iPhone they're also unreadable while the phone is locked.
+  - Notes are decrypted into memory only while the journal is open. Locking forgets the key and every decrypted note, and recordings play from memory.
+  - It locks when he leaves it, when the iPhone app goes to the background or the Mac app loses focus, and after 5 minutes untouched. The iPhone's app switcher shows a lock, not the page.
+  - Network calls keep no cache on disk, and the server marks every sealed item it sends `no-store`.
+- **Voice notes:**
+  - What a note said is worked out on the device only. If the device can't do that, the note keeps its recording and no words. It's never sent anywhere to transcribe.
+  - While recording, the sound goes to a temporary file in readable form until it's saved or thrown away, then it's deleted straight away. On the iPhone that file is unreadable while the phone is locked, and locking ends the recording. Leftovers from a crash are deleted the next time the journal opens.
+  - Recordings stop at 30 minutes, and the server takes at most 30 MB a recording and 512 KB a note.
+- **The recovery key** is the key plus a 2-byte checksum, as 11 groups of five letters that avoid I, L, O and U. It opens the journal on a new device, and it's the only way back if he loses both devices.
+  - It's shown when he starts the journal, and keeps coming back until he types its last group.
+  - After that it's only shown after Face ID or Touch ID. On the Mac it's also shown as a QR code for the iPhone's camera.
+  - Anyone with it can read the journal.
+- **Removing it from a device** deletes that device's key and copies, after Face ID or Touch ID. It refuses while any note hasn't reached the server yet, because that device's copy would be the only one.
+
+**Accepted, knowingly:**
+- Nobody can recover it for him. Losing both devices and the recovery key loses the journal.
+- Anyone with the main token can't read it, but could delete it or overwrite it with junk on the server, and both devices would follow: a deleted note disappears and a junk one won't open. That's a loss, never a leak. Reading it needs one of his unlocked devices or the recovery key.
+- What he types goes through the iPhone's keyboard like anywhere else. A third-party keyboard given "Full Access" could see it. Screenshots aren't blocked.
+- **Not proven yet:** real Face ID and Touch ID, transcription on his phone, the QR scan, a real Mac build, and the live database. The Simulator has no Face ID, so it skips the prompt, and only a Simulator build can do that.
+
 ## Open questions
 
 - Credential storage and secrets management across desktop + mobile + any cloud sync backend, once those exist.

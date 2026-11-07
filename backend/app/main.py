@@ -4926,6 +4926,92 @@ async def post_job_file_visual_analysis_get(job_id: int, file_id: int, request: 
     return row
 
 
+# ---- the private journal (2026-11-07) -------------------------------------------------------------------------------------------------------
+# Everything here arrives already encrypted by his iPhone or Mac, with a key only they hold (app/journal_db.py). These routes store and hand back
+# sealed bytes and never see a note, a recording or a category. Not a Frank tool, not in Frank's context, not in search: keep it that way.
+
+class JournalSetupRequest(BaseModel):
+    key_check: str
+
+
+def _journal_item(item_id: str) -> str:
+    from app import journal_db
+    if not journal_db.ITEM_ID.match(item_id or ""):
+        raise HTTPException(status_code=404, detail="No such journal item.")
+    return item_id
+
+
+@app.get("/journal/state")
+async def journal_state(_: None = Depends(verify_token)) -> dict:
+    """Whether a journal exists yet, and its key's check value, so a device can tell its key is the right one."""
+    from app import journal_db
+    async with _pooled_postgres_conn() as conn:
+        check = await journal_db.key_check(conn)
+    return {"set_up": check is not None, "key_check": check}
+
+
+@app.post("/journal/setup")
+async def journal_setup(body: JournalSetupRequest, _: None = Depends(verify_token)) -> dict:
+    """The first device records its key's check value. Another device with a different key is refused, so there's only ever one journal and one key."""
+    from app import journal_db
+    if not journal_db.KEY_CHECK.match(body.key_check):
+        raise HTTPException(status_code=422, detail="That isn't a key check.")
+    async with _pooled_postgres_conn() as conn:
+        stored = await journal_db.set_key_check(body.key_check, conn)
+    if stored != body.key_check:
+        raise HTTPException(status_code=409, detail="You already have a journal, with a different key. Enter its recovery key to open it here.")
+    return {"set_up": True}
+
+
+@app.get("/journal/index")
+async def journal_index(_: None = Depends(verify_token)) -> dict:
+    from app import journal_db
+    async with _pooled_postgres_conn() as conn:
+        return {"items": await journal_db.index(conn)}
+
+
+@app.get("/journal/items/{item_id}")
+async def journal_get(item_id: str, _: None = Depends(verify_token)) -> Response:
+    from app import journal_db
+    async with _pooled_postgres_conn() as conn:
+        found = await journal_db.get_item(_journal_item(item_id), conn)
+    if found is None:
+        raise HTTPException(status_code=404, detail="No such journal item.")
+    data, version = found
+    return Response(content=data, media_type="application/octet-stream", headers={"X-Journal-Version": str(version), "Cache-Control": "no-store"})
+
+
+@app.put("/journal/items/{item_id}")
+async def journal_put(item_id: str, request: Request, version: int = Query(..., ge=1), _: None = Depends(verify_token)) -> JSONResponse:
+    """Saves a sealed item if its version is newer than the one stored. An older one gets a 409 with the version to beat."""
+    from app import journal_db
+    _journal_item(item_id)
+    limit = journal_db.limit_of(item_id)
+    data = bytearray()
+    async for chunk in request.stream():
+        data += chunk
+        if len(data) > limit:
+            raise HTTPException(status_code=413, detail="That's too big to save.")
+    if not data:
+        raise HTTPException(status_code=422, detail="Nothing to save.")
+    async with _pooled_postgres_conn() as conn:
+        saved, stored = await journal_db.put_item(item_id, bytes(data), version, conn)
+    if not saved:
+        return JSONResponse(status_code=409, content={"detail": "A newer copy is already saved.", "version": stored})
+    return JSONResponse({"version": stored})
+
+
+@app.delete("/journal/items/{item_id}")
+async def journal_delete(item_id: str, version: int = Query(..., ge=1), _: None = Depends(verify_token)) -> JSONResponse:
+    from app import journal_db
+    _journal_item(item_id)
+    async with _pooled_postgres_conn() as conn:
+        deleted, stored = await journal_db.delete_item(item_id, version, conn)
+    if not deleted:
+        return JSONResponse(status_code=409, content={"detail": "A newer copy is already saved.", "version": stored})
+    return JSONResponse({"version": stored})
+
+
 @app.get("/personal/dashboard")
 async def personal_dashboard(request: Request, _: None = Depends(verify_token)) -> dict:
     # Backs the desktop "Personal" section -- goals/habits only, see
