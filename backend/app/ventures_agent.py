@@ -37,7 +37,7 @@ from app.web_tools import WEB_FETCH_TOOL, WEB_SEARCH_TOOL
 
 VENTURES_AGENT_SYSTEM_PROMPT = """You are the Venture Research Agent inside P Corp OS's VENTURES division -- a specialist that looks for real, concrete small-business/digital-product opportunities Josh could realistically start, not a generic "make money online" idea generator.
 
-Josh's own context (skills, existing assets, current systems) is given to you below with each request -- ground your ideas in what he actually already has (existing workflows, templates, client relationships, technical skills), not generic advice that could apply to anyone.
+Josh's own context (skills, existing assets, current systems) and what he's looking for are given to you below with each request. Use his skills and assets as a head start where they fit, but follow his brief on what kind of venture to look for -- and keep every idea specific to his real situation, not generic advice that could apply to anyone.
 
 HARD BOUNDARIES, non-negotiable:
 - Never propose a scam, misleading marketing angle, or anything unethical or illegal, even if it would plausibly make money. If you're unsure whether something crosses that line, don't propose it.
@@ -139,6 +139,33 @@ def describe_existing(opportunities: list[dict], ventures: list[dict]) -> list[d
 def _short(text: str, n: int) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+# What Josh asked the Radar for (2026-11-11): ventures that mostly run on their own, are cheap and quick to start, and can be in any
+# field. Every idea it hunts for is held to this, and ideas its own ratings say don't fit are dropped (fits_brief), not shown.
+SCAN_MAX_SETUP_COST = 5000  # rand
+
+SCAN_BRIEF = f"""What Josh wants from this scan (his own words: "ventures that can run automatically, easy to start, and don't only have to be related to video production"):
+- MOSTLY AUTOMATIC once set up: automation_potential "high" or "medium", and owner_time_required "low" (a few hours a week at most after setup). No business that needs him or a crew to show up somewhere.
+- EASY TO START: setup_cost under about R{SCAN_MAX_SETUP_COST:,} (give setup_cost in rand), live within a few weeks, no staff, and no stock he has to buy and store himself.
+- ANY FIELD. His skills and assets (below) are a head start where they fit, NOT a limit: most of his list so far is video-production services, so look well beyond that.
+- He's in South Africa: think about how he'd actually get paid (e.g. PayFast, Yoco, Paystack, Gumroad, Etsy, app stores) and whether it can sell to buyers anywhere.
+- Be honest about what still needs him: nothing is fully passive. Say what's left (support, marketing, keeping it up to date) in the description or risks.
+- Nothing low-quality or exploitative dressed up as automatic: no dropshipping of junk, MLM, ad or traffic arbitrage, mass-produced AI content farms, fake reviews, or anything that breaks a platform's rules.
+
+"""
+
+
+def fits_brief(opportunity: dict) -> tuple[bool, str]:
+    """Whether an idea fits what Josh asked for, by the scan's own ratings. The reason when it doesn't."""
+    if opportunity.get("automation_potential") == "low":
+        return False, "it would mostly need doing by hand"
+    if opportunity.get("owner_time_required") == "high":
+        return False, "it would need a lot of your time"
+    cost = opportunity.get("setup_cost")
+    if isinstance(cost, (int, float)) and cost > SCAN_MAX_SETUP_COST:
+        return False, f"it would cost about R{cost:,.0f} to start"
+    return True, ""
 
 
 def existing_ideas_block(existing: list[dict]) -> str:
@@ -254,8 +281,9 @@ async def scan_for_opportunities(
     prompt = (
         f"Here's Josh's own context (skills, existing assets, current systems): {josh_context}\n\n"
         + (existing_ideas_block(existing) if existing else "")
-        + f"Look for 1-3 real, concrete business opportunities he could realistically start, grounded in what "
-        f"he already has -- not generic ideas. Search for real current market signal on anything you're not "
+        + SCAN_BRIEF
+        + f"Look for 1-3 real, concrete business opportunities that fit that brief and that he could realistically start -- "
+        f"specific, not generic. Search for real current market signal on anything you're not "
         f"already confident about rather than relying on general knowledge alone.\n\n"
         f"Every ```opportunity block must contain ALL nine fields: name, description, revenue_model, setup_cost, "
         f"automation_potential, owner_time_required, confidence, risks, recommended_next_step -- including confidence "
@@ -274,6 +302,12 @@ async def scan_for_opportunities(
     reply_text = "".join(block.text for block in response.content if block.type == "text")
     opportunities = extract_opportunities(reply_text)
     unreadable = count_opportunity_blocks(reply_text) - len(opportunities)  # written by the model but not usable
+    off_brief = []
+    for opp in list(opportunities):
+        ok, why = fits_brief(opp)
+        if not ok:
+            off_brief.append({"name": opp.get("name", "?"), "reason": why})
+            opportunities.remove(opp)
     defaulted = sum(1 for o in opportunities if o.get("confidence_defaulted"))
     opportunities, skipped, check_failed = await judge_repeats(client, opportunities, existing or [])
     attempts, fetches = _count_server_tools(response.content)
@@ -291,12 +325,14 @@ async def scan_for_opportunities(
         metrics.update({"seconds": round(seconds, 1), "searches": searches, "page_reads": fetches, "input_tokens": tokens_in,
                         "output_tokens": tokens_out, "stop_reason": stop, "opportunities": len(opportunities), "effort": SCAN_EFFORT,
                         "thinking_blocks": thinking_blocks, "visible_tokens_est": visible_tokens, "hidden_tokens_est": hidden_tokens,
-                        "unreadable_blocks": unreadable, "confidence_defaulted": defaulted, "search_limit": SCAN_MAX_SEARCHES, "searches_refused": refused, "existing_ideas": len(existing or []), "repeats_skipped": len(skipped), "repeat_details": skipped, "repeat_check_failed": check_failed})
+                        "unreadable_blocks": unreadable, "confidence_defaulted": defaulted, "search_limit": SCAN_MAX_SEARCHES, "searches_refused": refused, "existing_ideas": len(existing or []), "repeats_skipped": len(skipped), "repeat_details": skipped, "repeat_check_failed": check_failed,
+                        "off_brief": off_brief})
     print(f"[venture_scan] {source}: {seconds:.1f} s | {searches} searches{f' (limit of {SCAN_MAX_SEARCHES} reached, {refused} more refused)' if refused else ''}, {fetches} page reads | in {tokens_in:,} / out {tokens_out:,} tokens "
           f"(~{visible_tokens:,} visible, ~{hidden_tokens:,} hidden; {thinking_blocks} thinking block{'' if thinking_blocks == 1 else 's'}) | effort {SCAN_EFFORT} "
           f"| {len(opportunities)} opportunit{'y' if len(opportunities) == 1 else 'ies'}"
           + (f" | {unreadable} idea block{'' if unreadable == 1 else 's'} UNREADABLE and skipped" if unreadable else "")
           + (f" | {defaulted} without a confidence rating (saved as low)" if defaulted else "")
+          + (f" | {len(off_brief)} off brief and dropped" if off_brief else "")
           + f" | stop: {stop}"
           + (f" | vs {len(existing)} existing ideas: {len(skipped)} repeat{'' if len(skipped) == 1 else 's'} skipped" + (" (repeat check FAILED, kept all)" if check_failed else "") if existing else ""))
     return reply_text, opportunities

@@ -823,11 +823,21 @@ VENTURES_JOSH_CONTEXT_FRAMING = (
 )
 
 
-async def build_ventures_josh_context(postgres_conn=None) -> str:
+# The Radar's own framing (2026-11-11): his business data is background on his skills and assets, not the lane to stay in. Every other
+# Ventures agent still uses VENTURES_JOSH_CONTEXT_FRAMING, because judging a specific venture should lean on his real numbers.
+VENTURES_SCAN_CONTEXT_FRAMING = (
+    "Josh is a filmmaker and entrepreneur in South Africa, co-founder of Alpha Mode Media (a creative/content production "
+    "business) and a freelance creative (his Joshx work). He's technically comfortable (he builds his own software and a "
+    "systematic trading setup) and has production workflows, editing templates and client processes. Below is his real "
+    "business data: use it to understand his skills, assets and audience, NOT as the only area to look in."
+)
+
+
+async def build_ventures_josh_context(postgres_conn=None, *, for_scan: bool = False) -> str:
     """Reuses the exact same block-builders already folded into Frank's
     own system prompt (build_alpha_mode_block/build_joshx_block) -- no
     new summarize logic, just composing already-proven real data."""
-    parts = [VENTURES_JOSH_CONTEXT_FRAMING]
+    parts = [VENTURES_SCAN_CONTEXT_FRAMING if for_scan else VENTURES_JOSH_CONTEXT_FRAMING]
     alpha_mode_block = await build_alpha_mode_block(postgres_conn)
     if alpha_mode_block:
         parts.append(alpha_mode_block)
@@ -849,7 +859,7 @@ def _venture_scan_work(source: str, *, record_audit: bool):
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY not set.")
         async with _pooled_postgres_conn() as postgres_conn:
-            josh_context = await build_ventures_josh_context(postgres_conn)
+            josh_context = await build_ventures_josh_context(postgres_conn, for_scan=True)
             existing = describe_existing(await list_opportunities(postgres_conn=postgres_conn), await list_ventures(postgres_conn))
         client = AsyncAnthropic(api_key=api_key)
         reply, opportunities = await scan_for_opportunities(client, josh_context, metrics=run["metrics"], source=source, existing=existing)
@@ -867,6 +877,7 @@ def _venture_scan_work(source: str, *, record_audit: bool):
         run["reply"], run["created_ids"] = reply, created_ids
         skipped = run["metrics"].get("repeat_details") or []
         unreadable = run["metrics"].get("unreadable_blocks") or 0
+        off_brief = run["metrics"].get("off_brief") or []
         if skipped:
             names = "; ".join(f"\"{s['name']}\" (same as \"{s['repeat_of']}\", {s['repeat_of_status']})" for s in skipped)
             if created_ids:
@@ -881,6 +892,14 @@ def _venture_scan_work(source: str, *, record_audit: bool):
             else:
                 n = len(created_ids)
                 run["message"] = (f"Found {n} new opportunit{'y' if n == 1 else 'ies'}. " if created_ids else "Nothing saved. ") + note
+        if off_brief:  # ideas it rated as not automatic, too time-hungry or too costly to start: say which, never silently
+            names = "; ".join(f"\"{o['name']}\" ({o['reason']})" for o in off_brief)
+            note = f"Left out {len(off_brief)} that didn't fit your brief: {names}."
+            if run["message"]:
+                run["message"] += " " + note
+            else:
+                n = len(created_ids)
+                run["message"] = (f"Found {n} new opportunit{'y' if n == 1 else 'ies'}. " if created_ids else "Nothing new that fits your brief this time. ") + note
     return work
 
 

@@ -24,6 +24,8 @@ REAL_DATA, REAL_DB = sl.DATA, db.DB_PATH
 STATIC = ROOT / "backend" / "app" / "static"
 STARTER = "t0000000000a1"
 today = date.today().isoformat()
+# A shoot a few days ahead, whatever today is: a fixed date broke this test once it had passed (2026-11-11).
+soon = (date.today() + timedelta(days=5)).isoformat()
 PAST = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
@@ -242,7 +244,7 @@ def main_tests():
         check("a list needs a name", web.post("/set/manage/lists", headers=K, json={"name": "  ", "shoot_date": today}).status_code == 400)
         check("a list needs a real date", web.post("/set/manage/lists", headers=K, json={"name": "A", "shoot_date": "monday"}).status_code == 400)
         check("a template has to exist", web.post("/set/manage/lists", headers=K, json={"name": "A", "shoot_date": today, "template": "t" + "f" * 12}).status_code == 400)
-        jd = web.post("/set/manage/lists", headers=K, json={"name": "JD Monday", "client": "JD Sports", "shoot_date": "2026-11-09", "template": STARTER}).json()
+        jd = web.post("/set/manage/lists", headers=K, json={"name": "JD Monday", "client": "JD Sports", "shoot_date": soon, "template": STARTER}).json()
         check("a list made from the template has all its shots, ready to send", jd["total"] == 20 and jd["live"] and jd["token"] and jd["source"] == "phone", jd)
         check("it counts its must-haves", jd["must_left"] == 11, jd["must_left"])
         check("its shots are in the form phones read", {"id", "moment", "time", "description", "size", "size_label", "priority", "priority_label", "owner"} <= set(jd["items"][0]) and jd["items"][0]["size_label"] == "Wide", jd["items"][0])
