@@ -460,6 +460,17 @@ async def verify_token(token: str, request: Request) -> None:
     if token == AUTH_TOKEN:
         return
     postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    if postgres_conn is None and DATA_BACKEND == "postgres":
+        # Real bug found live (2026-11-11): slow routes (Scan Now, Run Validation, every Trade Intelligence analysis...) are
+        # deliberately given no connection by postgres_pool_scope, so a device token (his iPhone's) was checked against the
+        # empty local SQLite file and refused with "invalid or missing token". The Mac never saw it: the main token needs no
+        # database. Borrow a connection for just this lookup and give it straight back, before the slow work starts.
+        pool = getattr(app.state, "postgres_pool", None)
+        if pool is not None:
+            async with pool.connection() as conn:
+                if await verify_device_session(token, conn):
+                    return
+            raise HTTPException(status_code=403, detail="invalid or missing token")
     if await verify_device_session(token, postgres_conn):
         return
     raise HTTPException(status_code=403, detail="invalid or missing token")
