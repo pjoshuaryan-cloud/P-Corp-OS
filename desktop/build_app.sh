@@ -197,3 +197,20 @@ fi
 
 echo "Done: $APP_BUNDLE"
 echo "Backend shim: Contents/MacOS/PCorpOSBackend, registerable via Settings → Launch at Login (SMAppService, stage 3)"
+
+# Restart the backend (2026-11-12). It runs from the Python copied into this bundle, so rebuilding swaps its files out from under it:
+# a check during the rebuild failed with "No such file or directory" and the Situation Room showed Supabase disconnected. Restarting
+# here means it never keeps running on a half-replaced copy. A POST copy in progress is interrupted too, and Retry resumes it from the
+# file it was on. PCORP_NO_BACKEND_RESTART=1 skips this; nothing happens if the backend isn't running as a LaunchAgent.
+if [ "${PCORP_NO_BACKEND_RESTART:-0}" != "1" ] && launchctl print "gui/$(id -u)/${BACKEND_LABEL}" >/dev/null 2>&1; then
+    echo "Restarting the backend so it runs on the new copy..."
+    launchctl kickstart -k "gui/$(id -u)/${BACKEND_LABEL}"
+    for _ in $(seq 1 45); do
+        if lsof -nP -iTCP:8731 -sTCP:LISTEN >/dev/null 2>&1; then
+            echo "Backend is back up."
+            break
+        fi
+        sleep 2
+    done
+    lsof -nP -iTCP:8731 -sTCP:LISTEN >/dev/null 2>&1 || echo "WARNING: the backend hasn't come back after 90 s -- check /tmp/pcorpos-backend.log."
+fi
