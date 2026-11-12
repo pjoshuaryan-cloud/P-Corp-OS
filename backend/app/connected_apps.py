@@ -124,6 +124,13 @@ def get_cached_connected_apps_status() -> list[dict] | None:
     return _cached_status
 
 
+def remember_connected_apps_status(status: list[dict]) -> None:
+    """Keeps a live check's result (Settings, 2026-11-12) for the Situation Room too. Before, a failed 15-minute check stayed on the
+    banner for up to 15 minutes even after Settings' own live check showed everything connected again."""
+    global _cached_status
+    _cached_status = status
+
+
 async def summarize(postgres_conn=None) -> str:
     """Plain-text snapshot, same style as trading_division.py's own
     summarize() -- for a Frank-facing tool, not the /connected-apps REST

@@ -1453,7 +1453,10 @@ async def connected_apps_endpoint(request: Request, _: None = Depends(verify_tok
     # endpoint has had zero Swift call sites since it shipped 2026-08-27);
     # left in place since nothing else calls it either.
     postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
-    return await compute_connected_apps_status(postgres_conn)
+    status = await compute_connected_apps_status(postgres_conn)
+    from app.connected_apps import remember_connected_apps_status
+    remember_connected_apps_status(status)   # the Situation Room's banner then shows this latest real check, not one up to 15 min old
+    return status
 
 
 @app.get("/memory")
