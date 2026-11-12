@@ -189,11 +189,75 @@ struct PostView: View {
     @State private var draftDeliverableFormat = postDeliverableFormatOptions[0]
     @State private var draftResolution = postResolutionOptions[0]
     @State private var draftFrameRate = postFrameRateOptions[2]  // defaults to "25", easily changed per shoot
+    // What's on the chosen source, by recording day (2026-11-12): he ticks the shoot he's editing and sees what will and won't be copied.
+    @State private var sourcePreview: SourcePreview?
+    @State private var sourcePreviewError: String?
+    @State private var loadingSourcePreview = false
+    @State private var chosenDays: Set<String> = []
 
     /// Why Create Job is greyed out (the first thing still missing), or nil when the form is complete. The rule lives in PCorpKit so it can be tested.
     private var createJobBlocker: String? {
         PostFormRules.createJobBlocker(shootName: draftShootName, profile: draftProfile, clientName: draftClientName, sourcePath: draftSourcePath, destinationPath: draftDestinationPath)
             ?? (sameDriveAllowed ? nil : sameDriveWarning)
+            ?? (sourcePreview != nil && chosenDays.isEmpty ? "Tick at least one day to copy." : nil)
+    }
+
+    /// The days to copy, or nil when every day on the source is ticked (the job then copies everything, as before).
+    private var recordedOnChoice: [String]? {
+        guard let preview = sourcePreview, !preview.days.isEmpty else { return nil }
+        return chosenDays.count == preview.days.count ? nil : preview.days.map(\.day).filter { chosenDays.contains($0) }
+    }
+
+    private var sourceKey: String { draftSourceFolderPath ?? draftSourcePath ?? "" }
+
+    private func loadSourcePreview() async {
+        sourcePreview = nil
+        sourcePreviewError = nil
+        chosenDays = []
+        guard !sourceKey.isEmpty else { return }
+        loadingSourcePreview = true
+        let (preview, error) = await client.previewSource(path: sourceKey)
+        loadingSourcePreview = false
+        sourcePreview = preview
+        sourcePreviewError = error
+        chosenDays = Set(preview?.days.map(\.day) ?? [])
+    }
+
+    /// Every recording day on the source with a tick, and in words what will and won't be copied, before anything is.
+    @ViewBuilder
+    private var sourceDaysSection: some View {
+        if loadingSourcePreview {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Reading what's on it…").font(PCorpFont.body(11)).foregroundStyle(theme.textSecondary)
+            }
+        } else if let error = sourcePreviewError {
+            Text(error).font(PCorpFont.body(10.5)).foregroundStyle(theme.statusHot)
+        } else if let preview = sourcePreview, !preview.days.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("RECORDED ON").font(PCorpFont.label(9.5)).foregroundStyle(theme.textTertiary)
+                ForEach(preview.days) { day in
+                    Toggle(isOn: Binding(get: { chosenDays.contains(day.day) }, set: { on in if on { chosenDays.insert(day.day) } else { chosenDays.remove(day.day) } })) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("\(day.label) — \(SourceSelection.describe([day]))").font(PCorpFont.body(11.5)).foregroundStyle(theme.textPrimary)
+                            if let first = day.firstClip, let last = day.lastClip {
+                                Text(first == last ? first : "\(first) to \(last)").font(PCorpFont.mono(10)).foregroundStyle(theme.textTertiary)
+                            }
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                }
+                let chosen = preview.days.filter { chosenDays.contains($0.day) }
+                let left = preview.days.filter { !chosenDays.contains($0.day) }
+                Text("Will copy: " + SourceSelection.describe(chosen)).font(PCorpFont.body(11, weight: .semibold)).foregroundStyle(theme.textPrimary)
+                if !left.isEmpty {
+                    Text("Leaving out: " + SourceSelection.describe(left) + " (" + left.map(\.label).joined(separator: ", ") + ")")
+                        .font(PCorpFont.body(10.5)).foregroundStyle(theme.textSecondary)
+                }
+            }
+            .padding(10)
+            .cardSurface(radius: 8)
+        }
     }
     private var canCreateJob: Bool { createJobBlocker == nil }
     private var sameDriveWarning: String? {
@@ -226,6 +290,7 @@ struct PostView: View {
             volumePicker("Source drive", selection: $draftSourcePath)
             if let volumePath = draftSourcePath {
                 sourceFolderRow(volumePath: volumePath)
+                sourceDaysSection
             }
             volumePicker("Destination drive", selection: $draftDestinationPath, showFreeSpace: true)
             if sameDriveWarning != nil && draftSourceFolderPath != nil {
@@ -259,6 +324,7 @@ struct PostView: View {
         .padding(12)
         .cardSurface(radius: 10)
         .onChange(of: draftSourcePath) { _, _ in draftSourceFolderPath = nil; draftAllowSameDrive = false }
+        .task(id: sourceKey) { await loadSourcePreview() }
         .onChange(of: draftDestinationPath) { _, _ in draftAllowSameDrive = false }
     }
 
@@ -353,7 +419,8 @@ struct PostView: View {
             sourceVolumeName: client.sourceVolumes.first(where: { $0.path == sourcePath })?.name,
             sourceVolumeUuid: client.sourceVolumes.first(where: { $0.path == sourcePath })?.uuid,
             deliverableFormat: draftDeliverableFormat, resolution: draftResolution, frameRate: draftFrameRate,
-            allowSameDrive: sameDriveAllowed
+            allowSameDrive: sameDriveAllowed,
+            recordedOn: recordedOnChoice
         )
         if let jobId = await client.createJob(draft) {
             toastCenter.show("POST job created", style: .success)

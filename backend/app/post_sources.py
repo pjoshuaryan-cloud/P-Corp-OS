@@ -119,3 +119,61 @@ def scan_source_tree(source_path: str) -> tuple[int, int, list[tuple[str, str, i
             total_files += 1
             total_bytes += size
     return total_files, total_bytes, files
+
+
+# ---- what's on a card, by the day it was recorded (2026-11-12) ---------------------------------------------------------------------
+# A card often still holds older shoots. Josh asked to copy only the shoot he's editing and to KNOW before anything copies what will
+# and won't come across. A file's day is its modification date in this Mac's time zone: on a camera card that's when the clip or
+# photo was recorded. Card bookkeeping files (MEDIAPRO.XML and the like) carry whatever day the card last wrote them.
+
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mxf", ".mts", ".m2ts", ".avi", ".insv", ".braw", ".r3d", ".crm", ".mkv"}
+PHOTO_EXTENSIONS = {".arw", ".cr2", ".cr3", ".nef", ".raf", ".dng", ".orf", ".rw2", ".jpg", ".jpeg", ".heic", ".heif", ".png", ".tif", ".tiff"}
+
+
+def file_kind(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    if ext in VIDEO_EXTENSIONS:
+        return "clip"
+    # A camera's own thumbnail of each clip (Sony THMBNL/C0001T01.JPG) travels with the clips but isn't a photo he took.
+    if ext in PHOTO_EXTENSIONS and "THMBNL" not in path.upper().split(os.sep) and "/THMBNL/" not in path.upper():
+        return "photo"
+    return "other"
+
+
+def recording_day(absolute_path: str) -> str | None:
+    from datetime import datetime
+    try:
+        return datetime.fromtimestamp(os.stat(absolute_path).st_mtime).strftime("%Y-%m-%d")
+    except OSError:
+        return None
+
+
+def scan_by_day(source_path: str) -> list[tuple[str, str, int, str | None]]:
+    """scan_source_tree's files, each with the day it was recorded: (relative_path, absolute_path, size, day)."""
+    _files, _bytes, files = scan_source_tree(source_path)
+    return [(rel, absolute, size, recording_day(absolute)) for rel, absolute, size in files]
+
+
+def summarize_days(files: list[tuple[str, str, int, str | None]]) -> list[dict]:
+    """Per recording day, newest first: how many clips, photos and other files, how big, and the first and last clip's name."""
+    days: dict[str, dict] = {}
+    for rel, _absolute, size, day in files:
+        key = day or "unknown"
+        d = days.setdefault(key, {"day": key, "clips": 0, "photos": 0, "other": 0, "files": 0, "bytes": 0, "clip_names": []})
+        kind = file_kind(rel)
+        d[{"clip": "clips", "photo": "photos", "other": "other"}[kind]] += 1
+        d["files"] += 1
+        d["bytes"] += size
+        if kind == "clip":
+            d["clip_names"].append(os.path.basename(rel))
+    out = []
+    for d in days.values():
+        names = sorted(d.pop("clip_names"))
+        d["first_clip"], d["last_clip"] = (names[0], names[-1]) if names else (None, None)
+        out.append(d)
+    return sorted(out, key=lambda d: d["day"], reverse=True)
+
+
+def only_days(files: list[tuple[str, str, int, str | None]], days: list[str]) -> list[tuple[str, str, int, str | None]]:
+    wanted = set(days)
+    return [f for f in files if (f[3] or "unknown") in wanted]

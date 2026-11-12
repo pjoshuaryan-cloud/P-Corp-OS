@@ -150,7 +150,7 @@ s.append(PageBreak())
 s += section("One shoot, start to finish", "This is the full route, in order. The next page shows what to leave out for each kind of job. If there's a brief or run sheet, start with <b>Coverage Plans</b> before the shoot, and the crew can tick it off on their phones on the day.")
 s.append(steps([
     ("Copy the footage", "P Corp app, POST", [
-        ("Plug in the card and your drive. Fill in the profile, shoot name, drives, format, resolution and frame rate, then click <b>Create Job</b> and <b>Start</b>.", "It copies, checks every file against the original and analyses the media. A notification says when it's ready. More than one card? Once it's ready, swap cards and click <b>Add Another Card</b> before step 3."),
+        ("Plug in the card and your drive. Fill in the profile, shoot name, drives, format, resolution and frame rate, tick the day you shot under <b>Recorded on</b>, then click <b>Create Job</b> and <b>Start</b>.", "It copies, checks every file against the original and analyses the media. A notification says when it's ready. More than one card? Once it's ready, swap cards and click <b>Add Another Card</b> before step 3."),
         ("Optional: click <b>View Report</b>.", "Cameras, frame rates, corrupt files, exact duplicates. Its exposure flags can miss problems on S-Log3."),
     ]),
     ("Set up Premiere", "plugin, More", [
@@ -194,6 +194,7 @@ s.append(table(["Job", "Do this", "Leave out"], [
 s += section("Which style to choose", "Styles come from real edits. Each sets the pace and how cuts sit on the music.")
 s.append(table(["Style", "What you get", "Use it for"], [
     ["<b>Your usual pace</b>", "Cuts on the music at the pace of your own edits, with optional brand cards.", "Your default for most music edits"],
+    ["<b>JD Sports store opening</b>", "Your two JD reels blended, with flash and zoom accents.", "JD Sports jobs"],
     ["<b>Fast streetwear reel</b>", "Quick cuts on the beat, with flash and zoom accents.", "Retail and streetwear launches"],
     ["<b>Fashion event highlight</b>", "A music-driven launch-event highlight.", "Fashion events"],
     ["<b>GQ x Miele event reel</b>", "On the beat, with a quick open, a steady middle, a faster build and a slow logo ending. Shots start on the action.", "Premium brand events"],

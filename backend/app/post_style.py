@@ -457,6 +457,7 @@ FRIENDLY_STYLES: dict[str, tuple[str, str]] = {
     USUAL_PACE_SLUG: ("Your usual pace", "Cuts to the music at the pace of your own edits, on the best moment of each clip, with optional opening and closing brand cards."),
     "corporate-highlight-calm": ("Calm corporate highlight", "Cuts to the music at an easy pace (about two seconds a shot), with opening and closing brand cards."),
     "jd-sports-moa-draft-01": ("Fast streetwear reel", "Quick cuts on the beat with flash and zoom accents (your JD Sports draft)."),
+    "jd-sports-store-opening": ("JD Sports store opening", "Your two JD store-opening reels blended: quick cuts on the beat, a slower middle, a fast finish, with flash and zoom accents."),
     "energy-drink-powerade": ("Energy-drink reel", "A fast vertical highlight, cut on the music."),
     "fashion-event-converse-kenzo": ("Fashion event highlight", "A music-driven launch-event highlight."),
     "furniture-expo-decorex": ("Expo and product highlight", "A music-driven vertical reel for an expo or showroom."),

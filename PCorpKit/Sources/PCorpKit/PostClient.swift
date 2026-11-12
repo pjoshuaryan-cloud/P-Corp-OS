@@ -156,6 +156,23 @@ public final class PostClient: ObservableObject {
         }
     }
 
+    /// What's on a card or folder, by the day it was recorded, before anything is copied. Reads names, sizes and dates only.
+    public func previewSource(path: String) async -> (preview: SourcePreview?, error: String?) {
+        var request = URLRequest(url: url("/post/sources/preview"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(["source_path": path])
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                return (nil, (try? JSONDecoder().decode(ErrorDetail.self, from: data))?.detail ?? "Couldn't read that drive (\(http.statusCode)).")
+            }
+            return (try JSONDecoder().decode(SourcePreview.self, from: data), nil)
+        } catch {
+            return (nil, "Couldn't reach the backend — is it running?")
+        }
+    }
+
     /// Adds another card to a copied shoot. What it will copy, or why it can't.
     public func addCard(jobId: Int, volume: SourceVolume) async -> (card: AddedCard?, error: String?) {
         struct Body: Encodable {

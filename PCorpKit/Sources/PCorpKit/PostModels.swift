@@ -136,12 +136,15 @@ public struct PostJobDraft: Encodable {
     public var resolution: String?
     public var frameRate: String?
     public var allowSameDrive: Bool
+    /// Copy only files recorded on these days (YYYY-MM-DD, from the source preview). Nil = everything on the source (2026-11-12).
+    public var recordedOn: [String]?
 
     public init(
         profile: String, shootName: String, sourcePath: String, destinationVolumePath: String,
         clientName: String? = nil, sourceVolumeName: String? = nil, sourceVolumeUuid: String? = nil,
         joshxProjectId: Int? = nil, alphaModeProjectId: Int? = nil,
-        deliverableFormat: String? = nil, resolution: String? = nil, frameRate: String? = nil, allowSameDrive: Bool = false
+        deliverableFormat: String? = nil, resolution: String? = nil, frameRate: String? = nil, allowSameDrive: Bool = false,
+        recordedOn: [String]? = nil
     ) {
         self.profile = profile
         self.shootName = shootName
@@ -156,10 +159,12 @@ public struct PostJobDraft: Encodable {
         self.resolution = resolution
         self.frameRate = frameRate
         self.allowSameDrive = allowSameDrive
+        self.recordedOn = recordedOn
     }
 
     enum CodingKeys: String, CodingKey {
         case profile, resolution
+        case recordedOn = "recorded_on"
         case shootName = "shoot_name"
         case sourcePath = "source_path"
         case destinationVolumePath = "destination_volume_path"
@@ -779,5 +784,57 @@ public struct PlanHistoryEntry: Decodable, Identifiable, Equatable {
         case file, current, label, title, subtitle, reviewed, swapped, accents
         case savedAt = "saved_at"
         case savedAs = "saved_as"
+    }
+}
+
+
+/// One recording day on a card or folder, from POST /post/sources/preview (2026-11-12): what would be copied if that day is ticked.
+public struct SourceDay: Decodable, Identifiable, Equatable, Sendable {
+    public let day: String
+    public let clips: Int
+    public let photos: Int
+    public let other: Int
+    public let files: Int
+    public let bytes: Int
+    public let firstClip: String?
+    public let lastClip: String?
+
+    public var id: String { day }
+
+    enum CodingKeys: String, CodingKey {
+        case day, clips, photos, other, files, bytes
+        case firstClip = "first_clip"
+        case lastClip = "last_clip"
+    }
+
+    /// "Mon 9 Nov", or "Unknown date".
+    public var label: String {
+        let parse = DateFormatter()
+        parse.locale = Locale(identifier: "en_US_POSIX")
+        parse.dateFormat = "yyyy-MM-dd"
+        guard let date = parse.date(from: day) else { return "Unknown date" }
+        let show = DateFormatter()
+        show.dateFormat = "EEE d MMM"
+        return show.string(from: date)
+    }
+}
+
+public struct SourcePreview: Decodable, Equatable, Sendable {
+    public let days: [SourceDay]
+    public let files: Int
+    public let bytes: Int
+}
+
+/// What the chosen days add up to, and what's left out, in words for the New Job form.
+public enum SourceSelection {
+    public static func describe(_ days: [SourceDay]) -> String {
+        let clips = days.reduce(0) { $0 + $1.clips }, photos = days.reduce(0) { $0 + $1.photos }, other = days.reduce(0) { $0 + $1.other }
+        let bytes = days.reduce(0) { $0 + $1.bytes }
+        var parts: [String] = []
+        if clips > 0 { parts.append(clips == 1 ? "1 clip" : "\(clips) clips") }
+        if photos > 0 { parts.append(photos == 1 ? "1 photo" : "\(photos) photos") }
+        if other > 0 { parts.append(other == 1 ? "1 other file" : "\(other) other files") }
+        if parts.isEmpty { parts.append("nothing") }
+        return parts.joined(separator: ", ") + ", " + ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 }

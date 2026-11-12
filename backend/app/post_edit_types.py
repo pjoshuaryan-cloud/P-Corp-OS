@@ -100,6 +100,20 @@ INFERRED_STYLES: dict[str, dict[str, Any]] = {
         "target_seconds": 40,
         "pace_note": True,
     },
+    "jd-sports-store-opening": {   # 2026-11-12, Josh: edit the new JD shoot "according to the previous JD edits" -- both of his JD store-opening reels
+        "composite_of": ["jd-sports-moa-draft-01", "jd-sports-motn-draft-01"],
+        "rhythm_weights": {"jd-sports-moa-draft-01": 1, "jd-sports-motn-draft-01": 1},   # both his own JD edits, counted equally
+        "beat_from": ["jd-sports-moa-draft-01"],   # cuts on the music's hits like the Mall of Africa reel (the Mall of the North one is cut on the action)
+        "edit_type": "music_montage",
+        "genre": "streetwear store opening",
+        "client": "JD Sports",
+        "event": "store opening reel, from both of your JD edits",
+        "format": "9:16 vertical reel",
+        "style": ("Blended from your two JD Sports store-opening reels (Mall of Africa and Mall of the North): their shared shot rhythm and shape (quick open, a "
+                  "slower middle around 10-15 s, a fast finish; median shot about 0.6 s), cuts on the music's hits like the Mall of Africa reel, and its "
+                  "flash and zoom-blur accents."),
+        "added_by": "Claude, 2026-11-12 (blended from two measured JD edits at Josh's request, not measured as one edit)",
+    },
     "gq-miele-blend": {   # 2026-10-24, GQ Best Dressed x Miele: his Decorex Miele edit is the brand's style, Jack Botti's Moet x Don C reel the priority look
         "composite_of": ["moet-just-don-jackbotti", "furniture-expo-decorex"],
         "rhythm_weights": {"moet-just-don-jackbotti": 2, "furniture-expo-decorex": 1},   # the priority reel counts double in the shot rhythm and its shape

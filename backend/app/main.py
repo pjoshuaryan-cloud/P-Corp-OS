@@ -2737,6 +2737,8 @@ class PostJobCreateRequest(BaseModel):
     resolution: str | None = None
     frame_rate: str | None = None
     allow_same_drive: bool = False   # a folder already on the destination drive, copied there anyway
+    # Copy only files recorded on these days (YYYY-MM-DD, from POST /post/sources/preview). None or empty = everything (2026-11-12).
+    recorded_on: list[str] | None = None
 
 
 class PostJobAddCardRequest(BaseModel):
@@ -2768,6 +2770,23 @@ async def post_jobs_create(body: PostJobCreateRequest, request: Request, _: None
         raise HTTPException(status_code=400, detail="That would copy the drive into itself. Choose a different destination drive.")
     if not body.allow_same_drive and post_sources.same_drive(body.source_path, body.destination_volume_path):
         raise HTTPException(status_code=400, detail="The source and destination are the same drive, so the footage would be on it twice. Choose a different destination drive.")
+    chosen = None
+    if body.recorded_on:
+        # Only the days he ticked: the job's file list is written now, so the copier (which never rescans a job that already has
+        # files) copies exactly these, and the job shows their count and size before he presses Start.
+        if any(not re.fullmatch(r"\d{4}-\d{2}-\d{2}|unknown", d) for d in body.recorded_on):
+            raise HTTPException(status_code=400, detail="recorded_on must be days like 2026-11-09.")
+        from app import post_ingest
+        drive_problem = post_ingest.destination_drive_problem(destination_root)
+        if drive_problem:
+            raise HTTPException(status_code=400, detail=drive_problem)
+        try:
+            everything = await asyncio.wait_for(asyncio.to_thread(post_sources.scan_by_day, body.source_path), timeout=60)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="The source drive took too long to read. Unplug it, plug it back in and try again.")
+        chosen = post_sources.only_days(everything, body.recorded_on)
+        if not chosen:
+            raise HTTPException(status_code=400, detail="Nothing on that drive was recorded on the days you chose.")
     job_id = await create_post_job(
         body.profile, body.shoot_name, body.source_path, destination_root,
         client_name=body.client_name, source_volume_name=body.source_volume_name,
@@ -2776,8 +2795,31 @@ async def post_jobs_create(body: PostJobCreateRequest, request: Request, _: None
         deliverable_format=body.deliverable_format, resolution=body.resolution, frame_rate=body.frame_rate,
         postgres_conn=postgres_conn,
     )
-    await record_tool_call("post_job_create_ui", {"job_id": job_id, "shoot_name": body.shoot_name}, "ok", postgres_conn)
+    if chosen is not None:
+        from app.post_db import create_post_job_files_batch, record_post_job_scan_result
+        from app.post_profiles import build_project_structure
+        await asyncio.to_thread(build_project_structure, body.profile, Path(destination_root))
+        staging_root = Path(destination_root) / "_INGESTED"
+        await create_post_job_files_batch(job_id, [(rel, str(staging_root / rel), size) for rel, _abs, size, _day in chosen], postgres_conn=postgres_conn)
+        await record_post_job_scan_result(job_id, len(chosen), sum(size for _r, _a, size, _d in chosen), postgres_conn=postgres_conn)
+    await record_tool_call("post_job_create_ui", {"job_id": job_id, "shoot_name": body.shoot_name, "recorded_on": body.recorded_on, "files": len(chosen) if chosen is not None else None}, "ok", postgres_conn)
     return {"id": job_id}
+
+
+class PostSourcePreviewRequest(BaseModel):
+    source_path: str
+
+
+@app.post("/post/sources/preview")
+async def post_source_preview(body: PostSourcePreviewRequest, _: None = Depends(verify_token)) -> dict:
+    """What's on a card or folder, by the day it was recorded, before anything is copied (2026-11-12). Reads names, sizes and dates only."""
+    if not Path(body.source_path).is_dir():
+        raise HTTPException(status_code=404, detail="That drive or folder isn't there. Is it plugged in?")
+    try:
+        files = await asyncio.wait_for(asyncio.to_thread(post_sources.scan_by_day, body.source_path), timeout=60)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="The drive took too long to read. Unplug it, plug it back in and try again.")
+    return {"days": post_sources.summarize_days(files), "files": len(files), "bytes": sum(f[2] for f in files)}
 
 
 @app.get("/post/jobs/{job_id}")
