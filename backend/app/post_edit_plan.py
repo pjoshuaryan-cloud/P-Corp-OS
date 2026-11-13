@@ -676,6 +676,25 @@ def list_music_files(job: dict) -> list[dict[str, Any]]:
     return [{"path": str(p), "name": p.name, "megabytes": round(p.stat().st_size / 1_000_000, 1)} for p in files]
 
 
+def _has_accents(record: dict[str, Any], seen: frozenset = frozenset()) -> bool:
+    """Whether a style carries flashes or zoom accents. A blend's own record holds only its blended rhythm, so it has accents when any
+    edit it's made from does (2026-11-12: the JD Sports store opening blend showed "hard cuts only" though its Mall of Africa reel has them)."""
+    summary = record.get("summary") or {}
+    # overlay_layers is always a dict ({"flash": 0, ...}), so test its COUNTS, not the dict itself
+    if any((summary.get("overlay_layers") or {}).values()) or bool(summary.get("effects_on_shots")):
+        return True
+    from app.post_reference import load_reference
+    for slug in record.get("composite_of") or (record.get("tags") or {}).get("composite_of") or []:   # the style list's records keep it only in the tags
+        if slug in seen:
+            continue
+        try:
+            if _has_accents(load_reference(slug), seen | {record.get("slug", "")}):
+                return True
+        except (OSError, ValueError, KeyError):
+            continue
+    return False
+
+
 def _style_card(record: dict[str, Any]) -> dict[str, Any]:
     tags, summary = record.get("tags") or {}, record.get("summary") or {}
     title = " -- ".join(x for x in (tags.get("client"), tags.get("event")) if x) or record["slug"]
@@ -686,8 +705,7 @@ def _style_card(record: dict[str, Any]) -> dict[str, Any]:
         "slug": record["slug"], "title": title, "friendly_title": friendly_title, "blurb": blurb,
         "description": tags.get("style") or tags.get("genre") or "", "format": tags.get("format") or "",
         "seconds": summary.get("duration_seconds"), "median_shot_seconds": lengths.get("median"), "shots": summary.get("shot_count"),
-        # overlay_layers is always a dict ({"flash": 0, ...}), so test its COUNTS, not the dict itself
-        "has_accents": any((summary.get("overlay_layers") or {}).values()) or bool(summary.get("effects_on_shots")),
+        "has_accents": _has_accents(record),
         "edit_type": tags.get("edit_type") or "music_montage", "inferred": bool(tags.get("inferred")),
         "cut_lead_ms": (record.get("music_sync") or {}).get("cut_lead_ms"),
     }

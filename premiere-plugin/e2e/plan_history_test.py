@@ -125,6 +125,12 @@ with tempfile.TemporaryDirectory() as tmp:
     check("an empty or missing folder lists nothing", ph.list_plans(Path(tmp) / "nope", name_of) == [] and ph.list_plans(Path(tempfile.mkdtemp()), name_of) == [])
 
 # ---- plain style names --------------------------------------------------------------------------------------------------------------------
+from app.post_edit_plan import _style_card as _card  # noqa: E402
+from app.post_reference import load_reference as _load  # noqa: E402
+from app.post_style import available_styles as _styles  # noqa: E402
+_listed = {r["slug"]: _card(r)["has_accents"] for r in _styles()}   # the same records the planning screen gets, not the full files
+check("a blend has accents when an edit it's made from does (the JD blend, from the Mall of Africa reel)", _card(_load("jd-sports-store-opening"))["has_accents"] and _listed.get("jd-sports-store-opening") is True and _listed.get("jd-sports-moa-draft-01") is True, _listed)
+check("and not when none of its edits has any", not _card(_load("gq-miele-blend"))["has_accents"] and not _card(_load("food-promo-inferred"))["has_accents"] and _listed.get("gq-miele-blend") is False)
 check("the saved references have plain names", name_of("corporate-highlight-calm") == "Calm corporate highlight" and name_of("jd-sports-moa-draft-01") == "Fast streetwear reel" and name_of("your-usual-pace") == "Your usual pace" and name_of("gq-miele-blend") == "GQ x Miele event reel" and name_of("jd-sports-store-opening") == "JD Sports store opening" and len(FRIENDLY_STYLES) == 11)
 check("a style with no plain name falls back to its own title and a first-sentence description", friendly_style("new-style", "Some Client -- event", "A fast reel. With extras and more detail.") == ("Some Client -- event", "A fast reel"), friendly_style("new-style", "Some Client -- event", "A fast reel. With extras and more detail."))
 check("a style with nothing at all falls back to its slug", friendly_style("slug-only") == ("slug-only", ""))
