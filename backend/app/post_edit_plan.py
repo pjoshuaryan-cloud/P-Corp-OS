@@ -165,7 +165,8 @@ SAME_SCENE_PENALTY = 1.5  # punch points knocked off a clip that shows the same 
 def _event_window(clip: dict, length: float, taken: list[tuple[float, float]], lo: float, hi: float) -> dict | None:
     """The clip's strongest event not already used, as a window starting just before it. None if the clip has
     no usable events left."""
-    for e in sorted(clip.get("events") or [], key=lambda e: -e["punch"]):
+    lead = clip.get("lead_event_t")   # a structure pick (the hero opening, a payoff close) names the moment it was chosen for
+    for e in sorted(clip.get("events") or [], key=lambda e: (lead is None or abs(e["t"] - lead) > 1e-6, -e["punch"])):
         start = _clamp(e["t"] - EVENT_LEAD_SECONDS, lo, hi)
         if any(start < b and start + length > a for a, b in taken):
             continue
@@ -202,6 +203,87 @@ def choose_window(clip: dict, length: float, taken: list[tuple[float, float]]) -
     return {"start": round(start, 3), "duration": round(length, 3), "source": source}
 
 
+CUE_BONUS = 2.0        # punch points a moment gains when it (or its clip's scene) says one of the style's cue words: Claude rates 20 JD Midlands moments 9/10, so punch alone can't find the ribbon cut
+PEOPLE_BONUS = 0.5
+PAYOFF_KINDS = ("action", "reaction", "hero")
+PAYOFF_MIN_PUNCH = 7.0
+
+
+def _says(clip: dict, event: dict, cues: list[str]) -> int:
+    """How many of the cue words the moment (or its clip's scene) says: 'staff raise hands in a group wave' says two of the close cues, 'arms raised in front of the group' one."""
+    text = f"{event.get('what') or ''} {clip.get('scene') or ''}".lower()
+    return sum(1 for c in cues if c in text)
+
+
+def _with_lead(clip: dict, event: dict) -> dict:
+    return {**clip, "lead_event_t": event["t"]}
+
+
+def pick_structure(clips: list[dict], structure: dict, exclude_ids: set[int]) -> tuple[dict | None, list[dict], dict | None]:
+    """(hero opener, payoff closers in the order they play, the final payoff) for a style with a `structure` (2026-11-13, from Josh's JD Midlands draft: he opened
+    on the ribbon cut, not on the shoot's first clip, and ended on people -- a staffer laughing, a couple walking at camera with bags, the staff's group wave held last).
+    Each is a clip copy carrying the moment it was picked for. Picked from anywhere in the shoot; Claude's described moments only (none -> nothing picked)."""
+    pool = [c for c in clips if c["file_id"] not in exclude_ids and c.get("events")]
+    order = {c["file_id"]: i for i, c in enumerate(pool)}
+    hero = None
+    if structure.get("open") == "hero":
+        cues = structure.get("hero_cues") or []
+        scored = [(e["punch"] + CUE_BONUS * _says(c, e, cues) + (PEOPLE_BONUS if c.get("people") else 0.0), -order[c["file_id"]], c, e) for c in pool for e in c["events"]]
+        if scored:
+            _, _, c, e = max(scored, key=lambda x: (x[0], x[1]))
+            hero = _with_lead(c, e)
+    closers: list[dict] = []
+    final = None
+    if structure.get("close") == "payoff":
+        taken = {hero["file_id"]} if hero else set()
+        people = [(c, e) for c in pool if c.get("people") and c["file_id"] not in taken for e in c["events"] if e["kind"] in PAYOFF_KINDS]
+        cues = structure.get("close_cues") or []
+        if people:
+            c, e = max(people, key=lambda ce: (ce[1]["punch"] + CUE_BONUS * _says(ce[0], ce[1], cues), -order[ce[0]["file_id"]]))
+            final = _with_lead(c, e)
+            taken.add(c["file_id"])
+            scenes = {_scene_key(c)}
+            for c, e in sorted(people, key=lambda ce: (-ce[1]["punch"], order[ce[0]["file_id"]])):
+                if len(closers) >= int(structure.get("close_shots") or 0):
+                    break
+                if c["file_id"] in taken or e["punch"] < PAYOFF_MIN_PUNCH or (c.get("scene") and _scene_key(c) in scenes):
+                    continue
+                closers.append(_with_lead(c, e))
+                taken.add(c["file_id"])
+                scenes.add(_scene_key(c))
+            closers.reverse()   # build towards the final payoff: the strongest of them plays last before it
+    return hero, closers, final
+
+
+def slow_motion_slots(plan: dict[str, Any], clips: list[dict], share: float) -> list[int]:
+    """Slows `share` of the plan's footage shots to half speed (2026-11-13: about a quarter of the shots in Josh's JD reels are 0.5x). The shot keeps its slot
+    and its start, so the action still begins at the cut; it shows half as much source. Only clips shot at twice the edit's frame rate or more (they stay
+    smooth), never the opening shot (he opened at real speed); the final hold first when the style ends on a payoff (his Midlands wave was slowed), then
+    the longest shots, which have room for it to read. Same fields as slowing a shot in review, so review can put it back. Returns the slowed indices."""
+    if share <= 0:
+        return []
+    by_id = {c["file_id"]: c for c in clips}
+    fps = plan["fps"]
+    footage = [s for s in plan["shots"] if s["role"] in ("body", "end_card") and s["index"] != 1]
+
+    def ok(s: dict) -> bool:
+        clip = by_id.get(s["file_id"]) or {}
+        window = s["duration_frames"] / fps
+        return bool(clip.get("fps")) and clip["fps"] * 0.5 >= fps - 0.5 and s["source_in"] + window * 0.5 <= clip["duration"] - 0.04
+    count = round(share * sum(1 for s in plan["shots"] if s["role"] == "body"))
+    ranked = sorted((s for s in footage if ok(s)), key=lambda s: (s.get("structure") != "final", -s["duration_frames"], s["index"]))
+    slowed = []
+    for s in ranked[:count]:
+        window = s["duration_frames"] / fps
+        s["speed_original"] = {"source_in": s["source_in"], "source_out": s["source_out"]}
+        s["candidate_real_time"] = s.get("candidate")
+        s.update({"speed": 0.5, "source_out": round(s["source_in"] + window * 0.5, 3), "speed_by": "style"})
+        from app.post_review import refresh_candidate   # post_review imports this module
+        refresh_candidate(plan, s, by_id.get(s["file_id"]))
+        slowed.append(s["index"])
+    return sorted(slowed)
+
+
 def build_plan(
     *, profile: StyleProfile, hits: list[list[float]], music_in: float, duration: float, fps: float,
     clips: list[dict], bookend_file_id: int | None, seed: int = 7,
@@ -228,7 +310,26 @@ def build_plan(
     slots = list(zip(frames, frames[1:] + [total_frames]))
     exclude = {bookend_file_id} if bookend_file_id is not None else set()
     has_moments = any(c.get("events") for c in clips)
-    chosen = (select_clips_by_moments if has_moments else select_clips)(clips, max(n_body, 1), exclude)
+    structure = profile.structure if has_moments and bookend_file_id is None else None   # an opening clip he chose himself wins over the style's
+    hero = final = None
+    closers: list[dict] = []
+    if structure:
+        hero, closers, final = pick_structure(clips, structure, exclude)
+        if n_body < 2 + len(closers) + (0 if has_card else 1) + 2:   # too few shots for an opening, a close and a middle
+            hero, closers, final = None, [], None
+    if hero or final:
+        picked = {c["file_id"] for c in [hero, final, *closers] if c}
+        n_middle = n_body - (1 if hero else 0) - len(closers) - (0 if has_card or not final else 1)
+        middle = (select_clips_by_moments if has_moments else select_clips)(clips, max(n_middle, 1), exclude | picked)
+        chosen = ([hero] if hero else []) + middle + closers + ([final] if final else [])
+        roles_by_pos = {0: "hero"} if hero else {}
+        for k in range(len(closers)):
+            roles_by_pos[len(chosen) - (1 if final else 0) - len(closers) + k] = "payoff"
+        if final:
+            roles_by_pos[len(chosen) - 1] = "final"
+    else:
+        chosen = (select_clips_by_moments if has_moments else select_clips)(clips, max(n_body, 1), exclude)
+        roles_by_pos = {}
     by_id = {c["file_id"]: c for c in clips}
     used: dict[int, list[tuple[float, float]]] = {}
     shots: list[dict] = []
@@ -242,6 +343,7 @@ def build_plan(
             clip, role = by_id[bookend_file_id], "opener"
         else:
             clip, role = chosen[min(i, len(chosen) - 1)], ("end_card" if is_card else "body")
+        shape = roles_by_pos.get(min(i, len(chosen) - 1)) if not is_opener else None
         # a clip too short for the slot -> take the next clip in shoot order that fits
         if clip["duration"] < length + 0.2:
             order = [c for c in clips if c["file_id"] not in exclude or role in ("opener", "end_card")]
@@ -255,6 +357,7 @@ def build_plan(
             "source_in": w["start"], "source_out": round(w["start"] + (f1 - f0) / fps, 3),
             "moment_source": w["source"], "cut_hit_percentile": cut["hit_pct"], "cut_on_hit": cut["on_hit"],
             "candidate": post_candidate_moments.compact(post_candidate_moments.describe(clip, w, describe_provenance=clip.get("moments_provenance"), length=(f1 - f0) / fps)),
+            **({"structure": shape} if shape else {}),
         })
     lengths = [s["duration_frames"] / fps for s in shots]
     plan = {
@@ -276,6 +379,17 @@ def build_plan(
             "Which moment of each clip is used is NOT validated as your taste (moment_source says where it came from) -- review and swap.",
         ],
     }
+    if hero or final:
+        named = lambda tag: [f"{s['name']} ({s['moment_source'].split(' -- ')[0].split('): ', 1)[-1]})" for s in shots if s.get("structure") == tag]
+        plan["notes"].append("Shape (from your JD Midlands draft): " + "; ".join(x for x in (
+            f"opens on the hero moment, {named('hero')[0]}" if hero else "",
+            f"ends on people: {', '.join(named('payoff') + named('final'))}" if final else "") if x) + ". The middle follows the shoot's order.")
+    slowed = slow_motion_slots(plan, clips, profile.slow_motion_share)
+    if slowed:
+        plan["checks"]["slow_motion_shots"] = slowed
+        plan["notes"].append(f"Slow motion: {len(slowed)} shot(s) at half speed ({', '.join(str(i) for i in slowed)}), about the share your JD edits slow. Premiere's "
+                             "plugin interface can't set a clip's speed, so Assemble Edit places them at normal speed with a marker on each: select the clip, "
+                             "Cmd+R, unlink the chain so the length stays, Speed 50%.")
     return plan
 
 

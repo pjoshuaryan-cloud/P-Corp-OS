@@ -106,7 +106,8 @@ in a browser against the real routes with synthetic footage; **Premiere** = stil
 
 - Pace differences are smaller than the direction names suggest. On GWM over 8 seeds, High-energy averaged 13% shorter shots than Music-led montage but was no
   faster in 2-3 of the 8; every cut snaps to a strong beat, and the beats decide. The variants page now says so when it happens. Premium is reliably ~40% slower.
-- Slow motion is still NOT applied in Premiere (no scripting API for it; see the slow-motion spike). A shot you slowed in review is built at NORMAL speed:
+- Slow motion is still NOT applied in Premiere (no scripting API for it; see the slow-motion spike). A shot you slowed in review (or the JD style slowed, 2026-11-13) is built at NORMAL speed with a timeline marker "P Corp: slow-mo 50%" over it
+  (UNVERIFIED in real Premiere: check one marker per slowed shot, at the shot's start and as long as it; then Cmd+R, unlink the chain, 50%):
   a full slot of footage starting a quarter of the slot later than the un-slowed moment (the plan's half-length window plays on past its end).
   `verify_build` expects exactly that and says so in a note.
 - Opening/closing "preferences" are preferences: each variant says what it actually opened and closed on.

@@ -28,7 +28,7 @@ def shot(clip, a, b, t0, length=None, dur=30.0, track=1):
 
 
 def seq(name, n=6, whole=False, start=0):
-    shots = [shot(f"C{start + i}.MP4", 1.0 + i, (30.0 if whole else 1.6 + i), 2.0 * i, 0.6 if not whole else 29.0) for i in range(n)]
+    shots = [shot(f"C{start + i}.MP4", 1.0 + i, (30.0 if whole else 1.6 + i), (29.0 if whole else 2.0) * i, 0.6 if not whole else 29.0) for i in range(n)]   # whole clips sit one after another, as on a real track
     return prproj.Sequence(name=name, out_mark=None, in_mark=None, tracks=[shots])
 
 
@@ -60,9 +60,9 @@ with tempfile.TemporaryDirectory() as tmp:
         return lambda path: content[os.path.basename(path)]
 
     edit_name = "GWM - Highlight Video - Edit 2026-10-15T13:57:37.402Z"
-    snaps = pa.snapshot_sequences("x.prproj", lambda p: [seq(edit_name, 6), seq("tiny", 3), seq("GWM - Highlight Video", 8, whole=True), prproj.Sequence("two tracks", None, None, [[], [shot("A.MP4", 1, 2, 0, track=2)] * 6])])
+    snaps = pa.snapshot_sequences("x.prproj", lambda p: [seq(edit_name, 6), seq("tiny", 3), seq("GWM - Highlight Video", 8, whole=True), prproj.Sequence("two tracks", None, None, [[], [shot(f"V{i}.MP4", 1, 2, 2.0 * i, track=2) for i in range(6)]])])
     by = {s["sequence"]: s for s in snaps}
-    check("a sequence with fewer than five shots on video 1 is not an edit (nor is footage only on video 2)", set(by) == {edit_name, "GWM - Highlight Video"}, list(by))
+    check("a sequence with fewer than five shots is not an edit; footage cut on video 2 counts (2026-11-13: he cuts on V2 too)", set(by) == {edit_name, "GWM - Highlight Video", "two tracks"}, list(by))
     check("a sequence of mostly whole clips is flagged as a clip list, not an edit", by["GWM - Highlight Video"]["whole_clip"] and not by[edit_name]["whole_clip"])
     check("the build time comes from the sequence's name and shots are compact rows", by[edit_name]["built_at"] is not None and len(by[edit_name]["shots"][0]) == 7 and by[edit_name]["shots"][0][0] == "C0.MP4")
 

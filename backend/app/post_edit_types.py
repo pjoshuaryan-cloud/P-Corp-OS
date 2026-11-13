@@ -101,18 +101,24 @@ INFERRED_STYLES: dict[str, dict[str, Any]] = {
         "pace_note": True,
     },
     "jd-sports-store-opening": {   # 2026-11-12, Josh: edit the new JD shoot "according to the previous JD edits" -- both of his JD store-opening reels
-        "composite_of": ["jd-sports-moa-draft-01", "jd-sports-motn-draft-01"],
-        "rhythm_weights": {"jd-sports-moa-draft-01": 1, "jd-sports-motn-draft-01": 1},   # both his own JD edits, counted equally
-        "beat_from": ["jd-sports-moa-draft-01"],   # cuts on the music's hits like the Mall of Africa reel (the Mall of the North one is cut on the action)
+        # 2026-11-13: + his Midlands DRAFT CUT - 01 (his own edit of P Corp's plan for that shoot, measured from the project, V1 and V2): ~27 s, a hero
+        # opening (the ribbon cut), a payoff close on people (a staff group wave held under the end card), and a quarter of the shots at half speed.
+        "composite_of": ["jd-sports-moa-draft-01", "jd-sports-motn-draft-01", "jd-sports-midlands-draft-01"],
+        "rhythm_weights": {"jd-sports-moa-draft-01": 1, "jd-sports-motn-draft-01": 1, "jd-sports-midlands-draft-01": 1},   # all three of his own JD edits, counted equally
+        "beat_from": ["jd-sports-moa-draft-01", "jd-sports-midlands-draft-01"],   # the two cut on the music's hits (the Mall of the North one is cut on the action)
+        "structure": {"open": "hero", "hero_cues": ["ribbon", "grand opening", "doors open", "confetti", "countdown"],
+                      "close": "payoff", "close_shots": 3, "close_cues": ["wave", "group", "cheer", "celebrat", "crowd"]},
+        "slow_motion": True,   # slows the share of shots his project-measured JD edits slowed (post_style.slow_motion_share)
         "edit_type": "music_montage",
         "genre": "streetwear store opening",
         "client": "JD Sports",
-        "event": "store opening reel, from both of your JD edits",
+        "event": "store opening reel, from your three JD edits",
         "format": "9:16 vertical reel",
-        "style": ("Blended from your two JD Sports store-opening reels (Mall of Africa and Mall of the North): their shared shot rhythm and shape (quick open, a "
-                  "slower middle around 10-15 s, a fast finish; median shot about 0.6 s), cuts on the music's hits like the Mall of Africa reel, and its "
-                  "flash and zoom-blur accents."),
-        "added_by": "Claude, 2026-11-12 (blended from two measured JD edits at Josh's request, not measured as one edit)",
+        "style": ("Blended from your three JD Sports store-opening reels (Mall of Africa, Mall of the North and your Midlands draft): their shared shot rhythm "
+                  "(quick, about 0.4-0.6 s a shot), cuts on the music's hits, flash and zoom-blur accents; opens on the shoot's hero moment (the ribbon cut), "
+                  "ends on people (the strongest crowd or staff moment held last), and about a quarter of the shots in half-speed slow motion, which "
+                  "Premiere can't apply from a plugin: each one gets a marker for you to set with Cmd+R."),
+        "added_by": "Claude, 2026-11-12 (blended from two measured JD edits at Josh's request); 2026-11-13 his Midlands draft added, with its opening, ending and slow motion",
     },
     "gq-miele-blend": {   # 2026-10-24, GQ Best Dressed x Miele: his Decorex Miele edit is the brand's style, Jack Botti's Moet x Don C reel the priority look
         "composite_of": ["moet-just-don-jackbotti", "furniture-expo-decorex"],
@@ -242,7 +248,7 @@ def write_inferred_styles(only: list[str] | None = None) -> list[str]:
                 "edit_type": spec["edit_type"], "inferred": True, "composite_of": spec["composite_of"],
                 "added_by": spec.get("added_by") or ("Claude, 2026-10-14 (inferred, not measured)" if spec.get("pace_note") else "Claude, 2026-10-13 (inferred, not measured)")}
         record = {"slug": slug, "tags": tags, "summary": summary, "music_sync": None, "composite_of": spec["composite_of"],
-                  **{k: spec[k] for k in ("rhythm_weights", "beat_from") if k in spec}}
+                  **{k: spec[k] for k in ("rhythm_weights", "beat_from", "structure", "slow_motion") if k in spec}}
         (pr.REFERENCE_DIR / f"{slug}.json").write_text(json.dumps(record, indent=1))
         written.append(slug)
     return written

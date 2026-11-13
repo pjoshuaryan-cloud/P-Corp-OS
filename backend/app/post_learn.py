@@ -93,10 +93,10 @@ def read_final_edit(project_path: str, sequence_name: str | None) -> tuple[str, 
         sequences = prproj.read_sequences(project_path)
     except prproj.ProjectError as exc:
         raise LearnError(str(exc)) from exc
-    with_footage = [(s, [x for x in s.delivered_shots() if x.track == 1 and x.src_in is not None and x.src_out is not None]) for s in sequences]
+    with_footage = [(s, sorted(s.visible_shots(), key=lambda x: x.t0)) for s in sequences]   # what the viewer sees, V1 and above (2026-11-13: he cuts on V2 too)
     with_footage = [(s, shots) for s, shots in with_footage if shots]
     if not with_footage:
-        raise LearnError("The saved project has no sequence with footage on video track 1. Save it after cutting, and try again.")
+        raise LearnError("The saved project has no sequence with footage on it. Save it after cutting, and try again.")
     chosen = None
     if sequence_name:
         key = prproj.normalise_name(sequence_name)
@@ -212,7 +212,7 @@ def analyse(plan: dict[str, Any], shots: list[Any], moments_by_name: dict[str, d
     if his_clips and shared / len(his_clips) < MIN_SHARED_CLIPS:
         warnings.append("Few of your clips are in the saved plan. If you planned again after building this sequence, the comparison is against the wrong plan.")
     if n < 5:
-        warnings.append(f"Only {n} shot(s) on video track 1 -- a very small sample.")
+        warnings.append(f"Only {n} shot(s) in the cut -- a very small sample.")
     return {"summary": summary, "his_shots": final_rows, "plan_shots": slot_rows, "warnings": warnings}
 
 

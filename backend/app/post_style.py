@@ -178,6 +178,8 @@ class StyleProfile:
     default_pace: float | None = None  # a highlight's pace multiplier when the caller gives none (1.0 = the style's own rhythm); None = the planner's calm default
     rhythm_note: str | None = None  # a highlight style's own account of where its shot rhythm comes from; the plan's notes say it instead of the calm style's wording
     highlight_min_shot_seconds: float | None = None  # the shortest shot a highlight in this style may have; None = the calm highlight's 1 s
+    structure: dict | None = None  # (2026-11-13) a music montage's shape: {'open': 'hero', 'hero_cues', 'close': 'payoff', 'close_shots', 'close_cues'}; None = shoot order throughout
+    slow_motion_share: float = 0.0  # (2026-11-13) share of body shots the planner slows to half speed (measured from his edits); 0 = none
 
     @property
     def mean_shot_seconds(self) -> float:
@@ -401,6 +403,26 @@ def profile_from_references(slugs: list[str], name: str | None = None) -> StyleP
     return profile
 
 
+HALF_SPEED_TOLERANCE = 0.03
+
+
+def slow_motion_share(refs) -> float:
+    """Share of shots at half speed across the references read from a Premiere project (a reference measured from an exported video has no source times, so
+    it can't say). His JD reels (2026-11-13): Mall of Africa 11 of 50, Midlands 16 of 60. 0.0 when none of them could be measured."""
+    slowed = total = 0
+    for r in refs:
+        edit = r.get("edit") or {}
+        if edit.get("source_kind") == "exported_video":
+            continue
+        for sh in edit.get("shots") or []:
+            length = sh["end"] - sh["start"]
+            if length <= 0 or sh.get("source_out") is None or sh.get("source_in") is None:
+                continue
+            total += 1
+            slowed += abs((sh["source_out"] - sh["source_in"]) / length - 0.5) <= HALF_SPEED_TOLERANCE
+    return round(slowed / total, 3) if total else 0.0
+
+
 def _blend_profile(rec: dict, name: str | None = None) -> StyleProfile:
     """A blended style (post_edit_types.INFERRED_STYLES with `rhythm_weights` and `beat_from`, 2026-10-24): the shot rhythm and its shape over the edit pooled
     from `rhythm_weights` (each reference counted as many times as its weight -- any reference with a measured shot rhythm, also one cut on the action
@@ -435,6 +457,7 @@ def _blend_profile(rec: dict, name: str | None = None) -> StyleProfile:
         pacing_curve=[round(mean(b) if b else overall, 3) for b in bins], end_card_seconds=round(mean(ends), 2) if ends else 0.0,
         hit_snap_rate=round(mean(snaps), 2) if snaps else 0.8, max_shot_seconds=max(2.5, round(2.6 * p90, 2)), accents=accent_style_from_records(beat),
         cut_lead_seconds=round(float(median(leads)), 3) if leads else 0.0, inferred=True, edit_type="music_montage",
+        structure=rec.get("structure"), slow_motion_share=slow_motion_share(r for r, _ in rhythm) if rec.get("slow_motion") else 0.0,
         notes=[f"Blended style: shot rhythm from {', '.join(f'{s} (x{w})' for s, w in rec['rhythm_weights'].items())}; cuts on the music like {', '.join(rec.get('beat_from') or [])}."],
     )
 
@@ -457,7 +480,7 @@ FRIENDLY_STYLES: dict[str, tuple[str, str]] = {
     USUAL_PACE_SLUG: ("Your usual pace", "Cuts to the music at the pace of your own edits, on the best moment of each clip, with optional opening and closing brand cards."),
     "corporate-highlight-calm": ("Calm corporate highlight", "Cuts to the music at an easy pace (about two seconds a shot), with opening and closing brand cards."),
     "jd-sports-moa-draft-01": ("Fast streetwear reel", "Quick cuts on the beat with flash and zoom accents (your JD Sports draft)."),
-    "jd-sports-store-opening": ("JD Sports store opening", "Your two JD store-opening reels blended: quick cuts on the beat, a slower middle, a fast finish, with flash and zoom accents."),
+    "jd-sports-store-opening": ("JD Sports store opening", "Your three JD store-opening reels blended: quick cuts on the beat with flash and zoom accents, opening on the hero moment and ending on people, with slow-motion shots marked for you."),
     "energy-drink-powerade": ("Energy-drink reel", "A fast vertical highlight, cut on the music."),
     "fashion-event-converse-kenzo": ("Fashion event highlight", "A music-driven launch-event highlight."),
     "furniture-expo-decorex": ("Expo and product highlight", "A music-driven vertical reel for an expo or showroom."),

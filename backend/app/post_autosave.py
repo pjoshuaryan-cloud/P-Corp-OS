@@ -84,7 +84,7 @@ def snapshot_sequences(path: str, reader: Callable[[str], list[Any]] | None = No
         reader = prproj.read_sequences
     out = []
     for seq in reader(path):
-        shots = sorted((s for s in seq.delivered_shots() if s.track == 1 and s.src_in is not None and s.src_out is not None), key=lambda s: s.t0)
+        shots = sorted(seq.visible_shots(), key=lambda s: s.t0)   # what the viewer sees, V1 and above (2026-11-13: he cuts on V2 too)
         if len(shots) < MIN_SHOTS:
             continue
         rows = [[os.path.basename(s.path or ""), round(s.src_in, 3), round(s.src_out, 3), round(s.t0, 3), round(s.length, 3), None if s.speed is None else round(s.speed, 3),

@@ -87,6 +87,10 @@ function makeWorld(opts = {}) {
         RectF: class { constructor() { this.width = 0; this.height = 0; } }, FrameRate: { createWithValue: (v) => ({ value: v }) },
         FolderItem: { cast: (i) => (i && i.isFolder ? i : null) }, ClipProjectItem: { cast: (i) => (i && i.isClip ? i : null) },
         SequenceEditor: { getEditor: async (seq) => editor(seq) }, Project: { getActiveProject: async () => project },
+        Markers: { getMarkers: async (owner) => ({   // sequence markers (2026-11-13: one on each slow-motion shot)
+            getMarkers: async () => (owner._markers || []).map((m) => ({ getName: async () => m.name, getStart: async () => ({ seconds: m.start }) })),
+            createAddMarkerAction: (name, type, start, dur, comment) => ({ run: () => { (owner._markers = owner._markers || []).push({ name, type, start: Number(start.ticks) / TPS, seconds: Number(dur.ticks) / TPS, comment }); } }),
+        }) },
     };
     return { ppro, project, stats, root, video, subclipLog };
 }
@@ -298,6 +302,28 @@ async function run(label, worldOpts, fps, backendOpts) {
         check(await fileFor("RC_ED_1_123", A1) === null, "a subclip isn't taken for its source");
         check(await fileFor("C0003.MP4", null) === 9, "with no path to read, a name only one file has still works");
         check(await fileFor("C0001.MP4", null) === null, "but a name two files share doesn't guess");
+    }
+
+    {   // 2026-11-13: slow-motion shots get a marker (Premiere's plugin interface can't set a clip's speed)
+        console.log("\n== slow-motion markers ==");
+        const world = makeWorld(); const plan = makePlan(25, world); const posts = [];
+        Object.assign(plan.shots[2], { speed: 0.5, source_out: plan.shots[2].source_in + plan.shots[2].duration_frames / 25 * 0.5 });
+        Object.assign(plan.shots[5], { speed: 0.5, source_out: plan.shots[5].source_in + plan.shots[5].duration_frames / 25 * 0.5 });
+        let { sandbox, output } = load(world, backendFor(plan, posts));
+        await vm.runInContext("assembleEdit()", sandbox);
+        const seq = world.stats.created; const marks = (seq && seq._markers) || [];
+        check(marks.length === 2, `one marker per slowed shot (${marks.length})`);
+        check(marks.length === 2 && Math.abs(marks[0].start - 20 / 25) < 1e-6 && Math.abs(marks[0].seconds - 13 / 25) < 1e-6 && Math.abs(marks[1].start - 60 / 25) < 1e-6, "each at its shot's start and as long as the shot: " + JSON.stringify(marks.map((m) => [m.start, m.seconds])));
+        check(marks.every((m) => m.name === "P Corp: slow-mo 50%" && /Cmd\+R/.test(m.comment) && /Speed 50%/.test(m.comment)), "named, with what to do: " + (marks[0] && marks[0].comment));
+        check(/Slow motion: 2 shot\(s\)/.test(output.textContent), "the log says so");
+        const shot3 = seq.inserted.find((x) => x.atTicks === String(20 * 10160640000) || Number(x.atTicks) === 20 * 10160640000);
+        check(!!shot3, "the slowed shot is still placed at its slot");
+        await vm.runInContext("placeSpeedMarkers(__p, __s, __plan)", Object.assign(sandbox, { __p: world.project, __s: seq, __plan: plan }));
+        check(seq._markers.length === 2, "building again doesn't add them twice");
+        const plain = makeWorld(); const p2 = makePlan(25, plain);
+        ({ sandbox, output } = load(plain, backendFor(p2, [])));
+        await vm.runInContext("assembleEdit()", sandbox);
+        check(!((plain.stats.created || {})._markers || []).length && !/Slow motion/.test(output.textContent), "a plan with no slowed shots adds no markers and says nothing");
     }
 
     console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");

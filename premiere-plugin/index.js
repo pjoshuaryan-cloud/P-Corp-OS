@@ -1856,6 +1856,35 @@ async function findMotionScale(trackItem, keepAlive) {
     return null;
 }
 
+/** Slow-motion markers (2026-11-13). Premiere's plugin interface can't set a clip's speed, so a shot the plan slows (the JD style slows about a quarter, as his
+ * JD reels do; review can slow one too) is placed at normal speed, starting where the slowed shot starts, and gets a sequence marker the length of the shot
+ * saying what to do. After Cmd+R with the chain unlinked and Speed 50%, the clip shows exactly the plan's half-speed stretch. Markers already there from an
+ * earlier build of this sequence are not added twice. */
+const SLOW_MARKER_NAME = "P Corp: slow-mo 50%";
+async function placeSpeedMarkers(project, sequence, plan) {
+    const slowed = (plan.shots || []).filter((s) => s.speed && Number(s.speed) !== 1);
+    if (slowed.length === 0) return "";
+    const box = await ppro.Markers.getMarkers(sequence);
+    const have = new Set();
+    for (const m of await box.getMarkers()) {
+        if ((await m.getName()) === SLOW_MARKER_NAME) have.add(Number((await m.getStart()).seconds).toFixed(2));
+    }
+    const fresh = slowed.filter((s) => !have.has((s.start_frame / plan.fps).toFixed(2)));
+    if (fresh.length) {
+        await transact(project, "P Corp POST -- Slow-motion markers", (compound) => {
+            for (const s of fresh) {
+                const pct = Math.round(Number(s.speed) * 100);
+                compound.addAction(box.createAddMarkerAction(SLOW_MARKER_NAME.replace("50%", `${pct}%`), "Comment", ppro.TickTime.createWithSeconds(s.start_frame / plan.fps),
+                    ppro.TickTime.createWithSeconds(s.duration_frames / plan.fps),
+                    `Shot ${s.index} (${s.name}): select the clip, Cmd+R, click the chain so the length stays, Speed ${pct}%, OK.`));
+            }
+        });
+    }
+    return `Slow motion: ${slowed.length} shot(s) to set to half speed by hand (Premiere can't do it from a plugin), each with a marker on the timeline`
+        + (fresh.length < slowed.length ? ` (${slowed.length - fresh.length} marker(s) were already there)` : "")
+        + ": select the clip, Cmd+R, click the chain so the length stays, Speed 50%.";
+}
+
 async function placeShotZooms(project, sequence, plan, tpf, keepAlive) {
     const items = (plan.zooms && plan.zooms.items) || [];
     if (items.length === 0) return "";
@@ -2371,6 +2400,13 @@ async function assembleEdit(learned = null) {
         log("Placing the music…");
         log(await placeMusic(project, sequenceEditor, plan, keepAlive));
         await project.save();
+
+        try {
+            const note = await placeSpeedMarkers(project, sequence, plan);
+            if (note) { log(note); await project.save(); }
+        } catch (e) {
+            log(`Note: couldn't add the slow-motion markers (${e}). The slow-motion shots are ${(plan.shots || []).filter((s) => s.speed && Number(s.speed) !== 1).map((s) => s.index).join(", ")}: set each to 50% with Cmd+R.`);
+        }
 
         if (plan.zooms && plan.zooms.items && plan.zooms.items.length > 0) {
             log(`Adding slow zooms to the ${plan.zooms.items.length} shot(s) whose footage is static…`);

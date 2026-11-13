@@ -194,7 +194,7 @@ s.append(table(["Job", "Do this", "Leave out"], [
 s += section("Which style to choose", "Styles come from real edits. Each sets the pace and how cuts sit on the music.")
 s.append(table(["Style", "What you get", "Use it for"], [
     ["<b>Your usual pace</b>", "Cuts on the music at the pace of your own edits, with optional brand cards.", "Your default for most music edits"],
-    ["<b>JD Sports store opening</b>", "Your two JD reels blended, with flash and zoom accents.", "JD Sports jobs"],
+    ["<b>JD Sports store opening</b>", "Your three JD reels: opens on the hero moment, ends on people, slow-mo marked.", "JD Sports jobs"],
     ["<b>Fast streetwear reel</b>", "Quick cuts on the beat, with flash and zoom accents.", "Retail and streetwear launches"],
     ["<b>Fashion event highlight</b>", "A music-driven launch-event highlight.", "Fashion events"],
     ["<b>GQ x Miele event reel</b>", "On the beat, with a quick open, a steady middle, a faster build and a slow logo ending. Shots start on the action.", "Premium brand events"],
@@ -377,7 +377,7 @@ s.append(Paragraph("<b>Tag, Describe, Detect Highlights, Analyze Frames and the 
 s += section("Things to know")
 s += bullets([
     "<b>Moments are suggestions.</b> Across your real edits, nothing reliably predicts which moment you'd pick. Review Moments is where a plan becomes yours.",
-    "<b>Slow motion in Review Moments only shows in the preview.</b> Premiere's plugin API has no speed control, so Build My Edit places the shot at normal speed. Set the speed yourself in Premiere.",
+    "<b>Slow motion is marked, not applied.</b> Premiere's plugin API has no speed control, so slowed shots are placed at normal speed under a <i>P Corp: slow-mo 50%</i> marker. Select the clip, Cmd+R, click the chain, Speed 50%.",
     "<b>Accents need an Adjustment Layer.</b> Premiere's plugin API can't create one. Make an item called exactly <i>Adjustment Layer</i> at your sequence's size before you build, or the flashes and zoom hits are skipped. Check its size by hand: a new one can take the size of whichever sequence is active.",
     "<b>No text.</b> The plugin can't create titles. Brand cards and captions are images, so add your titles by hand.",
     "<b>Rejects apply to planning, not everything.</b> Plan Edit and Describe leave rejected clips out. Assemble Rough Cut still uses every clip, and you choose interview cameras yourself.",

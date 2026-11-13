@@ -78,6 +78,36 @@ class Sequence:
             out.append(Shot(**{**s.__dict__, "t1": min(s.t1, hi) if hi is not None else s.t1}))
         return out
 
+    def visible_shots(self) -> list[Shot]:
+        """The cut a viewer sees (2026-11-13): at each moment, the footage on the highest video track. Josh cuts across V1 and V2 (V2 shots fill gaps in V1),
+        so reading V1 alone missed 16 of the 61 shots in his JD Midlands draft. Stills, adjustment layers and nested sequences above V1 are cards and effects,
+        not shots, and don't hide the footage under them; footage on V1 counts whatever its file type, as before. A shot partly covered from above becomes
+        the piece(s) still showing, with its source in/out moved to match."""
+        from learning.footage import VIDEO_EXTENSIONS
+        cands = [s for s in self.delivered_shots() if s.src_in is not None and s.src_out is not None and s.length > 1e-4 and not s.nested
+                 and (s.track == 1 or os.path.splitext(s.path or "")[1].lower() in VIDEO_EXTENSIONS)]
+        edges = sorted({round(t, 6) for s in cands for t in (s.t0, s.t1)})
+        pieces: list[list[Any]] = []
+        for a, b in zip(edges, edges[1:]):
+            if b - a < 1e-4:
+                continue
+            mid = (a + b) / 2.0
+            top = max((s for s in cands if s.t0 <= mid < s.t1), key=lambda s: s.track, default=None)
+            if top is None:
+                continue
+            if pieces and pieces[-1][0] is top and abs(pieces[-1][2] - a) < 1e-4:
+                pieces[-1][2] = b
+            else:
+                pieces.append([top, a, b])
+        out = []
+        for s, a, b in pieces:
+            if abs(a - s.t0) < 1e-4 and abs(b - s.t1) < 1e-4:
+                out.append(s)
+                continue
+            rate = s.speed or 1.0
+            out.append(Shot(**{**s.__dict__, "t0": a, "t1": b, "src_in": s.src_in + (a - s.t0) * rate, "src_out": s.src_in + (b - s.t0) * rate}))
+        return out
+
 
 def normalise_name(name: str | None) -> str:
     """Sequence names carry odd spacing ('15 sec ( 4x5 )'); lower-case with all whitespace removed is the stable key."""
