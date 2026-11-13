@@ -75,7 +75,7 @@ def pool_clips(project_path: str) -> dict[str, list[dict[str, Any]]]:
     out: dict[str, list[dict[str, Any]]] = {}
     for pool, seq_name in POOLS.items():
         seen, clips = set(), []
-        for s in sorted((x for x in seqs[seq_name].delivered_shots() if x.track == 1), key=lambda x: x.t0):
+        for s in sorted(seqs[seq_name].visible_shots(), key=lambda x: x.t0):   # V1 and above (2026-11-13)
             name = os.path.basename(s.path or "")
             if name in seen:
                 continue
@@ -162,7 +162,7 @@ def locked_cut(project_path: str) -> tuple[list[dict[str, Any]], str]:
         return his, f"your Learn click at {r['ts'][11:16]} on \"{CUT}\""
     seq = next(s for s in prproj.read_sequences(project_path) if s.name.strip() == CUT)
     his = [{"order": k, "name": os.path.basename(x.path or ""), "source_in": x.src_in, "source_out": x.src_out, "t0": x.t0, "length": x.length, "speed": x.speed}
-           for k, x in enumerate(sorted((x for x in seq.delivered_shots() if x.track == 1 and x.src_in is not None), key=lambda x: x.t0), start=1)]
+           for k, x in enumerate(sorted(seq.visible_shots(), key=lambda x: x.t0), start=1)]   # what the viewer sees, V1 and above (2026-11-13)
     return his, f"\"{CUT}\" as saved now"
 
 

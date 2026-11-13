@@ -165,8 +165,10 @@ if Path(tc.HAUS).exists():
           "left of the frame's centre in his preview too (the PNG's own margins)", abs((xs.max() - xs.min() + 1) - 496) <= 2
           and abs((xs.min() + xs.max()) / 2 - (1080 - 16.5)) <= 2, (xs.min(), xs.max()))
     notes = " ".join(r["notes"])
-    check("the letterbox is left out (his request), the titles are named for him to paste, the extra layer is named", "4x3 Clean.png" in notes and "titles (9 text item(s))" in notes
-          and "C2969.MP4 on V2" in notes, notes)
+    check("the letterbox is left out (his request) and the titles are named for him to paste", "4x3 Clean.png" in notes and "titles (9 text item(s))" in notes, notes)
+    # 2026-11-13: footage on V2 is read as his cut (top track wins). His V2 C2969 is the same clip, at the same time, with the same zoom blur and B&W as the V1
+    # shot under it, so the opening slot gets exactly those effects and it is no longer reported as an extra layer that wasn't copied.
+    check("his stacked V2 copy of the opening shot isn't reported as a layer left out", "C2969.MP4 on V2" not in notes, notes)
     check("his project file was only read", Path(tc.HAUS).stat().st_mtime == before)
 else:
     print("SKIP  his HAUS project (Lexar - A not mounted)")

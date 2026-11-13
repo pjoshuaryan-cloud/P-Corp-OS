@@ -22,7 +22,7 @@ def his_shots(project: str, name_part: str) -> tuple[str, list[prproj.Shot]]:
     if not candidates:
         raise SystemExit(f"No sequence with '{name_part}' in its name. Found: {[s.name for s in prproj.read_sequences(project)]}")
     seq = max(candidates, key=lambda s: len(s.delivered_shots()))
-    return seq.name, [s for s in seq.delivered_shots() if s.src_in is not None and s.src_out is not None and s.track == 1]
+    return seq.name, sorted(seq.visible_shots(), key=lambda s: s.t0)   # what the viewer sees, V1 and above (2026-11-13)
 
 
 def compare(shots: list[prproj.Shot], plan: dict) -> dict:

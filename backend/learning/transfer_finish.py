@@ -92,6 +92,7 @@ def read_finish(project_path: str, sequence: str, out_seconds: float) -> dict[st
     paths: dict[str, str] = {}
     for p in sorted(prproj.project_media_paths(project_path)):
         paths.setdefault(Path(p).name, p)
+    nested = {n.strip().lower() for n in post_reference.sequence_names(project_path)}
     found: dict[str, list[dict[str, Any]]] = {"shots": [], "overlays": [], "images": [], "titles": [], "layered_clips": [], "sounds": []}
     for tg in seq.findall("TrackGroups/TrackGroup"):
         group = ids.get(tg.find("Second").attrib.get("ObjectRef", ""))
@@ -137,7 +138,7 @@ def read_finish(project_path: str, sequence: str, out_seconds: float) -> dict[st
                                             "opacity_keys": [(t - src_in, v) for t, v in _animated(opacity)]})
                 elif "AE.ADBE Text" in matches or (not base["path"] and name == "Graphic"):
                     found["titles"].append(base)
-                elif number == 1:
+                elif number == 1 or name.strip().lower() not in nested:   # 2026-11-13: footage he cut on V2 is his cut too (a nested sequence isn't)
                     geometry = dict(next((p for m, p in comps if m == "AE.ADBE Geometry2"), {}))
                     motion = dict(next((p for m, p in comps if m == "AE.ADBE Motion"), {}))
                     found["shots"].append({**base, "effects": [m for m in matches if m in (post_accents.ZOOM_BLUR, post_accents.BLACK_WHITE)],
@@ -146,7 +147,36 @@ def read_finish(project_path: str, sequence: str, out_seconds: float) -> dict[st
                                            "motion_zoom": [(t - src_in, v) for t, v in _animated(_scale_param(motion))]})  # the plugin's: Motion > Scale
                 else:
                     found["layered_clips"].append({**base, "effects": matches})
+    found["shots"] = visible_pieces(found["shots"])
     return found
+
+
+def visible_pieces(shots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The footage a viewer sees (2026-11-13): at each moment, the shot on the highest video track. A V2 shot that fills a gap in V1 or covers part of a V1
+    shot is his cut, not a layer; a V1 shot under it shows only where nothing covers it. A piece that doesn't begin where its item begins keeps that item's
+    effects but not its punch-in (those keyframes were timed from the item's start). Same rule as learning/prproj.Sequence.visible_shots."""
+    edges = sorted({round(t, 6) for x in shots for t in (x["start"], x["end"])})
+    pieces: list[list[Any]] = []
+    for a, b in zip(edges, edges[1:]):
+        if b - a < 1e-4:
+            continue
+        mid = (a + b) / 2.0
+        top = max((x for x in shots if x["start"] <= mid < x["end"]), key=lambda x: x["track"], default=None)
+        if top is None:
+            continue
+        if pieces and pieces[-1][0] is top and abs(pieces[-1][2] - a) < 1e-4:
+            pieces[-1][2] = b
+        else:
+            pieces.append([top, a, b])
+    out = []
+    for x, a, b in pieces:
+        if abs(a - x["start"]) < 1e-4 and abs(b - x["end"]) < 1e-4:
+            out.append(x)
+        elif abs(a - x["start"]) < 1e-4:
+            out.append({**x, "end": b})
+        else:
+            out.append({**x, "start": a, "end": b, "src_in": x["src_in"] + (a - x["start"]), "punch_in": [], "motion_zoom": []})
+    return out
 
 
 def _safe(text: str) -> str:

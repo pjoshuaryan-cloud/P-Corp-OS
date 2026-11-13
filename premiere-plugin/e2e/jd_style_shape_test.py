@@ -40,6 +40,17 @@ half = Sequence(name="S", out_mark=None, in_mark=None, tracks=[[Shot(t0=0, t1=2,
 pieces = half.visible_shots()
 check("a slowed shot split by a cutaway keeps its speed in both pieces", [round(p.speed, 3) for p in pieces if p.path.endswith("A.MP4")] == [0.5, 0.5], [(p.src_in, p.src_out, p.speed) for p in pieces])
 
+# ---- Build My Edit's copy of his finishing reads V2 the same way
+from learning import transfer_finish as tf  # noqa: E402
+fin = tf.visible_pieces([
+    {"name": "A", "track": 1, "start": 0.0, "end": 2.0, "src_in": 5.0, "effects": ["zoom"], "params": {}, "punch_in": [(0.0, 100), (2.0, 110)], "motion_zoom": []},
+    {"name": "RC_ED_2", "track": 2, "start": 0.5, "end": 1.0, "src_in": 1.0, "effects": ["bw"], "params": {}, "punch_in": [], "motion_zoom": []},
+    {"name": "B", "track": 1, "start": 2.0, "end": 3.0, "src_in": 0.0, "effects": [], "params": {}, "punch_in": [], "motion_zoom": []},
+    {"name": "C", "track": 2, "start": 3.0, "end": 3.5, "src_in": 0.0, "effects": [], "params": {}, "punch_in": [], "motion_zoom": []}])
+check("finishing: a V2 cutaway and a V2 shot in a V1 gap are shots", [(x["name"], x["start"], x["end"]) for x in fin] == [("A", 0.0, 0.5), ("RC_ED_2", 0.5, 1.0), ("A", 1.0, 2.0), ("B", 2.0, 3.0), ("C", 3.0, 3.5)], fin)
+check("the V2 shot keeps its own effect", fin[1]["effects"] == ["bw"])
+check("the rest of a covered V1 shot keeps its effect but drops a punch-in timed from its start", fin[2]["effects"] == ["zoom"] and fin[2]["punch_in"] == [] and abs(fin[2]["src_in"] - 6.0) < 1e-9 and fin[0]["punch_in"])
+
 # ---- the JD style
 prof = post_style.profile_from_references(["jd-sports-store-opening"])
 check("the JD style now pools all three JD edits", prof.notes and "jd-sports-midlands-draft-01" in prof.notes[0], prof.notes)
