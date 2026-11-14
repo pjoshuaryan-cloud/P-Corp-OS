@@ -44,7 +44,10 @@ public struct VoiceEndpointer {
     public private(set) var hasDetectedSpeech = false
     private var window: [(t: TimeInterval, rms: Double)] = []
     private var lastWordCount = 0
-    private var lastVoiceAt: TimeInterval = 0
+    /// When the mic last heard Josh (seconds since recording began), and when it first did: conversation mode reads these
+    /// to measure the pause and how long he has been talking (TurnTaking, ConversationalVoice.swift).
+    public private(set) var lastVoiceAt: TimeInterval = 0
+    public private(set) var firstVoiceAt: TimeInterval?
 
     public init(settings: Settings = Settings()) {
         self.settings = settings
@@ -81,6 +84,7 @@ public struct VoiceEndpointer {
             lastWordCount = words
             hasDetectedSpeech = true
             lastVoiceAt = elapsed
+            if firstVoiceAt == nil { firstVoiceAt = elapsed }
         }
 
         window.append((elapsed, rms))
@@ -93,6 +97,7 @@ public struct VoiceEndpointer {
         if rms > threshold {
             hasDetectedSpeech = true
             lastVoiceAt = elapsed
+            if firstVoiceAt == nil { firstVoiceAt = elapsed }
         }
 
         if !hasDetectedSpeech {

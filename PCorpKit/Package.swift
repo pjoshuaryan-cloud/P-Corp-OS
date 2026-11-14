@@ -14,6 +14,11 @@ let package = Package(
         .target(
             name: "PCorpKit",
             path: "Sources/PCorpKit"
+        ),
+        .testTarget(
+            name: "PCorpKitTests",
+            dependencies: ["PCorpKit"],
+            path: "Tests/PCorpKitTests"
         )
     ]
 )

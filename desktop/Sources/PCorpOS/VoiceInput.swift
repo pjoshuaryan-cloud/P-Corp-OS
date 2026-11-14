@@ -51,13 +51,185 @@ final class VoiceInput: ObservableObject {
     private var recognizerRestarts = 0
     private let maxRestarts = 8
 
-    private var joinedTranscript: String {
+    /// Everything recognized in the current recording, echo included.
+    private var rawTranscript: String {
         [committedText, segmentText].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// What Josh said: in a conversation, the echo of Frank before Josh cut in (`dropWords`) is left out.
+    private var joinedTranscript: String {
+        dropWords > 0 ? Self.dropping(dropWords, from: rawTranscript) : rawTranscript
+    }
+
+    /// `text` without its first `count` words (counted the way EchoFilter counts them).
+    private static func dropping(_ count: Int, from text: String) -> String {
+        var seen = 0
+        let tokens = text.split(whereSeparator: { $0.isWhitespace })
+        for (i, token) in tokens.enumerated() {
+            if seen >= count { return tokens[i...].joined(separator: " ") }
+            seen += EchoFilter.wordCount(String(token))
+        }
+        return ""
+    }
+
+    // MARK: Conversation mode (2026-11-14)
+    //
+    // One tap starts a back-and-forth: the mic stays on for the whole conversation (shown on screen the whole time) and turns
+    // pass between Josh and Frank with no clicking. Josh's turn ends when TurnTaking (PCorpKit, ConversationalVoice.swift) says
+    // he's finished -- the pause, the words, and optionally the small model (VoiceTurnCheck) -- not a fixed timer, so a long
+    // answer with thinking pauses isn't cut off. During Frank's turn the mic listens for Josh talking over him (EchoFilter
+    // tells his words from Frank's echo on the speakers); when he does, Frank stops and Josh's words so far are kept.
+    // It ends when he taps it off, says "that's all" (ConversationExit), or stays quiet for 8 s on his turn.
+    // This changes the 2026-07-28 push-to-talk decision ONLY while conversation mode is switched on (Josh's call, 2026-11-14).
+
+    enum ConversationPhase: Equatable { case josh, frank }
+    /// nil = not in a conversation (plain push-to-talk).
+    @Published private(set) var conversationPhase: ConversationPhase?
+    var isInConversation: Bool { conversationPhase != nil }
+
+    private var frankSaid: () -> String = { "" }
+    private var onTurn: ((String, ConversationExit) -> Void)?
+    private var onBargeIn: (() -> Void)?
+    private var onConversationEnded: ((String?) -> Void)?
+    private var dropWords = 0
+    private var verdicts: [String: TurnTaking.Verdict] = [:]
+    private var askedModelFor: Set<String> = []
+
+    private static let checkWaitLimit: TimeInterval = 2.2
+
+    private static func conversationEndpointer() -> VoiceEndpointer {
+        var settings = VoiceEndpointer.Settings()
+        settings.pauseSeconds = .infinity          // TurnTaking decides when a turn ends
+        settings.danglingPauseSeconds = .infinity
+        settings.noSpeechSeconds = 8               // quiet on his turn for 8 s: the conversation ends
+        settings.maxSeconds = 120
+        return VoiceEndpointer(settings: settings)
+    }
+
+    /// Starts a conversation. `frankSaid` returns what Frank has said aloud in his current reply (for the echo check);
+    /// `onTurn` gets each finished turn of Josh's; `onBargeIn` fires when Josh talks over Frank (stop Frank's voice);
+    /// `onEnded` fires once, with a note on why it ended (nil when Josh tapped it off).
+    func startConversation(frankSaid: @escaping () -> String, onTurn: @escaping (String, ConversationExit) -> Void,
+                           onBargeIn: @escaping () -> Void, onEnded: @escaping (String?) -> Void) {
+        guard !isListening else { return }
+        self.frankSaid = frankSaid
+        self.onTurn = onTurn
+        self.onBargeIn = onBargeIn
+        self.onConversationEnded = onEnded
+        conversationPhase = .josh
+        start { [weak self] transcript in
+            // Only reached when recording couldn't start (permissions, no recognizer): turns are delivered through onTurn.
+            guard let self, transcript == nil, self.conversationPhase != nil, !self.isListening else { return }
+            self.endConversation(note: self.errorMessage)
+        }
+    }
+
+    /// Frank has finished his reply (or had nothing to say): it's Josh's turn.
+    func frankFinished() {
+        guard conversationPhase == .frank, isListening else { return }
+        conversationPhase = .josh
+        startFreshTurn()
+    }
+
+    /// Ends the conversation and turns the mic off. Nothing more is sent.
+    func endConversation(note: String? = nil) {
+        guard conversationPhase != nil else { return }
+        let ended = onConversationEnded
+        conversationPhase = nil
+        onTurn = nil
+        onBargeIn = nil
+        onConversationEnded = nil
+        frankSaid = { "" }
+        dropWords = 0
+        if isListening {
+            onFinishedCallback = nil
+            stop(note: note)
+        } else if let note {
+            setStopNote(note)
+        }
+        ended?(note)
+    }
+
+    /// A new turn on the same live audio: what was heard so far (Josh's last turn, or Frank's echo) is dropped.
+    private func startFreshTurn() {
+        committedText = ""
+        segmentText = ""
+        transcript = ""
+        dropWords = 0
+        recognizerRestarts = 0
+        verdicts = [:]
+        askedModelFor = []
+        endpointer = Self.conversationEndpointer()
+        recordingStartedAt = Date()
+        startSegment()
+    }
+
+    /// Josh's turn, on every audio buffer: has he finished?
+    private func handleConversationLevel(rms: Double) {
+        let elapsed = Date().timeIntervalSince(recordingStartedAt)
+        if conversationPhase == .frank {
+            let heard = rawTranscript
+            guard !heard.isEmpty, EchoFilter.isBargeIn(heard: heard, frankSaid: frankSaid()) else { return }
+            // Josh is talking over Frank. Keep listening on the same audio (his first words are mid-recognition), drop the echo
+            // before them, and make it his turn.
+            dropWords = EchoFilter.joshStartIndex(heard: heard, frankSaid: frankSaid()) ?? 0
+            transcript = joinedTranscript
+            conversationPhase = .josh
+            endpointer = Self.conversationEndpointer()
+            recordingStartedAt = Date()
+            verdicts = [:]
+            askedModelFor = []
+            onBargeIn?()
+            return
+        }
+        if let reason = endpointer.feed(rms: rms, elapsed: elapsed, transcript: transcript) {
+            switch reason {
+            case .noSpeech: endConversation(note: "Conversation ended after 8 s of quiet.")
+            case .timeLimit: deliverTurn()
+            case .pause: break
+            }
+            return
+        }
+        guard endpointer.hasDetectedSpeech else { return }
+        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let pause = elapsed - endpointer.lastVoiceAt
+        let talked = endpointer.lastVoiceAt - (endpointer.firstVoiceAt ?? endpointer.lastVoiceAt)
+        if TurnTaking.worthAskingModel(pause: pause, transcript: text), !askedModelFor.contains(text) {
+            askedModelFor.insert(text)
+            let frankLast = frankSaid()
+            Task { [weak self] in
+                if let verdict = await VoiceTurnCheck.ask(transcript: text, frankLast: frankLast.isEmpty ? nil : frankLast) {
+                    self?.verdicts[text] = verdict
+                }
+            }
+        }
+        // The check takes about a second from here (measured 2026-11-14: 1.0-1.1 s). While it's on its way, wait for it
+        // (up to `checkWaitLimit` of pause) rather than answering on the pause alone and cutting Josh off mid-thought.
+        if askedModelFor.contains(text), verdicts[text] == nil, pause < Self.checkWaitLimit { return }
+        if TurnTaking.shouldRespond(pause: pause, transcript: text, talkedSeconds: talked, verdict: verdicts[text]) {
+            deliverTurn()
+        }
+    }
+
+    private func deliverTurn() {
+        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, conversationPhase == .josh else { return }
+        let exit = ConversationExit.check(text)
+        if exit == .endOnly {
+            endConversation(note: "Conversation ended: you said \"\(text)\".")
+            return
+        }
+        conversationPhase = .frank
+        startFreshTurn()
+        onTurn?(text, exit)
     }
 
     /// Returns the final transcript once stopped, or nil if nothing was captured (e.g. permission denied, no speech).
     func toggle(onFinished: @escaping (String?) -> Void) {
-        if isListening {
+        if isInConversation {
+            endConversation()
+        } else if isListening {
             stop(note: nil)
         } else {
             start(onFinished: onFinished)
@@ -117,8 +289,9 @@ final class VoiceInput: ObservableObject {
         onFinishedCallback = onFinished
         didDeliver = false
         stopRequested = false
-        endpointer = VoiceEndpointer()
+        endpointer = isInConversation ? Self.conversationEndpointer() : VoiceEndpointer()
         recordingStartedAt = Date()
+        dropWords = 0
         committedText = ""
         segmentText = ""
         recognizerRestarts = 0
@@ -209,11 +382,16 @@ final class VoiceInput: ObservableObject {
         let lastedLongEnough = Date().timeIntervalSince(segmentStartedAt) > 1.0
         if recognizerRestarts >= maxRestarts || (failure != nil && !lastedLongEnough) {
             if let failure { errorMessage = "Recognition error: \(failure.localizedDescription)" }
+            if isInConversation {
+                endConversation(note: errorMessage ?? "Apple's recognizer kept stopping, so I ended the conversation.")
+                return
+            }
             stop(note: nil)
             finishAndDeliver()
             return
         }
         committedText = joinedTranscript
+        dropWords = 0
         segmentText = ""
         recognizerRestarts += 1
         startSegment()
@@ -222,6 +400,10 @@ final class VoiceInput: ObservableObject {
     /// Runs on every audio buffer (~every 20-30 ms) while listening.
     private func handleLevel(rms: Double) {
         guard isListening else { return }
+        if isInConversation {
+            handleConversationLevel(rms: rms)
+            return
+        }
         let elapsed = Date().timeIntervalSince(recordingStartedAt)
         guard let reason = endpointer.feed(rms: rms, elapsed: elapsed, transcript: transcript) else { return }
         switch reason {

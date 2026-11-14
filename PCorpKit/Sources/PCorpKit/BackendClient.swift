@@ -549,7 +549,9 @@ public final class BackendClient: ObservableObject {
     /// see PendingAttachment. Always an array, never optional, so both this
     /// function and the Python decode side (backend/app/main.py) index the
     /// same shape whether zero, one, or several files are attached.
-    public func send(_ text: String, attachments: [PendingAttachment] = []) {
+    /// `voice`: Josh SPOKE this (conversational voice, 2026-11-14) -- the backend then tells Frank to answer like he's on a call
+    /// (short, no lists), since the reply will be heard. See backend/app/voice_conversation.py.
+    public func send(_ text: String, attachments: [PendingAttachment] = [], voice: Bool = false) {
         // Real bug found live (2026-08-14): if the connection had silently
         // died since the last message -- backend restarted, network drop,
         // anything -- `task` was nil here and this whole function was a
@@ -579,7 +581,7 @@ public final class BackendClient: ObservableObject {
         let wireAttachments = attachments.map { attachment in
             WireAttachment(media_type: attachment.mediaType, filename: attachment.filename, data: attachment.data.base64EncodedString())
         }
-        let payload = WirePayload(text: text, attachments: wireAttachments)
+        let payload = WirePayload(text: text, attachments: wireAttachments, voice: voice ? true : nil)
         guard let json = try? JSONEncoder().encode(payload), let jsonString = String(data: json, encoding: .utf8) else {
             appendToLastAssistantMessage("[connection error: couldn't encode message]")
             isStreaming = false
@@ -694,7 +696,7 @@ public final class BackendClient: ObservableObject {
     /// deliberately not sent -- see AttachmentKind.from's own doc comment,
     /// derived server-side only.
     private struct WireAttachment: Encodable { let media_type: String; let filename: String; let data: String }
-    private struct WirePayload: Encodable { let text: String; let attachments: [WireAttachment] }
+    private struct WirePayload: Encodable { let text: String; let attachments: [WireAttachment]; let voice: Bool? }
 
     /// One shape covering two real cases sharing the same messages.attachments
     /// column (2026-09-09) -- a user row's real attachment (filename/

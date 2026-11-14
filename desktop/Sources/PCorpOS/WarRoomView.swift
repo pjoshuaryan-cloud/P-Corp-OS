@@ -46,12 +46,17 @@ struct WarRoomView: View {
     // BackendClient's own cold-launch flag/timing to avoid any race
     // between the two -- this just gates "have we spoken yet."
     private static var hasGreetedThisLaunch = false
-    /// Set true right when a push-to-talk transcript is sent, consumed
-    /// once that turn's reply finishes streaming -- the mechanism for
-    /// "only speak replies to voice input" (confirmed decision,
-    /// 2026-07-28): a typed message never sets this, so its reply stays
-    /// silent same as before VoiceOutput existed.
-    @State private var pendingVoiceReply = false
+    /// True while the reply to a SPOKEN turn is being written and read aloud -- the mechanism for "only speak replies to
+    /// voice input" (confirmed decision, 2026-07-28): a typed message never sets this, so its reply stays silent.
+    /// 2026-11-14 (conversational voice): the reply is read a sentence at a time as it streams in (SpeechChunker), not after
+    /// it's complete. Cleared when Josh talks over Frank, so the rest of that reply stays on screen but isn't spoken.
+    @State private var speakingReply = false
+    @State private var speechChunker = SpeechChunker()
+    /// Josh finished another turn while Frank's previous reply was still being written (he talked over him): sent once the
+    /// backend is free, since the socket answers one message at a time.
+    @State private var queuedVoiceTurn: String?
+    /// He said something, then "that's all": end the conversation once Frank has answered it.
+    @State private var endConversationAfterReply = false
 
     /// Real time-of-day check, not a fixed string. Takes the date explicitly
     /// (from the TimelineView in `body`, below) rather than reading `.now`
@@ -125,7 +130,7 @@ struct WarRoomView: View {
                 )
             }
 
-            if voiceInput.isListening {
+            if voiceInput.isListening && voiceInput.conversationPhase != .frank {
                 // While actively recording, the blob takes over the center
                 // area regardless of whether a text thread exists — this is
                 // the case FrankOrb's audio-reactive path (below) was built
@@ -143,13 +148,15 @@ struct WarRoomView: View {
                     .frame(maxWidth: 480)
                     .padding(.top, 8)
 
-                Text("Take your time — I'll wait a few seconds. Click the mic to send now.")
+                Text(voiceInput.isInConversation
+                     ? "In conversation — take your time, I'll answer when you're done. Talk over me any time. Say \"that's all\" or click the conversation button to end."
+                     : "Take your time — I'll wait a few seconds. Click the mic to send now.")
                     .font(PCorpFont.body(11))
                     .foregroundStyle(theme.textTertiary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 480)
                     .padding(.top, 4)
-            } else if voiceOutput.isSpeaking {
+            } else if voiceOutput.isSpeaking || voiceInput.conversationPhase == .frank {
                 // Mirrors the isListening case above -- the orb takes over
                 // regardless of the text thread underneath while Frank is
                 // actually talking, reactive to real playback amplitude
@@ -163,10 +170,17 @@ struct WarRoomView: View {
                     .frame(width: 185, height: 185)
                     .frame(maxWidth: .infinity)
 
-                Text("Speaking…")
+                Text(voiceOutput.isPlaying ? "Speaking…" : "Thinking…")
                     .font(PCorpFont.body(15))
                     .foregroundStyle(theme.textSecondary)
                     .padding(.top, 8)
+
+                if voiceInput.isInConversation {
+                    Text("Still listening — just start talking to cut in.")
+                        .font(PCorpFont.body(11))
+                        .foregroundStyle(theme.textTertiary)
+                        .padding(.top, 4)
+                }
 
                 Spacer(minLength: 20)
             } else if let voiceOutputError = voiceOutput.errorMessage {
@@ -345,18 +359,77 @@ struct WarRoomView: View {
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
         }
+        .onChange(of: backend.messages.last?.content) { _, content in
+            // Frank's reply growing: speak each sentence as soon as it's finished (SpeechChunker only hands out complete
+            // sentences, so nothing broken is ever synthesized).
+            guard speakingReply, backend.isStreaming, backend.messages.last?.role == "assistant", let content else { return }
+            for piece in speechChunker.feed(content) { voiceOutput.enqueue(piece) }
+        }
         .onChange(of: backend.isStreaming) { _, isStreaming in
-            // isStreaming going true -> false is the real signal a turn
-            // just completed (backend's own "\n[done]" sentinel) -- only
-            // then is the assistant's reply actually complete text, safe
-            // to hand to VoiceOutput. Speaking it mid-stream would mean
-            // synthesizing broken sentence fragments as they arrive.
-            guard !isStreaming, pendingVoiceReply else { return }
-            pendingVoiceReply = false
-            if let reply = backend.messages.last(where: { $0.role == "assistant" })?.content {
-                voiceOutput.speak(reply)
+            // isStreaming going true -> false is the real signal a turn just completed (the backend's "\n[done]" sentinel).
+            guard !isStreaming else { return }
+            if speakingReply {
+                speakingReply = false
+                if let reply = backend.messages.last(where: { $0.role == "assistant" })?.content {
+                    for piece in speechChunker.flush(reply) { voiceOutput.enqueue(piece) }
+                }
+                voiceOutput.endReply()
+            }
+            if let next = queuedVoiceTurn {
+                queuedVoiceTurn = nil
+                sendVoiceTurn(next)
+            } else if !voiceOutput.isSpeaking, voiceInput.conversationPhase == .frank {
+                // Frank's voice was already stopped (a new chat, a voice error) before the reply finished: Josh's turn.
+                voiceInput.frankFinished()
             }
         }
+        .onChange(of: voiceOutput.isSpeaking) { _, speaking in
+            // Frank has finished speaking his reply (or it had nothing to say, or his voice failed): Josh's turn.
+            guard !speaking, !speakingReply, queuedVoiceTurn == nil, voiceInput.conversationPhase == .frank else { return }
+            if endConversationAfterReply {
+                endConversationAfterReply = false
+                voiceInput.endConversation(note: "Conversation ended.")
+            } else {
+                voiceInput.frankFinished()
+            }
+        }
+    }
+
+    /// Sends something Josh SAID and reads Frank's reply aloud as it is written.
+    private func sendVoiceTurn(_ text: String) {
+        speechChunker = SpeechChunker()
+        speakingReply = true
+        voiceOutput.beginReply()
+        backend.send(text, voice: true)
+    }
+
+    private func toggleConversation() {
+        if voiceInput.isInConversation {
+            voiceInput.endConversation()
+            return
+        }
+        voiceOutput.stop()
+        speakingReply = false
+        endConversationAfterReply = false
+        voiceInput.startConversation(
+            frankSaid: { [voiceOutput] in voiceOutput.spokenText },
+            onTurn: { text, exit in
+                endConversationAfterReply = exit == .sendThenEnd
+                if backend.isStreaming {
+                    queuedVoiceTurn = text      // his previous turn's reply is still being written
+                } else {
+                    sendVoiceTurn(text)
+                }
+            },
+            onBargeIn: {
+                speakingReply = false           // the rest of this reply shows on screen but isn't spoken
+                voiceOutput.stop()
+            },
+            onEnded: { _ in
+                queuedVoiceTurn = nil
+                endConversationAfterReply = false
+            }
+        )
     }
 
     private func sendMessage() {
@@ -517,18 +590,31 @@ struct WarRoomView: View {
                 }
                 voiceInput.toggle { transcript in
                     guard let transcript else { return }
-                    pendingVoiceReply = true
-                    backend.send(transcript)
+                    sendVoiceTurn(transcript)
                 }
             } label: {
                 Image(systemName: "mic.fill")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(theme.accentText)
                     .frame(width: 32, height: 32)
-                    .background(Circle().fill(voiceInput.isListening ? Color.red : theme.accentFill))
+                    .background(Circle().fill(voiceInput.isListening && !voiceInput.isInConversation ? Color.red : theme.accentFill))
             }
             .buttonStyle(.plain)
+            .disabled(voiceInput.isInConversation)
             .help("Push-to-talk — click to start, stops and sends automatically once you stop talking")
+
+            // Conversation mode (2026-11-14): one click, then just talk -- the mic stays on and turns pass back and forth.
+            Button(action: toggleConversation) {
+                Image(systemName: voiceInput.isInConversation ? "waveform.circle.fill" : "waveform")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(voiceInput.isInConversation ? Color.white : theme.accentText)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(voiceInput.isInConversation ? Color.red : theme.accentFill))
+            }
+            .buttonStyle(.plain)
+            .help(voiceInput.isInConversation
+                  ? "In conversation — the mic is on. Click to end (or say \"that's all\")."
+                  : "Conversation — talk back and forth with Frank, no clicking between turns. The mic stays on until you end it.")
 
             Button(action: pickAttachments) {
                 Image(systemName: "paperclip")

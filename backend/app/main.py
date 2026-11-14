@@ -324,6 +324,7 @@ from app.scheduled_notifications import (
     execute_scheduled_notification_tool_call,
 )
 from app.tool_labels import label_for_tool
+from app.voice_conversation import VOICE_STYLE_NOTE, turn_check as voice_turn_check
 from app.document_attachments import (
     ATTACHMENT_CAPABILITY_NOTE,
     ATTACHMENTS_DIR,
@@ -5663,6 +5664,18 @@ async def _speak_via_elevenlabs(client: httpx.AsyncClient, text: str) -> bytes:
     return response.content
 
 
+class VoiceTurnCheckRequest(BaseModel):
+    transcript: str
+    frank_last: str | None = None
+
+
+@app.post("/voice/turn-check")
+async def voice_turn_check_route(request: VoiceTurnCheckRequest, _: None = Depends(verify_token)) -> dict:
+    """Has Josh finished talking? (conversational voice, 2026-11-14). Off unless VOICE_TURN_CHECK_ENABLED is set -- see
+    voice_conversation.py for why and what it costs. Always answers 200; verdict None means "decide without me"."""
+    return await voice_turn_check(request.transcript, request.frank_last)
+
+
 @app.post("/speak")
 async def speak(request: SpeakRequest, http_request: Request, _: None = Depends(verify_token)) -> Response:
     # ElevenLabs first (genuinely human, stylized voice — the reason it's
@@ -5819,11 +5832,14 @@ async def _websocket_chat_session(websocket: WebSocket, postgres_conn) -> None:
             try:
                 payload = json.loads(raw_message)
                 user_text = payload.get("text", "")
+                # Spoken turn (2026-11-14, conversational voice): Frank answers like he's on a call -- see voice_conversation.py.
+                spoken_turn = payload.get("voice") is True
                 all_attachments = payload.get("attachments", [])
                 attachments_payload = all_attachments[:MAX_ATTACHMENTS_PER_MESSAGE]
                 dropped_count = len(all_attachments) - len(attachments_payload)
             except json.JSONDecodeError:
                 user_text = raw_message
+                spoken_turn = False
                 attachments_payload = []
                 dropped_count = 0
 
@@ -5880,6 +5896,7 @@ async def _websocket_chat_session(websocket: WebSocket, postgres_conn) -> None:
                 + await build_people_block(postgres_conn)
                 + await build_finance_block(postgres_conn)
                 + await build_trading_division_block()
+                + (VOICE_STYLE_NOTE if spoken_turn else "")
             )
 
             try:
