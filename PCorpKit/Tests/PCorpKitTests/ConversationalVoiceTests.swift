@@ -46,8 +46,8 @@ final class ConversationalVoiceTests: XCTestCase {
         // ---- turn taking
         let T = TurnTaking.self
         check("a short breath doesn't end a turn", !T.shouldRespond(pause: 0.5, transcript: "Book the venue for Friday.", talkedSeconds: 3, verdict: .finished))
-        check("a confirmed finished sentence is answered in under a second", T.shouldRespond(pause: 0.9, transcript: "Book the venue for Friday.", talkedSeconds: 3, verdict: .finished))
-        check("without the model, a finished sentence waits 1.5 s", !T.shouldRespond(pause: 1.2, transcript: "Book the venue for Friday.", talkedSeconds: 3, verdict: nil) && T.shouldRespond(pause: 1.5, transcript: "Book the venue for Friday.", talkedSeconds: 3, verdict: nil))
+        check("a confirmed finished sentence is answered in under a second", T.shouldRespond(pause: 0.75, transcript: "Book the venue for Friday.", talkedSeconds: 3, verdict: .finished))
+        check("without the model, a finished sentence waits 1.3 s", !T.shouldRespond(pause: 1.1, transcript: "Book the venue for Friday.", talkedSeconds: 3, verdict: nil) && T.shouldRespond(pause: 1.3, transcript: "Book the venue for Friday.", talkedSeconds: 3, verdict: nil))
         check("mid-thought ('and the other thing is') waits through a 3 s pause", !T.shouldRespond(pause: 3.0, transcript: "Book the venue and the other thing is", talkedSeconds: 5, verdict: nil) && !T.shouldRespond(pause: 3.0, transcript: "Book the venue and the other thing is", talkedSeconds: 5, verdict: .unfinished))
         check("but not forever", T.shouldRespond(pause: 4.0, transcript: "Book the venue and the other thing is", talkedSeconds: 5, verdict: nil))
         check("the model saying 'unfinished' buys time", !T.shouldRespond(pause: 2.5, transcript: "So I was thinking about the shoot", talkedSeconds: 5, verdict: .unfinished))

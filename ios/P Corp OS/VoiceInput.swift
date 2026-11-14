@@ -95,7 +95,7 @@ final class VoiceInput: ObservableObject {
     private var verdicts: [String: TurnTaking.Verdict] = [:]
     private var askedModelFor: Set<String> = []
 
-    private static let checkWaitLimit: TimeInterval = 2.2
+    private static let checkWaitLimit: TimeInterval = 2.0
 
     private static func conversationEndpointer() -> VoiceEndpointer {
         var settings = VoiceEndpointer.Settings()

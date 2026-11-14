@@ -133,15 +133,16 @@ public struct SpeechChunker {
 ///   * the longer Josh has been talking, the more patience (`longTalkExtra`) -- except after a question.
 public enum TurnTaking {
     public struct Settings {
-        public var minimumPause: TimeInterval = 0.7
-        public var questionPause: TimeInterval = 0.8
-        public var finishedPause: TimeInterval = 0.9
-        public var likelyDonePause: TimeInterval = 1.5
+        // Shortened 2026-11-14 (Josh: "make Frank answer a bit faster"): were 0.7 / 0.8 / 0.9 / 1.5, asking the model at 0.4 s.
+        public var minimumPause: TimeInterval = 0.6
+        public var questionPause: TimeInterval = 0.65
+        public var finishedPause: TimeInterval = 0.75
+        public var likelyDonePause: TimeInterval = 1.3
         public var unfinishedPause: TimeInterval = 4.0
         public var longTalkSeconds: TimeInterval = 15
         public var longTalkExtra: TimeInterval = 1.0
         /// When to ask the small model, so its answer is back by the time the pause is long enough to act on.
-        public var askModelAfter: TimeInterval = 0.4
+        public var askModelAfter: TimeInterval = 0.25
         public init() {}
     }
 

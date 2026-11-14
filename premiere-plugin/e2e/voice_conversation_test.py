@@ -15,6 +15,8 @@ sys.path.insert(0, str(ROOT / "backend"))
 from fastapi.testclient import TestClient  # noqa: E402
 from app import main, voice_conversation as vc  # noqa: E402
 
+os.environ.pop("VOICE_TURN_CHECK_ENABLED", None)   # main loads backend/.env, which turns the check on (2026-11-14): start from off
+
 fails = 0
 
 
@@ -52,11 +54,11 @@ async def conversation_one(*args, **kwargs):
 
 patches = {
     "run_claude_turn": fake_turn, "save_message": fake_save, "load_history": no_history, "get_active_conversation_id": conversation_one,
-    "build_memory_block": empty_block, "build_alpha_mode_block": empty_block, "build_operations_block": empty_block,
-    "build_personal_block": empty_block, "build_joshx_block": empty_block, "build_people_block": empty_block,
-    "build_finance_block": empty_block, "build_trading_division_block": empty_block,
 }
 originals = {name: getattr(main, name) for name in patches}
+# Frank's background information comes from the ready copy (app/frank_context.py): give it made-up builders, so nothing is read.
+real_builders, real_text = main.FRANK_CONTEXT.builders, main.FRANK_CONTEXT.text
+main.FRANK_CONTEXT.builders, main.FRANK_CONTEXT.text = [empty_block], None
 real_token, real_key = main.AUTH_TOKEN, os.environ.get("ANTHROPIC_API_KEY")
 try:
     for name, fake in patches.items():
@@ -78,6 +80,7 @@ try:
 finally:
     for name, original in originals.items():
         setattr(main, name, original)
+    main.FRANK_CONTEXT.builders, main.FRANK_CONTEXT.text = real_builders, real_text
     main.AUTH_TOKEN = real_token
     if real_key is None:
         os.environ.pop("ANTHROPIC_API_KEY", None)

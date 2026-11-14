@@ -325,6 +325,7 @@ from app.scheduled_notifications import (
 )
 from app.tool_labels import label_for_tool
 from app.voice_conversation import VOICE_STYLE_NOTE, turn_check as voice_turn_check
+from app.frank_context import FrankContext
 from app.document_attachments import (
     ATTACHMENT_CAPABILITY_NOTE,
     ATTACHMENTS_DIR,
@@ -1151,7 +1152,15 @@ async def lifespan(app: FastAPI):
         # reasoning as every other loop here.
         if DATA_BACKEND == "postgres" and not hasattr(app.state, "venture_scan_task"):
             app.state.venture_scan_task = asyncio.create_task(_venture_scan_loop(app))
+    # Frank's background information, kept ready (2026-11-14, app/frank_context.py). Read-only, so it runs on the Mac and on
+    # Render alike. Each refresh borrows a pool connection for one pass (`pool.connection()` hands it back reset).
+    if not hasattr(app.state, "frank_context_task"):
+        connect = (lambda: app.state.postgres_pool.connection()) if DATA_BACKEND == "postgres" and hasattr(app.state, "postgres_pool") else None
+        app.state.frank_context_task = asyncio.create_task(FRANK_CONTEXT.run(connect))
     yield
+    if hasattr(app.state, "frank_context_task"):
+        app.state.frank_context_task.cancel()
+        del app.state.frank_context_task
     if hasattr(app.state, "trigger_scheduler_task"):
         app.state.trigger_scheduler_task.cancel()
         del app.state.trigger_scheduler_task
@@ -5715,6 +5724,20 @@ async def speak(request: SpeakRequest, http_request: Request, _: None = Depends(
         raise HTTPException(status_code=503, detail="Frank's voice is unavailable right now.") from error
 
 
+# Frank's background information, kept ready and refreshed in the background (app/frank_context.py). Same sections, same
+# order as when it was built per message.
+FRANK_CONTEXT = FrankContext([
+    build_memory_block,
+    build_alpha_mode_block,
+    build_operations_block,
+    build_personal_block,
+    build_joshx_block,
+    build_people_block,
+    build_finance_block,
+    lambda conn: build_trading_division_block(),
+])
+
+
 @app.websocket("/ws")
 async def websocket_chat(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -5885,17 +5908,12 @@ async def _websocket_chat_session(websocket: WebSocket, postgres_conn) -> None:
                 conversation_id, "user", user_text, attachments=saved_attachments or None, postgres_conn=postgres_conn
             )
 
+            # Background information (memory, Alpha Mode, Joshx, personal, people, finance, operations, trading) comes from
+            # the ready copy kept by FRANK_CONTEXT (2026-11-14): building it per message took ~30 s on the Mac.
             system_prompt = (
                 SYSTEM_PROMPT
                 + ATTACHMENT_CAPABILITY_NOTE
-                + await build_memory_block(postgres_conn)
-                + await build_alpha_mode_block(postgres_conn)
-                + await build_operations_block(postgres_conn)
-                + await build_personal_block(postgres_conn)
-                + await build_joshx_block(postgres_conn)
-                + await build_people_block(postgres_conn)
-                + await build_finance_block(postgres_conn)
-                + await build_trading_division_block()
+                + await FRANK_CONTEXT.get(postgres_conn)
                 + (VOICE_STYLE_NOTE if spoken_turn else "")
             )
 
@@ -6348,6 +6366,8 @@ async def run_claude_turn(
                 # result, and the two shouldn't be conflated in the UI.
                 await _safe_send(websocket, f"\n[notify]{json.dumps(automation_notification)}")
         history.append({"role": "user", "content": tool_results})
+        # A tool may have changed what Frank's background information says (a memory, a goal, a balance): refresh it now.
+        FRANK_CONTEXT.changed()
 
 
 def run() -> None:
