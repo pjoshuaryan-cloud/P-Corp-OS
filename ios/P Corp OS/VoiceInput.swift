@@ -90,6 +90,8 @@ final class VoiceInput: ObservableObject {
     private var onBargeIn: (() -> Void)?
     private var onConversationEnded: ((String?) -> Void)?
     private var dropWords = 0
+    /// Set when this recording was stopped by ending a conversation (see handleRecognition's stopRequested branch).
+    private var endedConversation = false
     private var verdicts: [String: TurnTaking.Verdict] = [:]
     private var askedModelFor: Set<String> = []
 
@@ -141,6 +143,7 @@ final class VoiceInput: ObservableObject {
         dropWords = 0
         if isListening {
             onFinishedCallback = nil
+            endedConversation = true
             stop(note: note)
         } else if let note {
             setStopNote(note)
@@ -285,6 +288,7 @@ final class VoiceInput: ObservableObject {
 
         onFinishedCallback = onFinished
         didDeliver = false
+        endedConversation = false
         stopRequested = false
         endpointer = isInConversation ? Self.conversationEndpointer() : VoiceEndpointer()
         recordingStartedAt = Date()
@@ -354,7 +358,9 @@ final class VoiceInput: ObservableObject {
         guard isFinal || failure != nil else { return }
 
         if stopRequested {  // we asked it to finish (tap / pause): this is the end of the last stretch
-            if let failure, joinedTranscript.isEmpty { errorMessage = "Recognition error: \(failure.localizedDescription)" }
+            // Ending a conversation stops the recognizer on a fresh, empty turn, and Apple answers "No speech detected": expected,
+            // not an error (it turned the orb orange every time a conversation ended, 2026-11-14).
+            if let failure, joinedTranscript.isEmpty, !endedConversation { errorMessage = "Recognition error: \(failure.localizedDescription)" }
             finishAndDeliver()
             return
         }
