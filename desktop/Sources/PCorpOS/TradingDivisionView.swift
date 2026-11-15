@@ -14,7 +14,31 @@ import PCorpKit
 /// Carlo runs get recorded, no further changes needed here.
 ///
 /// Same GET-and-render pattern as AlphaModeDashboardView/AutomationsView.
+/// The Trading tab (2026-11-15, simplified): one screen to drop chart screenshots in and get buy and sell areas back
+/// (PCorpKit's ChartDeskView, shared with the other app). Everything the tab used to show -- live account, stock movers,
+/// backtests, walk-forward and Monte Carlo runs, and Trade Intelligence's six tools -- is unchanged, behind "More tools".
 struct TradingDivisionView: View {
+    @State private var showMoreTools = false
+
+    var body: some View {
+        ChartDeskView(onMoreTools: { showMoreTools = true })
+        .sheet(isPresented: $showMoreTools) {
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button("Done") { showMoreTools = false }
+                        .keyboardShortcut(.cancelAction)
+                        .padding(12)
+                }
+                TradingMoreToolsView()
+            }
+            .frame(minWidth: 820, minHeight: 640)
+        }
+    }
+}
+
+// The old Trading tab, now behind "More tools" (see TradingDivisionView above).
+struct TradingMoreToolsView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = TradingDivisionClient()
     /// Tap targets (2026-09-18, "make the tab clickable... more detailed

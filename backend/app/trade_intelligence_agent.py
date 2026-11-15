@@ -63,6 +63,17 @@ HARD BOUNDARIES, still non-negotiable even though your role is advisory:
 
 Within those boundaries: be direct and specific. A vague "it could go either way" is less useful than a clearly-stated view with your reasoning and its caveats -- Josh can weigh that better than a hedge that says nothing."""
 
+# Josh's broker (2026-11-15): he moved from HF Markets to Black Crown Markets, trading on MT5 (not on his Mac), account in
+# rand. Every Trade Intelligence prompt gets this, so symbol names and position sizes match his real account.
+BROKER_CONTEXT = """
+
+Josh's broker: Black Crown Markets, on MetaTrader 5. His account is in South African rand (ZAR). Use instrument names as they
+appear on his screenshots (Black Crown's own MT5 symbols) rather than another broker's naming. When he asks about position
+size or risk, work it out in rand, and say plainly if you'd need his contract size or lot value from Black Crown to be exact.
+He no longer uses HF Markets."""
+
+TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT += BROKER_CONTEXT
+
 # Appended only for the three capabilities that can reason about a NEW
 # entry (Chart Analysis, Signals, Trade Setup) -- not Position Review
 # (an existing position, not a new one) or Trade Breakdown (historical
@@ -172,6 +183,45 @@ async def analyze_chart(
     prompt_text = " ".join(context_parts)
     history = [{"role": "user", "content": [*image_blocks, {"type": "text", "text": prompt_text}]}]
     reply = await run_conversational_turn(client, TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT_WITH_SUGGESTION, history)
+    return reply, history
+
+
+# The simplified Trading tab (2026-11-15, Josh: "drop in screenshots ... tell me where good buy and sell areas are ... simplify it
+# as much as possible"): one screen, screenshots in, buy and sell areas out, in the same short layout every time so it can be
+# read at a glance. Follow-up questions keep the same prompt. No trade-suggestion block: the simple tab has no proposal form.
+CHART_ZONES_FORMAT = """
+
+## How to answer on the Trading tab
+Josh drops in screenshots of what he's trading and wants to know where the good buy and sell areas are. Answer FIRST in exactly
+this layout, short and scannable (about 150-250 words), then stop:
+
+**Lean:** bullish / bearish / no clear side -- and the one main reason.
+**Buy area:** a price range (or "none worth taking") and why it's a good place to buy.
+**Sell area:** a price range (or "none worth taking") and why.
+**Wrong if:** the price that would prove this read wrong (where a stop would go).
+**Targets:** where price could reasonably go if the read is right.
+**Confidence:** low / medium / high -- and what makes it so (say plainly when the chart is ambiguous).
+**Watch for:** one or two things that would confirm or change the plan.
+
+Read the prices off the chart's own price scale. If the scale isn't legible enough to give real numbers, say so and describe the
+areas by what's on the chart (e.g. "the lower edge of the range at the left") instead of inventing numbers. If several screenshots
+are of the same instrument on different timeframes, combine them and say whether the timeframes agree.
+For a follow-up question, just answer it directly -- don't repeat the whole layout."""
+
+CHART_ZONES_SYSTEM_PROMPT = TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT + CHART_ZONES_FORMAT
+
+
+async def analyze_chart_zones(client: AsyncAnthropic, image_blocks: list[dict], note: str | None) -> tuple[str, list[dict]]:
+    """The simplified Trading tab's one action: buy and sell areas from 1-4 screenshots. Returns (reply, history); history's
+    first turn keeps the images so follow-up questions can still refer to the chart(s)."""
+    parts = []
+    if len(image_blocks) > 1:
+        parts.append(f"These are {len(image_blocks)} related screenshots (e.g. different timeframes of the same instrument).")
+    if note:
+        parts.append(f"Josh's note: {note}")
+    parts.append("Where are the good buy and sell areas?")
+    history = [{"role": "user", "content": [*image_blocks, {"type": "text", "text": " ".join(parts)}]}]
+    reply = await run_conversational_turn(client, CHART_ZONES_SYSTEM_PROMPT, history)
     return reply, history
 
 

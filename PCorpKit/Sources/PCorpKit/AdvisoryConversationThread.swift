@@ -101,13 +101,22 @@ private struct AdvisoryMessageBubble: View {
                 }
             }
             if !message.text.isEmpty {
-                Text(message.text)
-                    .font(PCorpFont.body(12.5))
-                    .foregroundStyle(isUser ? theme.accentText : theme.textPrimary)
-                    .padding(10)
-                    .background(isUser ? theme.accentFill : theme.surfaceElevated)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .textSelection(.enabled)
+                if isUser {
+                    Text(message.text)
+                        .font(PCorpFont.body(12.5))
+                        .foregroundStyle(theme.accentText)
+                        .padding(10)
+                        .background(theme.accentFill)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .textSelection(.enabled)
+                } else {
+                    // Replies use **bold** labels ("**Buy area:**", 2026-11-15): render them, don't show the asterisks.
+                    SimpleMarkdownView(text: message.text)
+                        .padding(10)
+                        .background(theme.surfaceElevated)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .textSelection(.enabled)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)

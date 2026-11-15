@@ -7,7 +7,27 @@ import PCorpKit
 /// copy, no AppKit dependency to work around, and every type it depends on
 /// (TradingDivisionClient, TradingDivisionRun, TradingDivisionMonteCarloRun)
 /// was already shared cross-platform in PCorpKit.
+/// The Trading tab (2026-11-15, simplified): one screen to drop chart screenshots in and get buy and sell areas back
+/// (PCorpKit's ChartDeskView, shared with the other app). Everything the tab used to show -- live account, stock movers,
+/// backtests, walk-forward and Monte Carlo runs, and Trade Intelligence's six tools -- is unchanged, behind "More tools".
 struct TradingDivisionView: View {
+    @State private var showMoreTools = false
+
+    var body: some View {
+        ChartDeskView(onMoreTools: { showMoreTools = true })
+        .sheet(isPresented: $showMoreTools) {
+            NavigationStack {
+                TradingMoreToolsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) { Button("Done") { showMoreTools = false } }
+                    }
+            }
+        }
+    }
+}
+
+// The old Trading tab, now behind "More tools" (see TradingDivisionView above).
+struct TradingMoreToolsView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var client = TradingDivisionClient()
     /// Tap targets (2026-09-18, "make the tab clickable... more detailed

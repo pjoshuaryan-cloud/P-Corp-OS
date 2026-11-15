@@ -164,6 +164,8 @@ from app.trade_intelligence_db import (
     list_trades as ti_list_trades,
 )
 from app.trade_intelligence_agent import (
+    CHART_ZONES_SYSTEM_PROMPT,
+    analyze_chart_zones,
     TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT,
     TRADE_INTELLIGENCE_AGENT_SYSTEM_PROMPT_WITH_SUGGESTION,
     analyze_chart as ti_analyze_chart,
@@ -1777,6 +1779,32 @@ async def trade_intelligence_chart_analysis(body: ChartAnalysisRequest, _: None 
     reply, history = await ti_analyze_chart(client, image_blocks, body.symbol, body.note)
     reply, suggested_trade = extract_trade_suggestion(reply)
     return {"reply": reply, "history": history, "suggested_trade": suggested_trade}
+
+
+class ChartZonesRequest(BaseModel):
+    images: list[ImagePayload] = []
+    note: str | None = None
+    history: list[dict[str, Any]] = []
+    message: str | None = None
+
+
+@app.post("/trade-intelligence/chart-zones")
+async def trade_intelligence_chart_zones(body: ChartZonesRequest, _: None = Depends(verify_token)) -> dict:
+    """The simplified Trading tab (2026-11-15): screenshots in, buy and sell areas out (trade_intelligence_agent.
+    analyze_chart_zones). Same client-held history as the other Trade Intelligence routes for follow-up questions."""
+    client = AsyncAnthropic(api_key=_require_api_key())
+    if body.history:
+        if not body.message:
+            raise HTTPException(status_code=400, detail="message is required for a follow-up turn")
+        history = body.history + [{"role": "user", "content": body.message}]
+        reply = await run_conversational_turn(client, CHART_ZONES_SYSTEM_PROMPT, history)
+        return {"reply": reply, "history": history}
+    if not body.images:
+        raise HTTPException(status_code=400, detail="Drop in at least one screenshot first.")
+    if len(body.images) > 4:
+        raise HTTPException(status_code=400, detail="Up to 4 screenshots at a time.")
+    reply, history = await analyze_chart_zones(client, _decode_image_payloads(body.images), body.note)
+    return {"reply": reply, "history": history}
 
 
 class TradeSetupRequest(BaseModel):
