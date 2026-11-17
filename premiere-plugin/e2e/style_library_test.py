@@ -29,7 +29,7 @@ def raises(fn, *args, **kwargs):
 
 
 EXPECTED = ["high-energy-commercial", "premium-luxury", "lifestyle-social", "documentary-story", "music-led-montage", "sports-action", "food-beverage",
-            "fashion-beauty", "event-highlights", "experimental-creative", "dialogue-interview"]
+            "fashion-beauty", "event-highlights", "experimental-creative", "dialogue-interview", "rabit-haus-event-recap"]
 BASE = list(lib.LIBRARY.values())
 BUILDABLE = [s for s in BASE if s.buildable]
 PREMIUM, SPORTS, DIALOGUE, MUSIC = lib.LIBRARY["premium-luxury"], lib.LIBRARY["sports-action"], lib.LIBRARY["dialogue-interview"], lib.LIBRARY["music-led-montage"]
@@ -37,7 +37,7 @@ PREMIUM, SPORTS, DIALOGUE, MUSIC = lib.LIBRARY["premium-luxury"], lib.LIBRARY["s
 # ---- the library as a whole -------------------------------------------------------------------------------------------------------------------
 check("the library has a version", lib.LIBRARY_VERSION == 1)
 check("the roles are the five described kinds of moment plus 'hold'", lib.ROLES == ("action", "reaction", "camera_move", "reveal", "hero", "hold"))
-check("there are exactly the 11 base profiles, by these slugs", sorted(lib.LIBRARY) == sorted(EXPECTED) and len(lib.LIBRARY) == 11, sorted(lib.LIBRARY))
+check("there are exactly the 12 base profiles, by these slugs", sorted(lib.LIBRARY) == sorted(EXPECTED) and len(lib.LIBRARY) == 12, sorted(lib.LIBRARY))
 check("every profile's key is its own slug", all(k == s.slug for k, s in lib.LIBRARY.items()))
 check("every base style validates with no problems", all(not p for p in lib.validate_library().values()), {k: v for k, v in lib.validate_library().items() if v})
 check("validate_library covers every base style", sorted(lib.validate_library()) == sorted(EXPECTED))
@@ -259,7 +259,7 @@ check("get_style rejects an unknown slug and malformed hybrids with ValueError",
 
 # ---- list_styles --------------------------------------------------------------------------------------------------------------------------------------
 ls = lib.list_styles()
-check("list_styles has the 11 base styles, in library order", [x["slug"] for x in ls] == list(lib.LIBRARY) and len(ls) == 11)
+check("list_styles has the 12 base styles, in library order", [x["slug"] for x in ls] == list(lib.LIBRARY) and len(ls) == 12)
 check("each entry has what a screen needs", all({"slug", "name", "intent", "provenance", "provenance_note", "pace", "buildable", "build_note", "execution_report"} <= set(x) for x in ls))
 try:
     text = json.dumps(ls)
@@ -272,7 +272,7 @@ check("its entries agree with the styles (pace, buildable) and the interview is 
 check("a hybrid is JSON-serialisable too", bool(json.dumps({**dataclasses.asdict(H), "report": lib.execution_report(H)})))
 
 # ---- provenance: only the montage's pace is measured -----------------------------------------------------------------------------------------------
-others = [s for s in BASE if s.slug != "music-led-montage"]
+others = [s for s in BASE if s.slug not in ("music-led-montage", "rabit-haus-event-recap")]   # the Rabit Haus recap is measured on THEIR recaps, checked in its own section
 check("music-led-montage's note says its pace is his measured usual rhythm, from 128 of his edits at a 0.57 s median", "usual rhythm" in MUSIC.provenance_note and "measured" in MUSIC.provenance_note.lower() and "128" in MUSIC.provenance_note and "0.57" in MUSIC.provenance_note, MUSIC.provenance_note)
 check("and it also says what is NOT measured (the weights, curve, opening and ending)", "Not measured" in MUSIC.provenance_note and "role weights" in MUSIC.provenance_note)
 check("no profile as a whole is labelled measured (only the montage's pace is, and its note says exactly that)", all(s.provenance == "guidance" for s in lib.LIBRARY.values()), [s.slug for s in lib.LIBRARY.values() if s.provenance != "guidance"])
@@ -283,6 +283,22 @@ check("the montage's 128-edit claim matches the measured file the app really use
 # ---- build notes ----------------------------------------------------------------------------------------------------------------------------------
 check("every buildable profile's note says it is built by the planner; the interview's says it is not, and why", all("multi-variant planner" in s.build_note for s in BUILDABLE) and "multicam planner" in DIALOGUE.build_note and "can't be built as a variant" in DIALOGUE.build_note)
 check("profiles with a brand card say it needs the job's logo", all("logo" in s.build_note for s in BUILDABLE if "brand_card" in (s.opening, s.ending)), [s.slug for s in BUILDABLE if "brand_card" in (s.opening, s.ending) and "logo" not in s.build_note])
+
+# ---- 2026-11-17: the Rabit Haus event recap (Cinematic Reel Autopilot phase 2) ---------------------------------------------------------
+RH = lib.LIBRARY["rabit-haus-event-recap"]
+check("Rabit Haus recap: pace is their measured 0.63 s median over his 0.57 s (1.11x)", RH.pace == 1.11, RH.pace)
+check("Rabit Haus recap: 30-40 s, opens on the main person, closes on the logo card", RH.platform["seconds"] == (30, 40) and RH.opening == "hero_first" and RH.ending == "brand_card")
+check("Rabit Haus recap: hard cuts plus whip pans, no added effects", RH.transitions == ("hard_cut", "whip_pan") and RH.effects == ())
+check("Rabit Haus recap: picture-led (off-beat allowed) but still lands on hits", RH.music["cut_on_hits"] and RH.music["allow_off_beat"])
+check("Rabit Haus recap: the note says what was measured on THEIR recaps, not his edits, and what was only read by eye",
+      "Rabit Haus" in RH.provenance_note and "not on your edits" in RH.provenance_note and "Read by eye" in RH.provenance_note and RH.provenance == "guidance", RH.provenance_note)
+rep = lib.execution_report(RH)
+check("Rabit Haus recap: whip pans are listed as not built yet, never as executed",
+      any("whip pans" in x for x in rep["proposed_only"]) and not any("whip" in x for x in rep["executed"]), rep)
+check("Rabit Haus recap: the build note names what isn't built yet (blur moves, section order, 4:3)",
+      all(w in RH.build_note for w in ("blur moves", "section order", "4:3")), RH.build_note)
+cfg = lib.planner_config(RH)
+check("Rabit Haus recap: planner gets its pace, hero-first opening and closing card", cfg["pace"] == 1.11 and cfg["first_role"] == "hero" and cfg["closing_card"] and not cfg["opener_card"], cfg)
 
 print(f"\nFAILS: {fails}")
 sys.exit(1 if fails else 0)

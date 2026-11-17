@@ -457,6 +457,54 @@ _add(LibraryStyle(
                 "not by the multi-variant planner. This profile describes the intent so the library is complete, but it can't be built as a variant."),
 ))
 
+# 2026-11-17, Cinematic Reel Autopilot phase 2: the first style taken from someone else's work. Josh's chosen reference is
+# Rabit Haus (instagram.com/rabithaus). Their three event recaps (F1 premiere, Euphoria premiere, Zara Larsson pop-up for
+# Apple Music) were played through in the browser and measured frame by frame and on the soundtrack: 47-49 cuts in 35-37 s,
+# median shot 0.58 / 0.67 / 0.63 s (10% of shots 0.25-0.33 s or shorter, 90% 1.0-1.8 s or shorter), over nine in ten joins
+# hard cuts with 2-4 blur moves, cuts on a sound hit 40% / 62% / 63% of the time against 38% / 40% / 48% by chance (so the
+# cutting follows the picture and lands on a hit when one is near), the music tailing off under the last ~4 s, few or no
+# whoosh-like sounds, no added flashes or zoom hits, no captions. Their order (open on the main person or a blur move, the
+# place, the people, the details, the peak, a wide with the client logo) was read by eye from frame grids. Pace, shot
+# lengths and joins are copied, not their fonts, logos or graphics.
+_RABIT_MEDIAN_SHOT = 0.63   # the middle of the three recaps' medians (0.58, 0.63, 0.67)
+_add(LibraryStyle(
+    slug="rabit-haus-event-recap", name="Rabit Haus event recap",
+    intent="A 30-40 s recap of an event in the Rabit Haus manner: open on the main person, then the place, the people and the details, "
+           "rising to the main moment and closing on a wide with the client's logo; fast plain cutting that follows the picture.",
+    roles={"hero": 0.6, "reaction": 0.5, "camera_move": 0.4, "reveal": 0.3, "action": 0.3, "hold": -0.2},
+    variety="high", pace=round(_RABIT_MEDIAN_SHOT / 0.57, 2), shot_seconds=(0.25, 1.85), pacing_curve="flat",
+    opening="hero_first", ending="brand_card",
+    continuity=(
+        "Order the recap as open (the main person) -> the place (wides of the venue) -> the people (faces, arrivals, reactions) "
+        "-> the details (hands, products, signs) -> the main moment, held a little longer -> a closing wide.",
+        "Use a blur move (a whip or a smear of motion) only where the location changes, two to four times in the whole recap; every other join is a hard cut.",
+        "Let the cut follow the picture first, and move it onto a music hit when one is within a couple of frames.",
+        "Hold the last two or three shots a little longer than the rest; the cutting slows as the music tails off.",
+    ),
+    music={"cut_on_hits": True, "allow_off_beat": True,
+           "notes": "Measured on their recaps: the cutting follows the picture and lands on a music hit when one is near, and the music tails off "
+                    "under the last four seconds or so. Sound effects are used lightly: none to three whoosh-like sounds in a recap, under a blur move."},
+    transitions=("hard_cut", "whip_pan"), effects=(),
+    colour="One look held through the whole recap, chosen to suit the location: warm and saturated for warm-lit venues, "
+           "cool to neutral with low saturation for daylight and street footage. Don't change the look shot to shot.",
+    captions="Almost none: no word captions; at most one big title; the client's logo small on the last wide shot.",
+    platform={"aspects": ("16:9", "9:16"), "seconds": (30, 40)},
+    avoid_when=(
+        "There's no clear main person or main moment to open on and build to.",
+        "The footage is mostly one location, so there's nowhere for the blur moves to carry the viewer.",
+        "The client needs captions or a voice to explain the event.",
+    ),
+    provenance="guidance",   # pace, shot lengths and joins are measured on Rabit Haus's recaps, not on Josh's edits; the note says exactly that
+    provenance_note=("Measured on three Rabit Haus event recaps (Instagram, read 17 Nov 2026), not on your edits: the pace "
+                     f"({_RABIT_MEDIAN_SHOT} s median shot = {round(_RABIT_MEDIAN_SHOT / 0.57, 2)}x your usual 0.57 s rhythm), the shot length range, "
+                     "that over nine in ten joins are hard cuts with two to four blur moves, that cuts land on music hits only somewhat more than chance, "
+                     "and that the music tails off under the close. Read by eye from their frames, not measured: the order of the sections and the role weights. "
+                     "Their frame is horizontal 4:3 or 3:2, which the build can't make yet; it makes 16:9 or 9:16."),
+    buildable=True,
+    build_note=(_BUILT + _LOGO + " Not built yet: the blur moves (step 0 proved Premiere can place a whip; the build adds it in a later phase), "
+                "the section order (needs each shot sorted into place, person, detail and so on), picture-led cutting, the music fade and the 4:3 frame."),
+))
+
 
 # --- Checks -----------------------------------------------------------------------------------------------------------------
 
