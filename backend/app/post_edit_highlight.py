@@ -46,10 +46,52 @@ def cut_profile(profile: StyleProfile, duration: float, pace: float, curve: list
     )
 
 
+def section_report(shots: list[dict[str, Any]], sections: list[dict[str, Any]], fps: float) -> list[dict[str, Any]]:
+    """Per section: where it runs, how many shots it got and how many of them are a moment of its role."""
+    out = []
+    for sec in sections:
+        mine = [s for s in shots if s.get("section") == sec["name"]]
+        out.append({"name": sec["name"], "role": sec["role"], "shots": len(mine), "matched": sum(1 for s in mine if s.get("shot_role") == sec["role"]),
+                    "start_seconds": round(mine[0]["start_frame"] / fps, 2) if mine else None,
+                    "end_seconds": round((mine[-1]["start_frame"] + mine[-1]["duration_frames"]) / fps, 2) if mine else None})
+    return out
+
+
+def order_peak(shots: list[dict[str, Any]], fps: float, by_id: dict[int, dict]) -> int:
+    """In the main-moment section, a clip used for several shots plays its moments in the order they happened (the ribbon is cut, THEN the pieces fly):
+    the picked stretches of that clip are handed back to its slots in source-time order. Slot positions and lengths stay; a swap that wouldn't fit the
+    clip is skipped. Returns how many shots changed."""
+    peak = [s for s in shots if s.get("section") == "main moment"]
+    by_clip: dict[int, list[dict[str, Any]]] = {}
+    for s in peak:
+        by_clip.setdefault(s["file_id"], []).append(s)
+    moved = 0
+    carried = ("source_in", "moment_source", "candidate", "steady", "shot_role")
+    for fid, group in by_clip.items():
+        if len(group) < 2:
+            continue
+        payloads = sorted(({k: s.get(k) for k in carried} for s in group), key=lambda p: p["source_in"])
+        duration = float((by_id.get(fid) or {}).get("duration") or 0.0)
+        fits = all(p["source_in"] + s["duration_frames"] / fps <= duration - 0.04 for s, p in zip(group, payloads))   # group is already in timeline order
+        if not fits:
+            continue
+        for s, p in zip(group, payloads):
+            if s["source_in"] != p["source_in"]:
+                moved += 1
+            for k in carried:
+                if p[k] is None:
+                    s.pop(k, None)
+                else:
+                    s[k] = p[k]
+            s["source_out"] = round(s["source_in"] + s["duration_frames"] / fps, 3)
+    return moved
+
+
 def build_highlight_plan(
     *, profile: StyleProfile, hits: list[list[float]], music_in: float, duration: float, fps: float, clips: list[dict],
     bookend_file_id: int | None, seed: int = 7, pace: float = CALM_PACE, slow_zooms: bool = True, with_opener: bool = True, fill_frame: bool = True,
     pacing_curve: list[float] | None = None, picker_options: dict[str, Any] | None = None, slot_roles: dict[str, str | None] | None = None,
+    sections: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Cut times on the music's hits + clip and steadiest window for every slot, snapped to the frame grid. `hits` are song-time [t, strength percentile];
     `clips` are ordered [{file_id, name, path, duration, steady?, ...}]. The first shot is the opening-card slot (`with_opener`), the last is the closing hold."""
@@ -82,6 +124,13 @@ def build_highlight_plan(
     if len(raw) < 3:
         raise EditPlanError("That length leaves no room for shots between the opening and closing cards. Use a longer edit.")
     slots = [{"role": "opener" if (i == 0 and with_opener) else ("end_card" if i == len(raw) - 1 else "body"), "start_frame": f0, "frames": f1 - f0} for i, (f0, f1) in enumerate(raw)]
+    if sections:   # 2026-11-17: a style built in sections (Rabit Haus event recap): each slot takes the section its middle falls in
+        for sl in slots:
+            if sl["role"] == "opener":
+                continue
+            mid = (sl["start_frame"] + sl["frames"] / 2) / total_frames
+            sec = next((s for s in sections if mid < s["until"]), sections[-1])
+            sl["section"], sl["section_role"] = sec["name"], sec["role"]
     got = assign_clips_to_slots(slots, fps=fps, clips=clips, bookend_file_id=bookend_file_id, seed=seed, slow_zooms=slow_zooms,
                                 picker_options=picker_options, slot_roles=slot_roles)
     shots, zooms, by_id, bookend, repetition = got["shots"], got["zooms"], got["by_id"], got["bookend"], got["repetition"]
@@ -121,6 +170,14 @@ def build_highlight_plan(
             "Which moment of each clip is used is NOT validated as your taste (moment_source says where it came from) -- review and swap.",
         ],
     }
+    if sections:
+        reordered = order_peak(shots, fps, by_id)
+        plan["sections"] = section_report(shots, sections, fps)
+        matched, placed = sum(s["matched"] for s in plan["sections"]), sum(s["shots"] for s in plan["sections"])
+        plan["checks"]["section_role_matches"] = round(matched / placed, 2) if placed else None
+        plan["notes"].append(f"Built in sections ({', '.join(s['name'] for s in sections)}): {matched} of {placed} shots are a moment sorted into their section's role "
+                             "(shot roles come from the clip descriptions, sorted by Claude; a slot with no fitting moment left takes the best other shot)."
+                             + (f" In the main-moment section, {reordered} shot(s) were swapped so each clip's moments play in the order they happened." if reordered else ""))
     if fill_frame:
         plan["fit"] = "fill"
         plan["notes"].append("Every clip is scaled in Premiere to fill the frame, centred: a horizontal clip in a vertical edit becomes a centred crop with no black bars, a small clip is scaled up. "

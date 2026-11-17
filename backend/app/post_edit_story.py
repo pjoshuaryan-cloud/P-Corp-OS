@@ -173,11 +173,11 @@ def assign_clips_to_slots(slots: list[dict[str, Any]], *, fps: float, clips: lis
         if picker is not None and (sl["role"] == "body" or bookend is None):
             target = (body_i + 0.5) / max(n_body, 1) if sl["role"] == "body" else (0.0 if sl["role"] == "opener" else 1.0)
             prefer = (slot_roles or {}).get("first") if i == first_pick else ((slot_roles or {}).get("last") if i == last_pick else None)
-            picked = picker.pick(length, target, exclude=exclude if sl["role"] == "body" else None, prefer_role=prefer)
+            picked = picker.pick(length, target, exclude=exclude if sl["role"] == "body" else None, prefer_role=prefer, section_role=sl.get("section_role"))
         similar_to_previous = None
         if picked is not None:
             clip, w = picked["clip"], picked["window"]
-            similar_to_previous = picker.register(clip, w, picked["sig"])
+            similar_to_previous = picker.register(clip, w, picked["sig"], section_role=sl.get("section_role"))
             if sl["role"] == "body":
                 body_i += 1
         else:
@@ -225,6 +225,8 @@ def assign_clips_to_slots(slots: list[dict[str, Any]], *, fps: float, clips: lis
             "candidate": post_candidate_moments.compact(candidate),
             **({"steady": w["steady"]} if w.get("steady") else {}),
             **({"phrase": sl["phrase"]} if sl.get("phrase") else {}),
+            **({"section": sl["section"]} if sl.get("section") else {}),
+            **({"shot_role": picked["parts"].get("shot_role")} if picked is not None and picked["parts"].get("shot_role") else {}),
             **({"alike_previous": round(similar_to_previous, 2)} if similar_to_previous is not None and picker.chosen[-1]["sig"] is not None else {}),
         })
     zooms = post_steady.plan_zooms(shots, fps, seed=seed) if slow_zooms else []

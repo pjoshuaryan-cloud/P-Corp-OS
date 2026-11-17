@@ -121,7 +121,7 @@ with tempfile.TemporaryDirectory() as tmp:
         # ---- variants ------------------------------------------------------------------------------------------------------------------------------
         r = client.get("/post/style-library")
         lib = r.json()
-        check("the style library lists 11 directions, the buildable ones and the default set", r.status_code == 200 and len(lib["styles"]) == 11 and lib["min_variants"] == 2
+        check("the style library lists 12 directions, the buildable ones and the default set", r.status_code == 200 and len(lib["styles"]) == 12 and lib["min_variants"] == 2
               and lib["max_variants"] == 4 and lib["default_directions"][0] == "music-led-montage")
         r = client.get("/post/jobs/7/edit-variants")
         check("with no sets yet the list is empty, not an error", r.status_code == 200 and r.json()["sets"] == [] and r.json()["latest"] is None, r.text)

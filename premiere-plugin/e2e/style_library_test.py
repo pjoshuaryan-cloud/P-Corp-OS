@@ -186,9 +186,9 @@ check("cutting to speech instead of the music is a proposal, not an executed rul
 check("the report works on every base style and a hybrid without raising", all(lib.execution_report(s) for s in BASE) and bool(lib.execution_report(lib.hybrid("premium-luxury", "sports-action"))))
 
 # ---- planner_config -----------------------------------------------------------------------------------------------------------------------------
-KEYS = {"pace", "role_weights", "diversity", "pacing_curve", "first_role", "last_role", "slow_zooms", "opener_card", "closing_card"}
+KEYS = {"pace", "role_weights", "diversity", "pacing_curve", "first_role", "last_role", "slow_zooms", "opener_card", "closing_card", "sections", "position_scale"}
 cfgs = {s.slug: lib.planner_config(s) for s in BUILDABLE}
-check("a planner config has exactly the nine documented parameters", all(set(c) == KEYS for c in cfgs.values()), [set(c) ^ KEYS for c in cfgs.values()][:2])
+check("a planner config has exactly the eleven documented parameters", all(set(c) == KEYS for c in cfgs.values()), [set(c) ^ KEYS for c in cfgs.values()][:2])
 check("all six roles are present in the role weights, with the style's own weights (missing = 0)", all(set(c["role_weights"]) == set(lib.ROLES) for c in cfgs.values())
       and cfgs["documentary-story"]["role_weights"]["action"] == 0.0 and cfgs["sports-action"]["role_weights"]["action"] == 0.9)
 check("the pace is passed through unchanged", all(cfgs[s.slug]["pace"] == s.pace for s in BUILDABLE))
@@ -299,6 +299,15 @@ check("Rabit Haus recap: the build note names what isn't built yet (blur moves, 
       all(w in RH.build_note for w in ("blur moves", "section order", "4:3")), RH.build_note)
 cfg = lib.planner_config(RH)
 check("Rabit Haus recap: planner gets its pace, hero-first opening and closing card", cfg["pace"] == 1.11 and cfg["first_role"] == "hero" and cfg["closing_card"] and not cfg["opener_card"], cfg)
+
+check("only the Rabit Haus recap is built in sections; every other style plans exactly as before (no sections, shoot order at full weight)",
+      all((c["sections"] is None and c["position_scale"] == 1.0) for slug, c in cfgs.items() if slug != "rabit-haus-event-recap"))
+RHC = cfgs["rabit-haus-event-recap"]
+check("Rabit Haus sections: open, place, people, details, main moment, close, in order, ending at 1.0, with known roles",
+      [s["name"] for s in RHC["sections"]] == ["open", "place", "people", "details", "main moment", "close"] and RHC["sections"][-1]["until"] == 1.0
+      and all(a["until"] < b["until"] for a, b in zip(RHC["sections"], RHC["sections"][1:])) and {s["role"] for s in RHC["sections"]} <= {"place", "person", "detail", "movement", "main_moment"}
+      and RHC["position_scale"] == 0.25, RHC)
+check("the report lists the sections as executed, and says they need sorted roles", any("built in sections" in x and "sorted into roles" in x for x in lib.execution_report(RH)["executed"]))
 
 print(f"\nFAILS: {fails}")
 sys.exit(1 if fails else 0)

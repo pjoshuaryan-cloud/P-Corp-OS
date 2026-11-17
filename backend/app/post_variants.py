@@ -167,6 +167,7 @@ def build_variant(style_slug: str, *, profile: Any, hits: list[list[float]], mus
     from app import post_style_library as lib
     from app.post_edit_highlight import build_highlight_plan
     from app.post_edit_plan import EditPlanError
+    from app.post_pick import SECTION_EVENT_CANDIDATES
     try:
         style = lib.get_style(style_slug)
         cfg = lib.planner_config(style)
@@ -176,8 +177,9 @@ def build_variant(style_slug: str, *, profile: Any, hits: list[list[float]], mus
         plan = build_highlight_plan(profile=profile, hits=hits, music_in=music_in, duration=duration, fps=fps, clips=clips, bookend_file_id=None, seed=seed,
                                     pace=cfg["pace"], slow_zooms=cfg["slow_zooms"], with_opener=bool(cfg["opener_card"] and with_cards),
                                     pacing_curve=cfg["pacing_curve"],
-                                    picker_options={"role_weights": cfg["role_weights"], "diversity": cfg["diversity"], "avoid": avoid, "preferences": preferences},
-                                    slot_roles={"first": cfg["first_role"], "last": cfg["last_role"]})
+                                    picker_options={"role_weights": cfg["role_weights"], "diversity": cfg["diversity"], "avoid": avoid, "preferences": preferences,
+                                                    **({"position_scale": cfg["position_scale"], "event_candidates": SECTION_EVENT_CANDIDATES} if cfg.get("sections") else {})},
+                                    slot_roles={"first": cfg["first_role"], "last": cfg["last_role"]}, sections=cfg.get("sections"))
     except EditPlanError as exc:
         raise VariantError(f"'{style.name}' couldn't be planned: {exc}") from exc
     plan["style"] = f"library:{style.slug}"

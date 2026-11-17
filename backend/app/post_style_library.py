@@ -156,6 +156,9 @@ class LibraryStyle:
     provenance_note: str        # says exactly what, if anything, is measured
     buildable: bool
     build_note: str
+    # 2026-11-17: an edit built in sections, in order: ({"name", "role" (a post_roles role), "until" (0-1 share of the edit where it ends)}, ...).
+    # Empty for every profile that isn't (the planner then fills slots as it always did). Filled from shot roles (post_roles); executed when the job has them.
+    sections: tuple = ()
 
 
 # --- The eleven base profiles -----------------------------------------------------------------------------------------------
@@ -501,8 +504,13 @@ _add(LibraryStyle(
                      "and that the music tails off under the close. Read by eye from their frames, not measured: the order of the sections and the role weights. "
                      "Their frame is horizontal 4:3 or 3:2, which the build can't make yet; it makes 16:9 or 9:16."),
     buildable=True,
-    build_note=(_BUILT + _LOGO + " Not built yet: the blur moves (step 0 proved Premiere can place a whip; the build adds it in a later phase), "
-                "the section order (needs each shot sorted into place, person, detail and so on), picture-led cutting, the music fade and the 4:3 frame."),
+    build_note=(_BUILT + _LOGO + " The section order is built when the shoot's moments have been sorted into roles (Sort shot roles); without that the "
+                "planner fills the edit as usual. Not built yet: the blur moves (step 0 proved Premiere can place a whip; the build adds it in a later phase), "
+                "picture-led cutting, the music fade and the 4:3 frame."),
+    # The order read from their recaps, as shares of a 35 s recap: open 0-3 s, place 3-7, people 7-16, details 16-22, main moment 22-31, close 31-35.
+    sections=({"name": "open", "role": "person", "until": 0.086}, {"name": "place", "role": "place", "until": 0.2},
+              {"name": "people", "role": "person", "until": 0.457}, {"name": "details", "role": "detail", "until": 0.629},
+              {"name": "main moment", "role": "main_moment", "until": 0.886}, {"name": "close", "role": "place", "until": 1.0}),
 ))
 
 
@@ -721,6 +729,8 @@ def execution_report(style: LibraryStyle) -> dict[str, list[str]]:
     else:
         proposed.append(f"ending: {PROPOSAL_ONLY_ENDINGS.get(style.ending, style.ending)}")
 
+    if style.sections:
+        executed.append("built in sections: " + " -> ".join(s["name"] for s in style.sections) + " (needs the shoot's moments sorted into roles)")
     executed.append("hard cuts")   # the only transition the planner makes, whatever the profile wishes for
     for t in style.transitions:
         if t not in EXECUTED_TRANSITIONS:
@@ -775,6 +785,8 @@ def planner_config(style: LibraryStyle) -> dict[str, Any]:
         "slow_zooms": "slow_zoom_on_static" in style.effects,
         "opener_card": style.opening == "brand_card",
         "closing_card": style.ending == "brand_card",
+        "sections": [dict(s) for s in style.sections] or None,
+        "position_scale": 0.25 if style.sections else 1.0,   # sections reorder the shoot, so its order counts for little
     }
 
 

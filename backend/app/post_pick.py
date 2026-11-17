@@ -48,6 +48,15 @@ ROLE_WEIGHT = 0.4            # a style's preference for a kind of shot (-1..1) i
 FIRST_LAST_ROLE_BONUS = 0.5  # the first or last shot of a style that wants to open / close on a particular kind of shot (e.g. a hero)
 VARIANT_OVERLAP_PENALTY = 1.5  # a stretch another variant of the same edit already uses: alternatives should show different footage
 VARIANT_SAME_CLIP_PENALTY = 0.35  # a different stretch of a clip another variant uses
+SECTION_ROLE_BONUS = 0.8     # 2026-11-17 (Rabit Haus event recap): a shot whose moment was sorted into this slot's section role (place, person, detail ...; post_roles).
+                             # Below an adjacent repeated look (1.2), so variety still wins over a perfect role match
+MAIN_OUTSIDE_PEAK_PENALTY = 0.6  # a main-moment shot spent in another section: keeps the event's few main moments for the peak
+PEAK_LOOK_SHARE = 0.5            # ... and a repeated scene there costs half (cutting away and back to the performance is the point of a peak)
+MAIN_CLIP_BONUS = 0.8            # in the peak, a moment of one of the event's named main clips (post_roles main_clips: the ribbon, the dancers) ...
+PEAK_SPREAD_PENALTY = 0.3        # ... and each shot the peak has already taken from a clip costs this: so the peak spreads over the main clips instead of one of them
+PEAK_REUSE_SHARE = 0.1           # in the main-moment section, going back to a main clip for ANOTHER of its moments costs a tenth of the usual reuse penalty:
+                                 # the event's main moments sit in a handful of clips (JD Midlands: ribbon, dancers, DJ), and a peak returns to them, as Rabit Haus's does
+SECTION_EVENT_CANDIDATES = 5     # in section mode every described moment of a clip is a candidate (the best three by punch may all be the wrong role)
 PREFERENCE_WEIGHT = 1.0      # learned per-kind adjustments (post_learning_events, already clipped to +-0.15); only passed in once they clear the adoption gate
 
 
@@ -75,13 +84,17 @@ def look_penalty(scene: str, sig: np.ndarray | None, others: list[tuple[int, np.
 
 class Picker:
     def __init__(self, clips: list[dict[str, Any]], *, role_weights: dict[str, float] | None = None, diversity: float = 1.0,
-                 avoid: dict[int, list[tuple[float, float]]] | None = None, preferences: dict[str, float] | None = None) -> None:
+                 avoid: dict[int, list[tuple[float, float]]] | None = None, preferences: dict[str, float] | None = None,
+                 position_scale: float = 1.0, event_candidates: int | None = None) -> None:
         """`role_weights`: a style's preference per kind of shot (post_style_library); `diversity`: how hard to avoid repeated looks (1.0 = as always);
         `avoid`: stretches other variants of the same edit already use, by file id; `preferences`: learned per-kind adjustments that passed the adoption gate."""
         self.role_weights = role_weights or {}
         self.diversity = diversity
         self.avoid = avoid or {}
         self.preferences = preferences or {}
+        self.position_scale = position_scale   # < 1 when the edit is ordered by sections, not by the shoot's order
+        self.event_candidates = event_candidates if event_candidates is not None else EVENT_CANDIDATES   # read at call time, so a test can change the constant
+        self.peak_uses: dict[int, int] = {}   # shots taken from each clip in the main-moment section
         self.pool = [c for c in clips if c.get("steady") and not c.get("rejected")]
         self.order = {c["file_id"]: i for i, c in enumerate(clips)}
         self.denominator = max(len(clips) - 1, 1)
@@ -106,7 +119,7 @@ class Picker:
         taken = self._taken(clip)
         key = (clip["file_id"], round(length * 8), tuple((round(a, 2), round(b, 2)) for a, b in taken))
         if key not in self._event_windows:
-            self._event_windows[key] = post_steady.event_windows(clip, length, taken, EVENT_CANDIDATES) if EVENT_CANDIDATES > 1 else []
+            self._event_windows[key] = post_steady.event_windows(clip, length, taken, self.event_candidates) if self.event_candidates > 1 else []
         return self._event_windows[key] or [self._window(clip, length)]
 
     def _signature(self, clip: dict[str, Any], window: dict[str, Any]) -> np.ndarray | None:
@@ -117,9 +130,11 @@ class Picker:
         scene = (clip.get("scene") or "").strip().lower()
         return look_penalty(scene, sig, [(back, other["sig"], other["scene"]) for back, other in enumerate(reversed(self.chosen), start=1)])
 
-    def pick(self, length: float, target_position: float, *, exclude: set[int] | None = None, prefer_role: str | None = None) -> dict[str, Any] | None:
+    def pick(self, length: float, target_position: float, *, exclude: set[int] | None = None, prefer_role: str | None = None,
+             section_role: str | None = None) -> dict[str, Any] | None:
         """The best {clip, window, sig, score, parts} for a slot of `length` seconds that falls at `target_position` (0..1) of the edit, or None if no
-        clip is long enough. `prefer_role`: this slot would rather be that kind of shot (a style's opening or closing shot)."""
+        clip is long enough. `prefer_role`: this slot would rather be that kind of shot (a style's opening or closing shot). `section_role`: the role of the
+        section this slot falls in (place, person, detail, movement, main_moment), matched against each moment's sorted role (post_roles)."""
         best: dict[str, Any] | None = None
         for clip in self.pool:
             if (exclude and clip["file_id"] in exclude) or clip["duration"] < length + 0.2:
@@ -128,27 +143,41 @@ class Picker:
                 sig = self._signature(clip, window)
                 quality = 1.0 / (1.0 + window["steady"]["score"] / QUALITY_SCALE)
                 looks, previous = self._looks_like(clip, sig)
+                if section_role == "main_moment" and window.get("event_role") == "main_moment":
+                    looks *= PEAK_LOOK_SHARE   # the peak is several shots of the same performance: a repeated scene costs half
                 reuse = REUSE_PENALTY if clip["file_id"] in self.used else 0.0
+                peak_main = section_role == "main_moment" and window.get("event_role") == "main_moment"
+                if reuse and peak_main:
+                    reuse *= PEAK_REUSE_SHARE   # a different moment of a main clip (overlap with what's used is still penalised below)
                 overlap = OVERLAP_PENALTY if window.get("overlaps_earlier_use") else 0.0
                 overlap += CUT_PENALTY if window["steady"]["cuts"] else 0.0
-                position = POSITION_WEIGHT * abs(self.order[clip["file_id"]] / self.denominator - target_position)
+                position = self.position_scale * POSITION_WEIGHT * abs(self.order[clip["file_id"]] / self.denominator - target_position)
                 event = EVENT_QUALITY * (window.get("event_punch") or 0) / 10.0
                 role = post_candidate_moments.role_of(window)
                 role_bonus = ROLE_WEIGHT * self.role_weights.get(role, 0.0) + (FIRST_LAST_ROLE_BONUS if prefer_role and role == prefer_role else 0.0)
                 preference = PREFERENCE_WEIGHT * self.preferences.get(role, 0.0)
+                shot_role = window.get("event_role")
+                section = 0.0
+                if section_role:
+                    if shot_role == section_role:
+                        section = SECTION_ROLE_BONUS
+                    elif shot_role == "main_moment":
+                        section = -MAIN_OUTSIDE_PEAK_PENALTY
+                    if section_role == "main_moment":
+                        section += (MAIN_CLIP_BONUS if clip.get("main_clip") and shot_role == "main_moment" else 0.0) - PEAK_SPREAD_PENALTY * self.peak_uses.get(clip["file_id"], 0)
                 variant = 0.0
                 if self.avoid.get(clip["file_id"]):
                     s0, s1 = window["start"], window["start"] + window["duration"]
                     variant = VARIANT_OVERLAP_PENALTY if any(s0 < b and s1 > a for a, b in self.avoid[clip["file_id"]]) else VARIANT_SAME_CLIP_PENALTY
-                score = quality - self.diversity * DIVERSITY_WEIGHT * looks - reuse - overlap - position + event + role_bonus + preference - variant
+                score = quality - self.diversity * DIVERSITY_WEIGHT * looks - reuse - overlap - position + event + role_bonus + preference + section - variant
                 if best is None or score > best["score"]:
                     best = {"clip": clip, "window": window, "sig": sig, "score": score, "similar_to_previous": previous,
                             "parts": {"quality": round(quality, 3), "looks_like_earlier": round(looks, 3), "reused_clip": bool(reuse), "event": round(event, 3),
-                                      "role": role, "role_bonus": round(role_bonus, 3), "learned_preference": round(preference, 3), "other_variant_penalty": round(variant, 3),
+                                      "role": role, "role_bonus": round(role_bonus, 3), "shot_role": shot_role, "section_bonus": round(section, 3), "learned_preference": round(preference, 3), "other_variant_penalty": round(variant, 3),
                                       "position_penalty": round(position, 3)}}
         return best
 
-    def register(self, clip: dict[str, Any], window: dict[str, Any], sig: np.ndarray | None = None) -> float:
+    def register(self, clip: dict[str, Any], window: dict[str, Any], sig: np.ndarray | None = None, section_role: str | None = None) -> float:
         """Records a chosen shot (also the ones placed by another rule, like the establishing clip) and returns how alike it is to the previous shot."""
         sig = sig if sig is not None else self._signature(clip, window)
         previous = 0.0
@@ -158,6 +187,8 @@ class Picker:
             if scene and scene == self.chosen[-1]["scene"]:
                 previous = max(previous, SAME_SCENE_SIM)
         self.chosen.append({"file_id": clip["file_id"], "sig": sig, "scene": scene})
+        if section_role == "main_moment":
+            self.peak_uses[clip["file_id"]] = self.peak_uses.get(clip["file_id"], 0) + 1
         self.used.setdefault(clip["file_id"], []).append((window["start"], window["start"] + window["duration"]))
         return previous
 

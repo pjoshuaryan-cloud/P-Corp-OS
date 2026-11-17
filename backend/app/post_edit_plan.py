@@ -527,11 +527,19 @@ def rejected_note(left_out: list[dict]) -> str:
 def attach_moments(clips: list[dict], job: dict) -> list[dict]:
     """Adds probed events / scene / people (post_moments cache) to each clip that has them. In place."""
     from app.post_moments import load_moments
+    from app.post_roles import load_roles
     known = load_moments(edit_dir(job))
+    sorted_roles = load_roles(edit_dir(job)) or {}
+    roles = sorted_roles.get("roles") or {}   # 2026-11-17: shot roles (post_roles), "<file id>.<event index>" -> role
+    main_clips = set(sorted_roles.get("main_clips") or [])   # the clips holding the event's defining moments (the ribbon cutting, the performance)
     for c in clips:
-        m = known.get(str(c["file_id"]))
+        key = str(c["file_id"])
+        m = known.get(key)
         if m and abs(m.get("duration", 0) - c["duration"]) <= 0.05:
-            c["events"], c["scene"], c["people"] = m["events"], m.get("scene", ""), m.get("people", False)
+            events = [dict(e, shot_role=roles[f"{key}.{i}"]) if f"{key}.{i}" in roles else e for i, e in enumerate(m["events"])]
+            c["events"], c["scene"], c["people"] = events, m.get("scene", ""), m.get("people", False)
+            if key in main_clips:
+                c["main_clip"] = True
             if m.get("provenance"):
                 c["moments_provenance"] = m["provenance"]
     return clips
