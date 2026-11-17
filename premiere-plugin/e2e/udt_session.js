@@ -2,7 +2,7 @@
 const { Udt } = require("./udt.js");
 const PLUGIN_DIR = "/Users/joshuapeters/Desktop/P-Corp/premiere-plugin";
 async function openSession() {
-    const u = await new Udt().connect(); const id = u.clients[0].id;
+    const u = await new Udt().connect(); const id = (u.clients.find((c) => c.app && c.app.appId === "premierepro") || u.clients[0]).id;
     const load = await u.proxy(id, { command: "Plugin", action: "load", params: { provider: { type: "disk", path: PLUGIN_DIR } }, breakOnStart: false, isPlaygroundPlugin: false }, 60000);
     if (!load.pluginSessionId) throw new Error("load failed: " + JSON.stringify(load).slice(0, 300));
     const dbg = await u.proxy(id, { command: "Plugin", action: "debug", pluginSessionId: load.pluginSessionId });

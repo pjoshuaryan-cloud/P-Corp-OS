@@ -1701,6 +1701,26 @@ async function placeLogo(project, sequence, editor, plan, tpf, keepAlive) {
     return 1;
 }
 
+/** What to tell Josh about sound effects Premiere couldn't import. Nearly always the file's drive isn't plugged in
+ * (2026-11-17: the whole library lives on the Joshx SSD), so say which drive, once per file, plus one line on what to do. */
+function missingSoundEffectNotes(missing) {
+    if (!missing || missing.size === 0) return [];
+    const driveOf = (file) => { const m = /^\/Volumes\/([^/]+)\//.exec(String(file)); return m ? m[1] : null; };
+    const lines = [];
+    const drives = new Set();
+    for (const [file, uses] of missing) {
+        const name = String(file).split("/").pop();
+        const drive = driveOf(file);
+        if (drive) drives.add(drive);
+        lines.push(`Note: skipped the sound effect "${name}"${uses > 1 ? ` (${uses} places)` : ""}: Premiere couldn't open ${drive ? `it on the "${drive}" drive` : file}.`);
+    }
+    const total = [...missing.values()].reduce((a, b) => a + b, 0);
+    lines.push(drives.size
+        ? `${total} sound effect(s) left out. Is the ${[...drives].map((d) => `"${d}"`).join(" / ")} drive plugged in? Plug it in and run Build My Edit again to get them.`
+        : `${total} sound effect(s) left out. Check the files above still exist, then run Build My Edit again.`);
+    return lines;
+}
+
 async function placeSoundEffects(project, editor, plan, tpf, keepAlive, runId) {
     const sfx = plan.accents.sfx || [];
     if (sfx.length === 0) return 0;
@@ -1725,14 +1745,16 @@ async function placeSoundEffects(project, editor, plan, tpf, keepAlive, runId) {
     }
     const byFile = new Map(imported.map((x) => [x.file, x]));
     const pieces = [];
+    const missing = new Map();   // file -> how many planned uses were skipped
     sfx.forEach((x, i) => {
         const source = byFile.get(x.file);
         if (!source || !source.item) {
-            log(`Note: couldn't find the sound effect "${x.name}" after importing, so it was skipped.`);
+            missing.set(x.file, (missing.get(x.file) || 0) + 1);
             return;
         }
         pieces.push({ x, source, name: `RC_FX_${i + 1}_${runId}`, start: ppro.TickTime.createWithTicks("0"), end: ppro.TickTime.createWithTicks(String(x.frames * tpf)) });
     });
+    for (const line of missingSoundEffectNotes(missing)) log(line);
     for (let i = 0; i < pieces.length; i += ACCENT_BATCH) {
         const batch = pieces.slice(i, i + ACCENT_BATCH);
         try {
