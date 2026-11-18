@@ -40,6 +40,7 @@ keypair auth, SMAppService packaging.
 """
 
 import asyncio
+import contextlib
 import base64
 import json
 import os
@@ -5065,50 +5066,63 @@ class EditChatRelayRequest(BaseModel):
     text: str
 
 
-def _relay_conn(request: Request):
-    return getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+@contextlib.asynccontextmanager
+async def _relay_db():
+    """The relay's database: ALWAYS the shared one when the app runs on Postgres. A request that arrives before the pool exists (the cloud server waking up)
+    gets a plain 503 instead of falling back to this server's own SQLite file -- found live 2026-11-18: the phone's first sentence went into the cloud
+    server's local file, where the Mac can never see it, so the phone showed "Mac offline" for good. Only a backend running on SQLite uses SQLite."""
+    if DATA_BACKEND != "postgres":
+        yield None
+        return
+    pool = getattr(app.state, "postgres_pool", None)
+    if pool is None:
+        raise HTTPException(status_code=503, detail="The cloud database isn't ready yet (the server is starting). Try again in a moment.")
+    async with pool.connection() as conn:
+        yield conn
 
 
 @app.get("/post/edit-chat/relay")
 async def post_edit_chat_relay_latest(request: Request, _: None = Depends(verify_token)) -> dict:
     """Describe an edit from the phone (phase 6b): the newest request and whether the Mac is online to act on it. Served by the cloud and the Mac alike."""
     from app.post_chat_relay import latest
-    return await latest(_relay_conn(request))
+    async with _relay_db() as conn:
+        return await latest(conn)
 
 
 @app.post("/post/edit-chat/relay")
 async def post_edit_chat_relay_submit(body: EditChatRelayRequest, request: Request, _: None = Depends(verify_token)) -> dict:
     """Leaves a sentence for the Mac to understand. Spends nothing here: the Mac makes the one Haiku call when it picks it up."""
     from app.post_chat_relay import latest, submit
-    conn = _relay_conn(request)
-    try:
-        req = await submit(body.text, conn)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    await record_tool_call("post_edit_chat_relay_submit_ui", {"request_id": req["id"]}, "ok", conn)
-    return {"request": req, "mac_online": (await latest(conn))["mac_online"]}
+    async with _relay_db() as conn:
+        try:
+            req = await submit(body.text, conn)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await record_tool_call("post_edit_chat_relay_submit_ui", {"request_id": req["id"]}, "ok", conn)
+        return {"request": req, "mac_online": (await latest(conn))["mac_online"]}
 
 
 @app.post("/post/edit-chat/relay/{request_id}/go")
 async def post_edit_chat_relay_go(request_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
     """Josh pressed Go on the phone: the Mac starts the card's steps on its next pass (never past the card's cap)."""
     from app.post_chat_relay import press_go
-    conn = _relay_conn(request)
-    try:
-        req = await press_go(request_id, conn)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    await record_tool_call("post_edit_chat_relay_go_ui", {"request_id": request_id, "cap": (req.get("card") or {}).get("usd_cap")}, "ok", conn)
-    return {"request": req}
+    async with _relay_db() as conn:
+        try:
+            req = await press_go(request_id, conn)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await record_tool_call("post_edit_chat_relay_go_ui", {"request_id": request_id, "cap": (req.get("card") or {}).get("usd_cap")}, "ok", conn)
+        return {"request": req}
 
 
 @app.post("/post/edit-chat/relay/{request_id}/cancel")
 async def post_edit_chat_relay_cancel(request_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
     from app.post_chat_relay import cancel
     try:
-        return {"request": await cancel(request_id, _relay_conn(request))}
+        async with _relay_db() as conn:
+            return {"request": await cancel(request_id, conn)}
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:

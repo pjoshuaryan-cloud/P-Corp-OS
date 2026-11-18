@@ -133,5 +133,26 @@ with tempfile.TemporaryDirectory() as d:
     relay.DB_PATH = Path(d) / "relay.db"
     asyncio.run(scenario())
 
+# the routes: on Postgres the relay never falls back to this server's own SQLite file (found live 2026-11-18)
+from fastapi.testclient import TestClient
+real_backend, had_pool = main.DATA_BACKEND, getattr(main.app.state, "postgres_pool", None)
+main.DATA_BACKEND = "postgres"
+if had_pool is not None:
+    del main.app.state.postgres_pool
+main.app.dependency_overrides[main.verify_token] = lambda: None
+try:
+    with tempfile.TemporaryDirectory() as d:
+        relay.DB_PATH = Path(d) / "must_not_exist.db"
+        c = TestClient(main.app)
+        r1 = c.get("/post/edit-chat/relay")
+        r2 = c.post("/post/edit-chat/relay", json={"text": "Rabit Haus recap"})
+        check("with no cloud pool yet, the phone gets a plain 'try again' (503), for reading and for sending", r1.status_code == 503 and r2.status_code == 503 and "Try again" in r2.json()["detail"], (r1.status_code, r2.text[:120]))
+        check("...and nothing is written to a local file the Mac could never see", not relay.DB_PATH.exists())
+finally:
+    main.DATA_BACKEND = real_backend
+    if had_pool is not None:
+        main.app.state.postgres_pool = had_pool
+    main.app.dependency_overrides.clear()
+
 print(f"\nFAILS: {FAILS}")
 sys.exit(1 if FAILS else 0)
