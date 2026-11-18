@@ -505,8 +505,9 @@ _add(LibraryStyle(
                      "Their frame is horizontal 4:3 or 3:2, which the build can't make yet; it makes 16:9 or 9:16."),
     buildable=True,
     build_note=(_BUILT + _LOGO + " The section order is built when the shoot's moments have been sorted into roles (Sort shot roles); without that the "
-                "planner fills the edit as usual. Not built yet: the blur moves (step 0 proved Premiere can place a whip; the build adds it in a later phase), "
-                "picture-led cutting, the music fade and the 4:3 frame."),
+                "planner fills the edit as usual. The music tails off over the last 4 s. The plan says where two to four blur moves and their whooshes go, "
+                "but Build My Edit doesn't place the blur moves yet (step 0 proved Premiere can place a whip; phase 4 adds it). Not built yet: picture-led "
+                "cutting and the 4:3 frame."),
     # The order read from their recaps, as shares of a 35 s recap: open 0-3 s, place 3-7, people 7-16, details 16-22, main moment 22-31, close 31-35.
     sections=({"name": "open", "role": "person", "until": 0.086}, {"name": "place", "role": "place", "until": 0.2},
               {"name": "people", "role": "person", "until": 0.457}, {"name": "details", "role": "detail", "until": 0.629},

@@ -183,6 +183,11 @@ def build_variant(style_slug: str, *, profile: Any, hits: list[list[float]], mus
     except EditPlanError as exc:
         raise VariantError(f"'{style.name}' couldn't be planned: {exc}") from exc
     plan["style"] = f"library:{style.slug}"
+    if cfg.get("sections"):   # 2026-11-17: a sectioned edit gets its finishing plan (blur moves, whooshes, the music tail-off) -- post_finishing
+        from app.post_accents import load_sfx_index
+        from app.post_finishing import plan_finishing
+        plan["finishing"] = plan_finishing(plan, fps, {c["file_id"]: c for c in clips}, sfx_index=load_sfx_index())
+        plan["notes"] += plan["finishing"]["notes"]
     plan["variant"] = describe_variant(style, cfg, plan, index=index, set_id=set_id, with_cards=with_cards)
     plan["variant"]["wants_cards"] = bool(cfg["opener_card"] or cfg["closing_card"])
     if preferences:
@@ -376,7 +381,8 @@ async def plan_variants_for_job(job_id: int, *, count: int = 3, styles: list[str
         raise VariantError(str(exc)) from exc
     folder = variants_dir(edit_dir(job)) / set_id
     cut_path = mdir / f"{Path(song).stem}_variants_{set_id}.wav"   # its own file: the job's current plan keeps its own music cut
-    longest = max(result["plans"], key=lambda p: p["duration_frames"])   # one cut serves the set: long enough for the longest variant, with that plan's own fade
+    # one cut serves the set: long enough for the longest variant, with that plan's own fade; at equal length a sectioned plan's (its 4 s tail-off is part of the style)
+    longest = max(result["plans"], key=lambda p: (p["duration_frames"], bool(p.get("finishing"))))
     try:
         await post_music.render_music_cut(song, str(cut_path), music_in, longest["duration_frames"] / fps, longest["music"].get("fade_out_seconds", MUSIC_FADE_OUT_SECONDS))
     except post_music.MusicAnalysisError as exc:
