@@ -201,7 +201,7 @@ ASSUMED_USD_PER_M_OUT = 25.0
 
 # Anthropic first-party list prices in US$ per million tokens (input, output), as listed in the Claude API reference on 2026-10-06. Used to cost what a run
 # REALLY used (the usage ledger) and to show a list-price estimate beside the upper bound. The account's own bill is the truth.
-LIST_PRICE_PER_M = {"claude-sonnet-5-5": (2.0, 10.0), "claude-sonnet-5": (2.0, 10.0), "claude-opus-5-5": (4.0, 20.0)}
+LIST_PRICE_PER_M = {"claude-sonnet-5-5": (2.0, 10.0), "claude-sonnet-5": (2.0, 10.0), "claude-opus-5-5": (4.0, 20.0), "claude-haiku-5-5": (0.10, 0.50)}   # Haiku 5.5: prompts of 100K tokens or fewer
 LIST_PRICE_SOURCE = "Anthropic list price as of 2026-10-06"
 
 

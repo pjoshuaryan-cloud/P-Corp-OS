@@ -39,6 +39,8 @@ struct PostView: View {
                         errorText(error)
                     }
 
+                    DescribeEditBox()
+
                     HStack(spacing: 8) {
                         Button(isAddingShoot ? "Cancel" : "+ New POST Job") {
                             isAddingShoot.toggle()

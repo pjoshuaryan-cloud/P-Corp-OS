@@ -220,17 +220,18 @@ s.append(table(["Button", "What it does", "Use it when", "Skip it when"], [
     ["<b>Suggest Smart Selects</b>", "Adds markers on clean, complete sentences in transcribed clips. Only suggestions.", "Finding soundbites fast", "No transcript yet"],
     ["<b>Apply Starting Exposure</b>", "Adds a mild Lumetri exposure nudge, up to 1 stop, to clips flagged over or underexposed.", "Normal-contrast footage with flags", "S-Log3: it will rarely do anything"],
     ["<b>Assemble Edit</b>", "The same build as Build My Edit, without the setup step.", "Rarely: Build My Edit covers it", "Most of the time"],
-    ["<b>Assemble Rough Cut</b>", "Lays each clip's best moments in a new sequence, in your timeline's order or the order filmed. Expect to re-edit it.", "A cut with no music", "A cut to music. Save first on a big shoot"],
+    ["<b>Assemble Rough Cut</b>", "Each clip's best moments in a new sequence, in timeline or filmed order. Re-edit it.", "A cut with no music", "A cut to music. Save first on a big shoot"],
 ], wid))
 
 s += section("The P Corp app")
 s.append(table(["Control", "What it does", "Use it when", "Skip it when"], [
+    ["<b>Describe an edit</b>", "Top of POST. Type shoot, style, song, length and a cap; a card prices each step, Go plans it.", "You know what you want", "You want to pick moments by hand first"],
     ["<b>Create Job, Start</b>", "Copies the card and checks every file. Retry resumes where it stopped.", "Every shoot", ""],
     ["<b>Coverage Plans</b>", "Turns a brief into a shot list, then checks the footage against it. See Coverage.", "A brief names shots you must get", "Free-form shoots with no list"],
-    ["<b>View Report</b>", "Cameras, formats, slow-motion clips, corrupt files, duplicates. <b>Analyze Frames</b> on a clip adds Claude's read of it, at a small cost.", "You want a quick check of what was shot", "You trust the card"],
+    ["<b>View Report</b>", "Cameras, formats, slow motion, bad files, duplicates. <b>Analyze Frames</b> adds Claude's read.", "You want a quick check of what was shot", "You trust the card"],
     ["<b>More: Generate Proxies</b>", "Appears when clips would benefit. Makes smaller copies, which you attach in Premiere yourself.", "Footage is too slow to cut", "It plays well"],
-    ["<b>More: Detect Highlights</b>", "Finds each clip's best moment for Rough Cut. Sends frames to Claude several times per clip, so it costs more than Tag.", "Before Rough Cut on footage with no speech", "You're cutting to music"],
-    ["<b>Plan Edit: Advanced options</b>", "Where in the song to start, an opening clip, brand cards (needs a logo in the graphics folder), accents and sound effects.", "You want more control", "The defaults look right"],
+    ["<b>More: Detect Highlights</b>", "Each clip's best moment for Rough Cut. Several Claude reads a clip, so dearer than Tag.", "Before Rough Cut on footage with no speech", "You're cutting to music"],
+    ["<b>Plan Edit: Advanced options</b>", "Song start, opening clip, brand cards (needs a logo), accents and sound effects.", "You want more control", "The defaults look right"],
     ["<b>Review Moments</b>", "Keep, swap or <b>Lock</b> each shot. <b>Regenerate shots</b> re-picks a run you don't like.", "Before every build", "Never: your taste goes in here"],
 ], wid))
 

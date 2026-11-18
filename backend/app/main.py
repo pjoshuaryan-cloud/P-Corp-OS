@@ -4880,6 +4880,177 @@ async def post_job_sort_shot_roles(job_id: int, _: None = Depends(verify_token))
             "status": await on_drive(status, folder)}
 
 
+class EditChatRequest(BaseModel):
+    text: str
+
+
+class EditChatRunRequest(BaseModel):
+    card_id: str
+
+
+_EDIT_CHAT_CARDS: dict[str, dict] = {}   # cards shown to Josh in this process, by id: a run starts only from a card the backend itself made
+
+
+async def _edit_chat_card(request_: dict, styles: list[dict]) -> dict:
+    """The card for an understood request: the shoot's describe status, its song, the shot-roles status for a sectioned style, and the costed steps."""
+    from app.post_chat_edit import build_card, resolve_song
+    from app.post_edit_plan import describe_status, edit_dir, list_music_files, load_job_clips, split_rejected
+    from app.post_roles import status as roles_status
+    async with _pooled_postgres_conn() as postgres_conn:
+        job = await get_post_job(request_["job_id"], postgres_conn)
+        clips = await load_job_clips(request_["job_id"], postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {request_['job_id']}")
+    style = next(s for s in styles if s["slug"] == request_["style"])
+
+    def read() -> tuple:
+        kept = split_rejected(clips, job)[0]
+        return describe_status(job, kept), list_music_files(job), (roles_status(edit_dir(job)) if style["sections"] else None)
+    describe, songs, roles = await on_drive(read, timeout=60.0)
+    return build_card(request=request_, job=job, style=style, song=resolve_song(songs, request_.get("song")), describe=describe, roles=roles)
+
+
+@app.post("/post/edit-chat/understand")
+async def post_edit_chat_understand(body: EditChatRequest, _: None = Depends(verify_token)) -> dict:
+    """Describe an edit, step 1 (reel autopilot phase 6a): one Haiku call turns Josh's sentence into a request (shoot, style, song, length, cap), then the
+    card says what doing it takes and costs. Nothing is spent beyond that call until he presses Go. Desktop-only, never reachable from Frank."""
+    from anthropic import AsyncAnthropic
+    from app.post_chat_edit import CHAT_MODEL, ChatEditError, style_choices, understand
+    from app.post_edit_plan import _style_card, edit_dir
+    from app.post_moments import record_usage, usd
+    from app.post_shot_composition import VisionUnavailableError
+    from app.post_style import available_styles
+    from app.post_style_library import list_styles
+    api_key = _require_api_key()
+    async with _pooled_postgres_conn() as postgres_conn:
+        jobs = [j for j in await list_post_jobs(None, postgres_conn) if j.get("media_analyzed_at")]
+    styles = style_choices([_style_card(r) for r in available_styles()], list_styles())
+    try:
+        request_ = await understand(AsyncAnthropic(api_key=api_key), body.text, jobs, styles)
+    except VisionUnavailableError as exc:
+        raise HTTPException(status_code=402, detail=str(exc))
+    except ChatEditError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    spent, _basis = usd(CHAT_MODEL, request_["usage"]["in"], request_["usage"]["out"])
+    async with _pooled_postgres_conn() as postgres_conn:
+        await record_tool_call("post_edit_chat_understand_ui", {"job_id": request_["job_id"], "style": request_["style"], "usd": spent}, "ok", postgres_conn)
+    need = [w for w, missing in (("which shoot", request_["job_id"] is None), ("which style", request_["style"] is None)) if missing]
+    if need:
+        return {"request": request_, "card": None, "understand_usd": spent,
+                "message": f"I couldn't tell {' or '.join(need)}. " + (request_.get("unclear") or "Name it in your sentence and try again.")}
+    card = await _edit_chat_card(request_, styles)
+    import time as _time
+    card["id"] = f"{int(_time.time() * 1000)}"
+    card["understand_usd"] = spent
+    _EDIT_CHAT_CARDS.clear()
+    _EDIT_CHAT_CARDS[card["id"]] = card
+    async with _pooled_postgres_conn() as postgres_conn:
+        job = await get_post_job(request_["job_id"], postgres_conn)
+    if job is not None:
+        try:
+            await on_drive(record_usage, edit_dir(job), job_id=job["id"], operation="describe_an_edit", model=CHAT_MODEL,
+                           usage=request_["usage"], extra={"text": body.text[:200]}, writing=True)
+        except Exception as exc:   # the ledger must never block the card
+            print(f"[edit-chat] couldn't record usage: {type(exc).__name__}")
+    return {"request": request_, "card": card, "understand_usd": spent, "message": None}
+
+
+@app.post("/post/edit-chat/run")
+async def post_edit_chat_run(body: EditChatRunRequest, _: None = Depends(verify_token)) -> dict:
+    """Describe an edit, step 2: Josh pressed Go on a card. Runs its steps in the background, never past the card's cap; poll GET /post/edit-chat/run."""
+    from anthropic import AsyncAnthropic
+    from app import post_chat_edit as chat
+    card = _EDIT_CHAT_CARDS.get(body.card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="That card has expired. Describe the edit again.")
+    if not card["ready"]:
+        raise HTTPException(status_code=400, detail="This card can't run as it stands: " + (" ".join(card["warnings"]) or "it's over your cap."))
+    client = AsyncAnthropic(api_key=_require_api_key())
+    job_id = card["job"]["id"]
+
+    async def job_now() -> dict:
+        async with _pooled_postgres_conn() as postgres_conn:
+            job = await get_post_job(job_id, postgres_conn)
+        if job is None:
+            raise chat.ChatEditError(f"Shoot #{job_id} is gone.")
+        return job
+
+    async def describe_step(step: dict, card_: dict) -> dict:
+        from app import post_moments
+        from app.post_edit_plan import edit_dir, load_job_clips, split_rejected
+        job = await job_now()
+        async with _pooled_postgres_conn() as postgres_conn:
+            clips = await load_job_clips(job_id, postgres_conn)
+        clips = (await on_drive(split_rejected, clips, job, timeout=30.0))[0]
+        await post_moments.check_credit(client, DESCRIBE_MODEL)
+        post_moments.start_run(job_id, client, DESCRIBE_MODEL, clips, edit_dir(job), max_calls=step["clips"], planned_total=step["clips"])
+        await post_moments._RUNS[job_id]["task"]
+        state = post_moments.run_state(job_id) or {}
+        used = state.get("usage") or {}
+        spent, _b = post_moments.usd(DESCRIBE_MODEL, int(used.get("in", 0)), int(used.get("out", 0)))
+        if state.get("state") != "done":
+            raise chat.ChatEditError(state.get("message") or "Describing the clips stopped.")
+        return {"usd": spent, "note": state.get("message")}
+
+    async def sort_step(step: dict, card_: dict) -> dict:
+        from app.post_edit_plan import edit_dir
+        from app.post_moments import load_moments
+        from app.post_roles import sort_roles
+        job = await job_now()
+        moments = await on_drive(load_moments, edit_dir(job))
+        record = await sort_roles(client, edit_dir(job), job_id=job_id, moments=moments)
+        return {"usd": record["usd"], "note": f"Sorted {record['moments_sorted']} moments."}
+
+    async def plan_step(step: dict, card_: dict) -> dict:
+        from app.post_edit_plan import EditPlanError, edit_dir, load_job_clips, plan_for_job
+        song = (card_.get("song") or {}).get("path")
+        review = f"/static/edit_review.html?job={job_id}"
+        if card_["style"]["kind"] == "reference":
+            async with _pooled_postgres_conn() as postgres_conn:
+                try:
+                    plan = await plan_for_job(job_id, style=[card_["style"]["slug"]], music_path=song, target_seconds=card_.get("seconds"), postgres_conn=postgres_conn)
+                except EditPlanError as exc:
+                    raise chat.ChatEditError(str(exc)) from exc
+            return {"usd": 0.0, "note": f"{plan['checks']['shot_count']} shots.",
+                    "result": {"shots": plan["checks"]["shot_count"], "seconds": plan.get("duration_seconds"), "style": card_["style"]["name"], "review_path": review}}
+        from app.post_variants import VariantError, load_variant, plan_variants_for_job, validate_plan
+        companion = "music-led-montage" if card_["style"]["slug"] != "music-led-montage" else "event-highlights"
+        async with _pooled_postgres_conn() as postgres_conn:
+            try:
+                summary = await plan_variants_for_job(job_id, count=2, styles=[card_["style"]["slug"], companion], target_seconds=card_.get("seconds"),
+                                                      music_path=song, postgres_conn=postgres_conn)
+            except VariantError as exc:
+                raise chat.ChatEditError(str(exc)) from exc
+            job = await get_post_job(job_id, postgres_conn)
+            clips = await load_job_clips(job_id, postgres_conn)
+        candidate = await on_drive(load_variant, edit_dir(job), summary["set_id"], 1)
+        existing = await on_drive(lambda: {c["path"] for c in clips if c.get("path") and Path(c["path"]).exists()}, timeout=60.0)
+        problems = validate_plan(candidate, clips, existing)
+        if problems:
+            raise chat.ChatEditError("The plan came out unusable, so your current plan was left alone: " + " ".join(problems[:3]))
+        async with _EDIT_REVIEW_LOCK:
+            plan = await on_drive(_use_variant_and_log, edit_dir(job), job_id, summary["set_id"], 1, timeout=30.0, writing=True)
+        sections = plan.get("checks", {}).get("section_role_matches")
+        return {"usd": 0.0, "note": f"{len(plan['shots'])} shots" + (f", {round(100 * sections)}% in their section" if sections is not None else "") + ".",
+                "result": {"shots": len(plan["shots"]), "seconds": plan.get("duration_seconds"), "style": card_["style"]["name"], "review_path": review,
+                           "variant_set": summary["set_id"], "blur_moves": len(((plan.get("finishing") or {}).get("transitions")) or [])}}
+
+    try:
+        state = chat.start(card, {"describe": describe_step, "sort_roles": sort_step, "plan": plan_step})
+    except chat.ChatEditError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    async with _pooled_postgres_conn() as postgres_conn:
+        await record_tool_call("post_edit_chat_run_ui", {"job_id": job_id, "style": card["style"]["slug"], "cap": card["usd_cap"], "estimate": card["usd_total"]}, "started", postgres_conn)
+    return {"run": state}
+
+
+@app.get("/post/edit-chat/run")
+async def post_edit_chat_run_state(_: None = Depends(verify_token)) -> dict:
+    """The state of the current Describe-an-edit run (in memory; cheap to poll)."""
+    from app.post_chat_edit import run_state
+    return {"run": run_state()}
+
+
 @app.get("/post/jobs/{job_id}/moments-status")
 async def post_job_moments_status(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
     """How many of the job's clips have a description (what the clip shows + its best moments), what describing the rest

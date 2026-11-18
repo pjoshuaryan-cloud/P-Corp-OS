@@ -220,6 +220,58 @@ with tempfile.TemporaryDirectory() as tmp:
             post_roles.sort_roles, main._require_api_key, main._pooled_postgres_conn = real_sort, real_key, real_pool
         page = client.get("/static/edit_variants.html").text
         check("the variants page has the Sort shot roles button and asks before spending", "rolesBtn" in page and "/shot-roles" in page and "confirm(" in page)
+
+        # ---- 2026-11-18: Describe an edit (reel autopilot phase 6a) -------------------------------------------------------------------------
+        import anthropic
+        from app import post_chat_edit as chat_mod
+
+        class FakeHaiku:
+            calls = 0
+            def __init__(self, api_key=None):
+                self.messages = SimpleNamespace(create=self.create)
+            async def create(self, **kw):
+                FakeHaiku.calls += 1
+                text = kw["messages"][0]["content"]
+                reply = ({"job_id": None, "style": None, "song": None, "seconds": None, "usd_cap": None, "unclear": "no idea which shoot"} if "mystery" in text else
+                         {"job_id": 7, "style": "rabit-haus-event-recap", "song": "beat", "seconds": 35, "usd_cap": None, "unclear": ""})
+                return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(reply))], stop_reason="end_turn", usage=SimpleNamespace(input_tokens=800, output_tokens=40))
+
+        async def fake_jobs(status=None, postgres_conn=None):
+            return [dict(JOB, created_at="2026-10-22")]
+        started = {}
+
+        def fake_start(card, runners):
+            started["card"], started["runners"] = card, sorted(runners)
+            return {"state": "running", "steps": card["steps"], "spent_usd": 0.0, "message": None, "result": None}
+        real = (anthropic.AsyncAnthropic, main.list_post_jobs, post_edit_plan.list_music_files, main._require_api_key, main._pooled_postgres_conn, chat_mod.start)
+        anthropic.AsyncAnthropic, main.list_post_jobs, main._require_api_key, main._pooled_postgres_conn, chat_mod.start = FakeHaiku, fake_jobs, (lambda: "k"), no_pool, fake_start
+        post_edit_plan.list_music_files = lambda job: [{"path": "/m/beat.mp3", "name": "Big Beat.mp3", "megabytes": 1.0}]
+        try:
+            before = len(audit)
+            r = client.post("/post/edit-chat/understand", json={"text": "Rabit Haus recap of the synthetic shoot, beat, 35 s"})
+            d = r.json()
+            card = d.get("card") or {}
+            check("understand: one Haiku call gives a card for the shoot, style, song and length, with the $1 default cap", r.status_code == 200 and FakeHaiku.calls == 1
+                  and card.get("job", {}).get("id") == 7 and card["style"]["slug"] == "rabit-haus-event-recap" and card["song"]["name"] == "Big Beat.mp3"
+                  and card["seconds"] == 35 and card["usd_cap"] == 1.0, r.text[:400])
+            check("the card prices sorting the roles for the sectioned style and planning for free, inside the cap",
+                  [x["step"] for x in card["steps"]] == ["describe", "sort_roles", "plan"] or [x["step"] for x in card["steps"]][-1] == "plan", card.get("steps"))
+            check("what understanding cost is reported and audited", d["understand_usd"] == round(800 / 1e6 * 0.10 + 40 / 1e6 * 0.50, 4) and len(audit) == before + 1, d.get("understand_usd"))
+            r2 = client.post("/post/edit-chat/understand", json={"text": "mystery thing"})
+            check("a sentence it can't place gets a message and no card", r2.status_code == 200 and r2.json()["card"] is None and "which shoot" in r2.json()["message"], r2.text[:200])
+            r3 = client.post("/post/edit-chat/run", json={"card_id": "nope"})
+            check("Go with a card the backend didn't make is refused", r3.status_code == 404)
+            old_id = card["id"]
+            r = client.post("/post/edit-chat/understand", json={"text": "Rabit Haus recap of the synthetic shoot, beat, 35 s"})
+            card = r.json()["card"]
+            r4 = client.post("/post/edit-chat/run", json={"card_id": old_id})
+            check("an older card can't run once a newer one replaced it", r4.status_code == 404 and old_id != card["id"], (old_id, card["id"]))
+            r5 = client.post("/post/edit-chat/run", json={"card_id": card["id"]})
+            check("Go on the current card starts the run with the real describe, sort and plan steps wired", r5.status_code == 200 and started.get("card", {}).get("id") == card["id"]
+                  and started["runners"] == ["describe", "plan", "sort_roles"], r5.text[:300])
+            check("the run's state can be polled", client.get("/post/edit-chat/run").status_code == 200)
+        finally:
+            anthropic.AsyncAnthropic, main.list_post_jobs, post_edit_plan.list_music_files, main._require_api_key, main._pooled_postgres_conn, chat_mod.start = real
     finally:
         main.app.dependency_overrides.clear()
         main.get_post_job, main._review_context, main.record_tool_call, post_edit_plan.edit_dir, post_edit_plan.load_job_clips = saved
