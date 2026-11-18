@@ -225,7 +225,7 @@ s.append(table(["Button", "What it does", "Use it when", "Skip it when"], [
 
 s += section("The P Corp app")
 s.append(table(["Control", "What it does", "Use it when", "Skip it when"], [
-    ["<b>Describe an edit</b>", "Top of POST. Type shoot, style, song, length and a cap; a card prices each step, Go plans it.", "You know what you want", "You want to pick moments by hand first"],
+    ["<b>Describe an edit</b>", "Top of POST, Mac or iPhone (Mac on). Shoot, style, song, length, cap; a card prices each step, Go plans it.", "You know what you want", "You want to pick moments by hand first"],
     ["<b>Create Job, Start</b>", "Copies the card and checks every file. Retry resumes where it stopped.", "Every shoot", ""],
     ["<b>Coverage Plans</b>", "Turns a brief into a shot list, then checks the footage against it. See Coverage.", "A brief names shots you must get", "Free-form shoots with no list"],
     ["<b>View Report</b>", "Cameras, formats, slow motion, bad files, duplicates. <b>Analyze Frames</b> adds Claude's read.", "You want a quick check of what was shot", "You trust the card"],

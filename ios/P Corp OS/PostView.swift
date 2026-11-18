@@ -26,6 +26,7 @@ struct PostView: View {
             Divider().overlay(theme.divider)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    DescribeEditPhoneBox()
                     if let error = client.errorMessage {
                         Text(error).font(PCorpFont.body(12)).foregroundStyle(theme.statusRisk)
                     }

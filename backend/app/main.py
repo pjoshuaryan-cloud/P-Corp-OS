@@ -1154,6 +1154,10 @@ async def lifespan(app: FastAPI):
         # reasoning as every other loop here.
         if DATA_BACKEND == "postgres" and not hasattr(app.state, "venture_scan_task"):
             app.state.venture_scan_task = asyncio.create_task(_venture_scan_loop(app))
+        # Describe an edit from the phone (2026-11-18, reel autopilot 6b) -- Mac-only: planning needs this Mac's drives. The phone leaves a sentence in the
+        # shared database (post_chat_relay.py); this loop understands it, writes the card back, and runs it when the phone presses Go.
+        if DATA_BACKEND == "postgres" and not hasattr(app.state, "edit_chat_relay_task"):
+            app.state.edit_chat_relay_task = asyncio.create_task(_edit_chat_relay_loop(app))
     # Frank's background information, kept ready (2026-11-14, app/frank_context.py). Read-only, so it runs on the Mac and on
     # Render alike. Each refresh borrows a pool connection for one pass (`pool.connection()` hands it back reset).
     if not hasattr(app.state, "frank_context_task"):
@@ -1187,6 +1191,9 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, "venture_scan_task"):
         app.state.venture_scan_task.cancel()
         del app.state.venture_scan_task
+    if hasattr(app.state, "edit_chat_relay_task"):
+        app.state.edit_chat_relay_task.cancel()
+        del app.state.edit_chat_relay_task
     if hasattr(app.state, "elevenlabs_client"):
         await app.state.elevenlabs_client.aclose()
         del app.state.elevenlabs_client
@@ -4914,6 +4921,11 @@ async def _edit_chat_card(request_: dict, styles: list[dict]) -> dict:
 async def post_edit_chat_understand(body: EditChatRequest, _: None = Depends(verify_token)) -> dict:
     """Describe an edit, step 1 (reel autopilot phase 6a): one Haiku call turns Josh's sentence into a request (shoot, style, song, length, cap), then the
     card says what doing it takes and costs. Nothing is spent beyond that call until he presses Go. Desktop-only, never reachable from Frank."""
+    return await _understand_edit_text(body.text)
+
+
+async def _understand_edit_text(text: str) -> dict:
+    """Shared by the Mac's box and the phone relay (the Mac's relay loop calls it for a sentence typed on the phone). Raises HTTPException with a plain message."""
     from anthropic import AsyncAnthropic
     from app.post_chat_edit import CHAT_MODEL, ChatEditError, style_choices, understand
     from app.post_edit_plan import _style_card, edit_dir
@@ -4926,7 +4938,7 @@ async def post_edit_chat_understand(body: EditChatRequest, _: None = Depends(ver
         jobs = [j for j in await list_post_jobs(None, postgres_conn) if j.get("media_analyzed_at")]
     styles = style_choices([_style_card(r) for r in available_styles()], list_styles())
     try:
-        request_ = await understand(AsyncAnthropic(api_key=api_key), body.text, jobs, styles)
+        request_ = await understand(AsyncAnthropic(api_key=api_key), text, jobs, styles)
     except VisionUnavailableError as exc:
         raise HTTPException(status_code=402, detail=str(exc))
     except ChatEditError as exc:
@@ -4949,7 +4961,7 @@ async def post_edit_chat_understand(body: EditChatRequest, _: None = Depends(ver
     if job is not None:
         try:
             await on_drive(record_usage, edit_dir(job), job_id=job["id"], operation="describe_an_edit", model=CHAT_MODEL,
-                           usage=request_["usage"], extra={"text": body.text[:200]}, writing=True)
+                           usage=request_["usage"], extra={"text": text[:200]}, writing=True)
         except Exception as exc:   # the ledger must never block the card
             print(f"[edit-chat] couldn't record usage: {type(exc).__name__}")
     return {"request": request_, "card": card, "understand_usd": spent, "message": None}
@@ -4958,9 +4970,14 @@ async def post_edit_chat_understand(body: EditChatRequest, _: None = Depends(ver
 @app.post("/post/edit-chat/run")
 async def post_edit_chat_run(body: EditChatRunRequest, _: None = Depends(verify_token)) -> dict:
     """Describe an edit, step 2: Josh pressed Go on a card. Runs its steps in the background, never past the card's cap; poll GET /post/edit-chat/run."""
+    return await _start_edit_chat_run(body.card_id)
+
+
+async def _start_edit_chat_run(card_id: str) -> dict:
+    """Shared by the Mac's box and the phone relay. Raises HTTPException with a plain message."""
     from anthropic import AsyncAnthropic
     from app import post_chat_edit as chat
-    card = _EDIT_CHAT_CARDS.get(body.card_id)
+    card = _EDIT_CHAT_CARDS.get(card_id)
     if card is None:
         raise HTTPException(status_code=404, detail="That card has expired. Describe the edit again.")
     if not card["ready"]:
@@ -5042,6 +5059,119 @@ async def post_edit_chat_run(body: EditChatRunRequest, _: None = Depends(verify_
     async with _pooled_postgres_conn() as postgres_conn:
         await record_tool_call("post_edit_chat_run_ui", {"job_id": job_id, "style": card["style"]["slug"], "cap": card["usd_cap"], "estimate": card["usd_total"]}, "started", postgres_conn)
     return {"run": state}
+
+
+class EditChatRelayRequest(BaseModel):
+    text: str
+
+
+def _relay_conn(request: Request):
+    return getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+
+
+@app.get("/post/edit-chat/relay")
+async def post_edit_chat_relay_latest(request: Request, _: None = Depends(verify_token)) -> dict:
+    """Describe an edit from the phone (phase 6b): the newest request and whether the Mac is online to act on it. Served by the cloud and the Mac alike."""
+    from app.post_chat_relay import latest
+    return await latest(_relay_conn(request))
+
+
+@app.post("/post/edit-chat/relay")
+async def post_edit_chat_relay_submit(body: EditChatRelayRequest, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Leaves a sentence for the Mac to understand. Spends nothing here: the Mac makes the one Haiku call when it picks it up."""
+    from app.post_chat_relay import latest, submit
+    conn = _relay_conn(request)
+    try:
+        req = await submit(body.text, conn)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await record_tool_call("post_edit_chat_relay_submit_ui", {"request_id": req["id"]}, "ok", conn)
+    return {"request": req, "mac_online": (await latest(conn))["mac_online"]}
+
+
+@app.post("/post/edit-chat/relay/{request_id}/go")
+async def post_edit_chat_relay_go(request_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Josh pressed Go on the phone: the Mac starts the card's steps on its next pass (never past the card's cap)."""
+    from app.post_chat_relay import press_go
+    conn = _relay_conn(request)
+    try:
+        req = await press_go(request_id, conn)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await record_tool_call("post_edit_chat_relay_go_ui", {"request_id": request_id, "cap": (req.get("card") or {}).get("usd_cap")}, "ok", conn)
+    return {"request": req}
+
+
+@app.post("/post/edit-chat/relay/{request_id}/cancel")
+async def post_edit_chat_relay_cancel(request_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    from app.post_chat_relay import cancel
+    try:
+        return {"request": await cancel(request_id, _relay_conn(request))}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+RELAY_POLL_SECONDS = 3.0
+
+
+async def _edit_chat_relay_pass(conn, state: dict) -> None:
+    """One pass of the Mac's side of the phone relay: beat, drop stale sentences, follow the run it started, understand a new sentence, start a Go."""
+    from app import post_chat_relay as relay
+    from app.post_chat_edit import run_state
+    await relay.heartbeat(conn)
+    await relay.expire_stale(conn)
+    if state.get("running_id") is not None:
+        run = run_state()
+        if run is not None:
+            finished = run["state"] != "running"
+            await relay.update(state["running_id"], conn, run=run, status=(run["state"] if finished else None), message=run.get("message"))
+            if finished:
+                state["running_id"] = None
+    req = await relay.claim("new", "understanding", conn)
+    if req is not None:
+        try:
+            out = await _understand_edit_text(req["text"])
+            if out.get("card"):
+                await relay.update(req["id"], conn, status="understood", card=out["card"], message=None)
+            else:
+                await relay.update(req["id"], conn, status="unclear", message=out.get("message") or "I couldn't tell what you meant.")
+        except HTTPException as exc:
+            await relay.update(req["id"], conn, status="failed", message=str(exc.detail))
+    if state.get("running_id") is None:
+        req = await relay.claim("go", "starting", conn)
+        if req is not None:
+            try:
+                await _start_edit_chat_run(str((req.get("card") or {}).get("id")))
+                state["running_id"] = req["id"]
+                await relay.update(req["id"], conn, status="running", run=run_state())
+            except HTTPException as exc:
+                detail = str(exc.detail)
+                if exc.status_code == 404:
+                    detail = "That card expired on the Mac (it restarted, or a newer edit was described there). Describe it again."
+                await relay.update(req["id"], conn, status="failed", message=detail)
+
+
+async def _edit_chat_relay_loop(app: FastAPI) -> None:
+    """Mac-only: picks up sentences typed on the phone, every few seconds. Waits quietly until the phone has sent one (the tables are made then)."""
+    from app.post_chat_relay import tables_exist
+    state: dict = {"running_id": None}
+    while True:
+        try:
+            async with _pooled_postgres_conn() as conn:
+                if await tables_exist(conn):
+                    await _edit_chat_relay_pass(conn, state)
+                    await asyncio.sleep(RELAY_POLL_SECONDS)
+                    continue
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:   # a pass that fails (network, database) never stops the loop
+            print(f"[edit-chat relay] pass failed: {type(exc).__name__}: {str(exc)[:200]}")
+            await asyncio.sleep(10)
 
 
 @app.get("/post/edit-chat/run")
