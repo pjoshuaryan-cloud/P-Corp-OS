@@ -379,7 +379,7 @@ s += section("Things to know")
 s += bullets([
     "<b>Moments are suggestions.</b> Across your real edits, nothing reliably predicts which moment you'd pick. Review Moments is where a plan becomes yours.",
     "<b>Slow motion is marked, not applied.</b> Premiere's plugin API has no speed control, so slowed shots are placed at normal speed under a <i>P Corp: slow-mo 50%</i> marker. Select the clip, Cmd+R, click the chain, Speed 50%.",
-    "<b>The Rabit Haus recap needs sorted shot roles.</b> Its sections come from each moment sorted into place, people, details or main moment: one Claude call per shoot, a few cents. There's no button for it yet, so ask Claude in your coding session to run it before you plan.",
+    "<b>The Rabit Haus recap needs sorted shot roles.</b> Its sections come from each moment sorted into place, people, details or main moment: one Claude call per shoot, about 6¢. On the variants page, tick the Rabit Haus recap and click <b>Sort shot roles</b> before you build.",
     "<b>Use Premiere Pro 2027, not the Beta.</b> Since its update on 17 November 2026, Premiere (Beta) 27.1 can't run the plugin at all. Build My Edit was checked end to end in Premiere Pro 2027 on 17 and 18 November.",
     "<b>Accents need an Adjustment Layer.</b> Premiere's plugin API can't create one. Make an item called exactly <i>Adjustment Layer</i> at your sequence's size before you build, or the flashes and zoom hits are skipped. Check its size by hand: a new one can take the size of whichever sequence is active.",
     "<b>No text.</b> The plugin can't create titles. Brand cards and captions are images, so add your titles by hand.",

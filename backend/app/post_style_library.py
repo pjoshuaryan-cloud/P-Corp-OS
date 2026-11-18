@@ -799,6 +799,7 @@ def list_styles() -> list[dict[str, Any]]:
             "pace": s.pace, "buildable": s.buildable, "build_note": s.build_note,
             "platform": {"aspects": list(s.platform["aspects"]), "seconds": list(s.platform["seconds"])},
             "execution_report": execution_report(s),
+            "sections": [sec["name"] for sec in s.sections],   # 2026-11-18: a sectioned style needs the shoot's shot roles sorted (the variants page offers it)
         }
         for s in LIBRARY.values()
     ]

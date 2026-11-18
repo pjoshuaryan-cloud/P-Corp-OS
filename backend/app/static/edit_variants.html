@@ -72,6 +72,8 @@
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); padding: 10px 16px; border-radius: 8px; z-index: 20; max-width: 90vw; }
   .toast.bad { border-color: var(--bad); color: #ffd7d2; }
   @media (max-width: 600px) { header.bar, main { padding-left: 16px; padding-right: 16px; } .stats { grid-template-columns: repeat(2, 1fr); } }
+.roles { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 4px 0 12px; padding: 10px 12px; border: 1px solid var(--line, #d8dbd6); border-radius: 8px; }
+.roles .hint { margin-left: 6px; }
 </style>
 </head>
 <body>
@@ -87,6 +89,11 @@
     <h2>Make a set</h2>
     <p class="hint" style="margin-top:0">Pick 2 to 4 directions. Each one is planned from the same song, length and clip analysis, and each avoids the footage the ones before it used, so you compare real alternatives. No Claude call is made: the clip descriptions you already have are reused. Your current plan isn't touched until you choose a variant.</p>
     <div class="styles" id="styles"></div>
+    <div class="roles" id="roles" hidden>
+      <div><strong>Shot roles</strong> <span class="hint" id="rolesText">Checking…</span></div>
+      <div class="spacer"></div>
+      <button id="rolesBtn" hidden>Sort shot roles</button>
+    </div>
     <div class="row">
       <label>Length (seconds) <input type="number" id="seconds" min="15" max="180" step="1" placeholder="usual"></label>
       <label><input type="checkbox" id="quick" checked> Only clips already read (fast)</label>
@@ -136,13 +143,42 @@ function renderStyles() {
   for (const s of library.styles) {
     const lab = el("label", "style" + (s.buildable ? "" : " off")); lab.title = s.buildable ? s.provenance_note || "" : s.build_note;
     const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = s.slug; cb.disabled = !s.buildable; cb.checked = library.default_directions.slice(0, 3).includes(s.slug);
-    cb.onchange = countPicks; lab.appendChild(cb);
+    cb.onchange = () => { countPicks(); showRoles(); }; lab.appendChild(cb);
     const txt = el("div"); txt.appendChild(el("div", "nm", s.name));
     txt.appendChild(el("div", "ds", `${s.pace}× your usual rhythm · ${s.provenance === "measured" ? "measured" : "guidance"}${s.buildable ? "" : " · can't be built as a variant"}`));
     lab.appendChild(txt); box.appendChild(lab);
   }
-  countPicks();
+  countPicks(); showRoles();
 }
+// 2026-11-18: a style built in sections (the Rabit Haus recap) needs the shoot's moments sorted into shot roles first: one text-only Claude call
+let roles = null;
+const sectioned = () => picked().some((slug) => ((library.styles.find((s) => s.slug === slug) || {}).sections || []).length);
+const cents = (usd) => usd < 1 ? `about ${Math.max(1, Math.round(usd * 100))}¢` : `about $${usd.toFixed(2)}`;
+function showRoles() {
+  const box = $("roles"); const need = library && sectioned(); box.hidden = !need && !(roles && roles.sorted);
+  if (!roles) { $("rolesText").textContent = "Checking…"; $("rolesBtn").hidden = true; return; }
+  const btn = $("rolesBtn"); const est = roles.estimate;
+  if (!roles.described_moments) { $("rolesText").textContent = "Describe the clips first (Plan Edit, Clip descriptions): the roles are sorted from their descriptions."; btn.hidden = true; return; }
+  if (roles.sorted && roles.up_to_date) {
+    const c = roles.counts || {};
+    $("rolesText").textContent = `Sorted ${String(roles.made || "").slice(0, 10)}: ${c.place || 0} place, ${c.person || 0} people, ${c.detail || 0} details, ${c.movement || 0} movement, ${c.main_moment || 0} main moment`
+      + ((roles.main_clips || []).length ? `. Main clips: ${roles.main_clips.join(", ")}.` : ".");
+    btn.textContent = `Sort again (${cents(est.usd)})`; btn.hidden = false; btn.className = ""; return;
+  }
+  $("rolesText").textContent = (roles.sorted ? `${roles.unsorted_now} newly described moment(s) aren't sorted yet. ` : "Not sorted yet, so a sectioned style plans without its sections. ")
+    + `Sorting reads the ${roles.described_moments} described moments (no footage) in one Claude call.`;
+  btn.textContent = `Sort shot roles (${cents(est.usd)})`; btn.hidden = false; btn.className = "primary";
+}
+async function loadRoles() { try { roles = await (await api(`/post/jobs/${jobId}/shot-roles`)).json(); } catch (e) { roles = null; $("rolesText").textContent = e.message; } showRoles(); }
+$("rolesBtn").onclick = async () => {
+  const est = roles && roles.estimate; if (!est) return;
+  if (!confirm(`Sort ${est.moments} moments from ${est.clips} clips into shot roles with Claude (Sonnet)?\n\nOne call, ${cents(est.usd)} (an estimate). Only the written descriptions are sent, no footage.` + (roles.sorted ? "\n\nThis replaces the current sorting." : ""))) return;
+  const b = $("rolesBtn"); b.disabled = true; b.textContent = "Sorting… (about a minute)";
+  try {
+    const r = await (await api(`/post/jobs/${jobId}/shot-roles`, { method: "POST" })).json();
+    roles = r.status; banner("ok", `Sorted ${r.sorted} moments for $${r.usd.toFixed(3)}.` + (r.missing ? ` ${r.missing} weren't sorted; run it again to retry them.` : "") + " Build variants to use them.");
+  } catch (e) { toast(e.message, true); } finally { b.disabled = false; showRoles(); }
+};
 function picked() { return [...$("styles").querySelectorAll("input:checked")].map((c) => c.value); }
 function countPicks() {
   const n = picked().length; const ok = n >= library.min_variants && n <= library.max_variants;
@@ -213,7 +249,7 @@ async function load() {
   if (!jobId) { $("sub").textContent = "Add ?job=<id> to the address"; return; }
   $("reviewLink").href = `/static/edit_review.html?job=${encodeURIComponent(jobId)}`;
   if (!token) await askToken();
-  try { library = await (await api(`/post/style-library`)).json(); renderStyles(); await loadSets(); }
+  try { library = await (await api(`/post/style-library`)).json(); renderStyles(); await loadSets(); await loadRoles(); }
   catch (e) { $("sub").textContent = e.message; toast(e.message, true); }
 }
 load();

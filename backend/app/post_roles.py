@@ -142,3 +142,33 @@ async def sort_roles(client: Any, edit_dir: Path, *, job_id: int, model: str = D
         record_usage(edit_dir, job_id=job_id, operation="sort_shot_roles", model=model,
                      usage={"calls": 1, "in": tokens_in, "out": tokens_out}, extra={"moments": len(ids)})
     return record
+
+
+# --- For the button (2026-11-18): what the sorting would cost, and whether a shoot's roles are up to date ------------------------------
+CHARS_PER_INPUT_TOKEN = 2.2    # measured on the JD Midlands run: 31,777 characters of descriptions -> 14,042 input tokens
+OUTPUT_TOKENS_PER_MOMENT = 9.2  # same run: 3,528 output tokens for 390 moments
+
+
+def estimate(moments: dict[str, Any], model: str = DEFAULT_MODEL) -> dict[str, Any]:
+    """The cost of sorting this shoot's moments, from the measured ratios above (an estimate: the bill is what the API reports)."""
+    text, ids = describe_for_prompt(moments)
+    tokens_in = round((len(SYSTEM_PROMPT) + len(text)) / CHARS_PER_INPUT_TOKEN)
+    tokens_out = round(OUTPUT_TOKENS_PER_MOMENT * len(ids)) + 80
+    cost, basis = usd(model, tokens_in, tokens_out)
+    return {"moments": len(ids), "clips": sum(1 for v in moments.values() if isinstance(v, dict) and v.get("events")),
+            "input_tokens": tokens_in, "output_tokens": tokens_out, "usd": round(cost, 3), "model": model, "basis": basis}
+
+
+def status(edit_dir: Path, moments: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Whether the shoot's moments have been sorted, and whether that sorting still covers every described moment."""
+    moments = moments if moments is not None else load_moments(edit_dir)
+    _text, ids = describe_for_prompt(moments)
+    saved = load_roles(edit_dir)
+    out: dict[str, Any] = {"described_moments": len(ids), "estimate": estimate(moments) if ids else None, "sorted": False}
+    if saved:
+        roles = saved.get("roles") or {}
+        unsorted = [m for m in ids if m not in roles]
+        out.update({"sorted": True, "made": saved.get("made"), "model": saved.get("model"), "usd": saved.get("usd"),
+                    "moments_sorted": len(roles), "unsorted_now": len(unsorted), "up_to_date": not unsorted,
+                    **{k: v for k, v in summarise(saved, moments).items() if k in ("counts", "main_clips")}})
+    return out

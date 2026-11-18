@@ -160,6 +160,66 @@ with tempfile.TemporaryDirectory() as tmp:
         page = client.get("/static/edit_review.html").text
         check("the review page links to the variants page and has the new controls", "edit_variants.html" in page and "edit-review/lock" in page and "edit-review/regenerate" in page
               and "edit-review/reason" in page)
+
+        # ---- 2026-11-18: the shot-roles button (variants page) -------------------------------------------------------------------------
+        import contextlib
+        from types import SimpleNamespace
+        from app import post_roles
+        lib_r = client.get("/post/style-library").json()
+        rh = next(x for x in lib_r["styles"] if x["slug"] == "rabit-haus-event-recap")
+        check("the style library tells the page which styles are built in sections", rh["sections"][:2] == ["open", "place"]
+              and all(x["sections"] == [] for x in lib_r["styles"] if x["slug"] != "rabit-haus-event-recap"))
+        r = client.get("/post/jobs/7/shot-roles")
+        st = r.json()
+        check("with no descriptions the status says nothing is described or sorted, and offers no estimate", r.status_code == 200 and st["described_moments"] == 0
+              and st["sorted"] is False and st["estimate"] is None, r.text[:200])
+        (edit / "moments.json").write_text(json.dumps({"1": {"name": "A.MP4", "scene": "JD sign", "people": False, "events": [{"t": 1.0, "kind": "hero", "what": "sign"}]},
+                                                       "2": {"name": "B.MP4", "scene": "Ribbon", "people": True, "events": [{"t": 2.0, "kind": "action", "what": "cut"},
+                                                                                                                             {"t": 3.0, "kind": "reaction", "what": "cheer"}]}}))
+        st = client.get("/post/jobs/7/shot-roles").json()
+        check("described but unsorted: 3 moments, an estimate of a cent or so, not sorted", st["described_moments"] == 3 and not st["sorted"]
+              and st["estimate"]["moments"] == 3 and st["estimate"]["clips"] == 2 and 0 < st["estimate"]["usd"] < 0.05, st)
+
+        class FakeClaude:
+            def __init__(self):
+                self.calls = 0
+                self.messages = SimpleNamespace(create=self.create)
+            async def create(self, **kw):
+                self.calls += 1
+                reply = json.dumps({"roles": {"1.0": "place", "2.0": "main_moment", "2.1": "person"}, "main_clips": ["2"], "note": "ok"})
+                return SimpleNamespace(content=[SimpleNamespace(type="text", text=reply)], stop_reason="end_turn", usage=SimpleNamespace(input_tokens=900, output_tokens=60))
+        fake = FakeClaude()
+        real_sort, real_key, real_pool = post_roles.sort_roles, main._require_api_key, main._pooled_postgres_conn
+
+        async def sort_with_fake(client_, folder, **kw):
+            return await real_sort(fake, folder, **kw)
+
+        @contextlib.asynccontextmanager
+        async def no_pool():
+            yield None
+        post_roles.sort_roles, main._require_api_key, main._pooled_postgres_conn = sort_with_fake, (lambda: "test-key"), no_pool
+        try:
+            before = len(audit)
+            r = client.post("/post/jobs/7/shot-roles")
+            out = r.json()
+            check("POST sorts with one call and answers with the count, cost and fresh status", r.status_code == 200 and fake.calls == 1 and out["sorted"] == 3
+                  and out["usd"] == round(900 / 1e6 * 2 + 60 / 1e6 * 10, 4) and out["status"]["sorted"] and out["status"]["up_to_date"], r.text[:300])
+            check("the status then shows the counts and the main clip by name", out["status"]["counts"]["main_moment"] == 1 and out["status"]["main_clips"] == ["B.MP4"])
+            check("the run is audited", len(audit) == before + 1)
+            check("the sorting and its cost are saved in the job's folder", (edit / "shot_roles.json").exists() and "sort_shot_roles" in (edit / "api_usage.jsonl").read_text())
+            (edit / "moments.json").write_text(json.dumps({**json.loads((edit / "moments.json").read_text()),
+                                                           "3": {"name": "C.MP4", "scene": "DJ", "people": True, "events": [{"t": 1.0, "kind": "action", "what": "DJ"}]}}))
+            st = client.get("/post/jobs/7/shot-roles").json()
+            check("a newly described clip makes the sorting out of date, and says how many moments are new", st["sorted"] and not st["up_to_date"] and st["unsorted_now"] == 1, st)
+            r = client.post("/post/jobs/8/shot-roles")
+            check("another job's id is a 404 and costs nothing", r.status_code == 404 and fake.calls == 1)
+            (edit / "moments.json").write_text("{}")
+            r = client.post("/post/jobs/7/shot-roles")
+            check("no descriptions: a plain 400 telling him to Describe first, no call", r.status_code == 400 and "Describe" in r.json()["detail"] and fake.calls == 1, r.text[:200])
+        finally:
+            post_roles.sort_roles, main._require_api_key, main._pooled_postgres_conn = real_sort, real_key, real_pool
+        page = client.get("/static/edit_variants.html").text
+        check("the variants page has the Sort shot roles button and asks before spending", "rolesBtn" in page and "/shot-roles" in page and "confirm(" in page)
     finally:
         main.app.dependency_overrides.clear()
         main.get_post_job, main._review_context, main.record_tool_call, post_edit_plan.edit_dir, post_edit_plan.load_job_clips = saved

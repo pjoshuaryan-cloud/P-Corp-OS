@@ -4839,6 +4839,47 @@ class FindMomentsRequest(BaseModel):
     max_clips: int | None = None  # spend cap: send at most this many clips (the screen passes the number its estimate showed)
 
 
+@app.get("/post/jobs/{job_id}/shot-roles")
+async def post_job_shot_roles_status(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
+    """Whether this shoot's described moments have been sorted into shot roles (place, people, details, movement, main moment: the
+    sections of the Rabit Haus recap), whether that still covers every described moment, and what sorting would cost. No Claude call."""
+    from app.post_edit_plan import edit_dir
+    from app.post_roles import status
+    postgres_conn = getattr(request.state, "postgres_conn", None) if DATA_BACKEND == "postgres" else None
+    job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    return await on_drive(status, edit_dir(job))
+
+
+@app.post("/post/jobs/{job_id}/shot-roles")
+async def post_job_sort_shot_roles(job_id: int, _: None = Depends(verify_token)) -> dict:
+    """Sorts every described moment of the shoot into a shot role with ONE text-only Claude call (no frames; about 6 cents for 78 clips).
+    Spends real API credits, so it's only ever started by Josh's click on the variants page; never Frank-reachable. Replaces any earlier sorting."""
+    from anthropic import AsyncAnthropic
+    from app.post_edit_plan import edit_dir
+    from app.post_roles import RolesError, sort_roles, status
+    from app.post_shot_composition import VisionUnavailableError
+    api_key = _require_api_key()
+    async with _pooled_postgres_conn() as postgres_conn:
+        job = await get_post_job(job_id, postgres_conn)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No POST job with id {job_id}")
+    from app.post_moments import load_moments
+    folder = edit_dir(job)
+    moments = await on_drive(load_moments, folder)   # the drive is read off the event loop (a hung drive must not freeze the app)
+    try:
+        record = await sort_roles(AsyncAnthropic(api_key=api_key), folder, job_id=job_id, moments=moments)
+    except VisionUnavailableError as exc:
+        raise HTTPException(status_code=402, detail=str(exc))
+    except RolesError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    async with _pooled_postgres_conn() as postgres_conn:
+        await record_tool_call("post_job_sort_shot_roles_ui", {"job_id": job_id, "moments": record["moments_sorted"], "usd": record["usd"]}, "ok", postgres_conn)
+    return {"sorted": record["moments_sorted"], "missing": len(record["missing"]), "usd": record["usd"], "note": record["note"],
+            "status": await on_drive(status, folder)}
+
+
 @app.get("/post/jobs/{job_id}/moments-status")
 async def post_job_moments_status(job_id: int, request: Request, _: None = Depends(verify_token)) -> dict:
     """How many of the job's clips have a description (what the clip shows + its best moments), what describing the rest
