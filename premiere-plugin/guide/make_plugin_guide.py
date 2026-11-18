@@ -197,13 +197,14 @@ s.append(table(["Style", "What you get", "Use it for"], [
     ["<b>JD Sports store opening</b>", "Your three JD reels: opens on the hero moment, ends on people, slow-mo marked.", "JD Sports jobs"],
     ["<b>Fast streetwear reel</b>", "Quick cuts on the beat, with flash and zoom accents.", "Retail and streetwear launches"],
     ["<b>Fashion event highlight</b>", "A music-driven launch-event highlight.", "Fashion events"],
-    ["<b>GQ x Miele event reel</b>", "On the beat, with a quick open, a steady middle, a faster build and a slow logo ending. Shots start on the action.", "Premium brand events"],
+    ["<b>GQ x Miele event reel</b>", "Quick open, steady middle, faster build, slow logo end. Shots start on the action.", "Premium brand events"],
     ["<b>Expo and product highlight</b>", "A music-driven vertical reel.", "Expos and showrooms"],
     ["<b>Energy-drink reel</b>", "A fast vertical highlight, cut on the music.", "High-energy product work"],
     ["<b>Food and drink promo (estimated)</b>", "An estimated rhythm blended from three of your edits, not measured from a real food edit.", "Food and drink, as a starting point"],
-    ["<b>Calm corporate highlight</b>", "About two seconds a shot, with brand cards.", "Only when a client wants it calm: it's far slower than your usual edits"],
+    ["<b>Calm corporate highlight</b>", "About two seconds a shot, with brand cards.", "Clients who want it calm"],
     ["<b>Corporate story with narration</b>", "Calm b-roll paced by your script, one phrase per shot.", "Voice-over pieces"],
     ["<b>Talking head, several cameras</b>", "Lines up the cameras by sound and switches angle at the pauses.", "Interviews"],
+    ["<b>Rabit Haus event recap</b>", "Their pace in sections, main person to main moment; whip blur moves, 4 s music fade.", "Event recaps, store openings"],
 ], [.28, .45, .27]))
 
 s.append(PageBreak())
@@ -378,6 +379,8 @@ s += section("Things to know")
 s += bullets([
     "<b>Moments are suggestions.</b> Across your real edits, nothing reliably predicts which moment you'd pick. Review Moments is where a plan becomes yours.",
     "<b>Slow motion is marked, not applied.</b> Premiere's plugin API has no speed control, so slowed shots are placed at normal speed under a <i>P Corp: slow-mo 50%</i> marker. Select the clip, Cmd+R, click the chain, Speed 50%.",
+    "<b>The Rabit Haus recap needs sorted shot roles.</b> Its sections come from each moment sorted into place, people, details or main moment: one Claude call per shoot, a few cents. There's no button for it yet, so ask Claude in your coding session to run it before you plan.",
+    "<b>Use Premiere Pro 2027, not the Beta.</b> Since its update on 17 November 2026, Premiere (Beta) 27.1 can't run the plugin at all. Build My Edit was checked end to end in Premiere Pro 2027 on 17 and 18 November.",
     "<b>Accents need an Adjustment Layer.</b> Premiere's plugin API can't create one. Make an item called exactly <i>Adjustment Layer</i> at your sequence's size before you build, or the flashes and zoom hits are skipped. Check its size by hand: a new one can take the size of whichever sequence is active.",
     "<b>No text.</b> The plugin can't create titles. Brand cards and captions are images, so add your titles by hand.",
     "<b>Rejects apply to planning, not everything.</b> Plan Edit and Describe leave rejected clips out. Assemble Rough Cut still uses every clip, and you choose interview cameras yourself.",
@@ -387,18 +390,14 @@ s += bullets([
     "<b>Learning also runs by itself.</b> For P Corp shoots, an edit left unchanged for 45 minutes is logged from Premiere's auto-saves. The Learn button gives you the result straight away.",
 ])
 
-s.append(PageBreak())
 s += section("If something goes wrong")
 s.append(table(["What you see", "What to do"], [
-    ["The panel is gone or blank", "Load the plugin again in UXP Developer Tools. It needs this after every Premiere restart."],
-    ["A new button is missing", "Reload the plugin after an update. It's under More."],
+    ["The panel is gone or blank, or a new button is missing", "Load the plugin again in UXP Developer Tools. It needs this after every Premiere restart."],
     ["\"This project hasn't been logged yet\", or Link the shoot lists nothing", "Click Log This Shoot first, with the right project open."],
     ["\"Nothing to apply yet\"", "Tag clips or make a choice on the review page first."],
     ["A must-have says Missing, but you shot it", "Find the clip by eye, then click Covered. The check only sees sampled frames."],
     ["A shot says Not checked", "You changed it, or the check stopped before it got there. Click Check: only those shots are charged."],
     ["A phone says \"This link isn't active\"", "It was stopped or ran out. Make a new link and send it again."],
-    ["A phone says \"No signal\"", "Keep ticking. Ticks are saved and sent when signal returns."],
-    ["\"Phones have an older list\"", "Click Send update on the Coverage page."],
     ["Make phone link or Plan Edit is greyed out", "Approve the list first. Plan Edit gives its reason just underneath, usually a missing song."],
     ["\"The source and destination are the same drive\"", "Choose a different destination drive, so the footage isn't on it twice."],
     ["\"Everything on that card is already in this shoot\"", "That card's been copied. Check you've put in the next one."],
@@ -410,6 +409,7 @@ s.append(table(["What you see", "What to do"], [
     ["\"Run Prepare POST Project\" or no job found", "That button needs a P Corp shoot behind the project. See Two ways to start a shoot."],
     ["A shot's slot is empty after a build", "The panel names the clip: it isn't in the project. Import it and build again."],
     ["Flashes and zooms are missing", "Make an Adjustment Layer at your sequence's size, then build again."],
+    ["\"Is the Joshx SSD drive plugged in?\"", "Plug it in and run Build My Edit again: the sound effects and whooshes go in with the next build."],
     ["The review page asks for a token", "Paste the same token you gave the plugin. It stays in that browser."],
     ["\"The drive isn't connected\"", "Plug it back in. Nothing is lost, so try again."],
     ["Previews paused by themselves", "The card or drive was removed, or the drive is nearly full. Fix that and click Resume."],

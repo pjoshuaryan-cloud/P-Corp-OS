@@ -1983,6 +1983,67 @@ async function placeShotZooms(project, sequence, plan, tpf, keepAlive) {
 }
 
 /** Runs every accent phase; each one is non-fatal. Returns a one-line summary. */
+// ---------------------------------------------------------------------------------------------------------------------
+// Finishing of an edit built in sections (plan.finishing, made by backend/app/post_finishing.py; reel autopilot phase 4, 2026-11-18):
+// blur moves (a Premiere video transition, centred on a cut between two V1 shots) and a whoosh under each.
+// Mechanism proven in real Premiere 2027 on 2026-11-17 (step 0): TransitionFactory.createVideoTransition(matchName) + AddTransitionOptions
+// (end of the outgoing clip, alignment 0.5 = centred, duration in ticks) + trackItem.createAddVideoTransitionAction, inside lockedAccess.
+// A move whose outgoing shot can't be found, or that Premiere refuses, is skipped and said; the edit itself is never at risk.
+// ---------------------------------------------------------------------------------------------------------------------
+async function placeBlurMoves(project, sequence, plan, tpf, keepAlive) {
+    const moves = (plan.finishing && plan.finishing.transitions) || [];
+    if (moves.length === 0) return { placed: 0, skipped: [] };
+    const byIndex = new Map((plan.shots || []).map((s) => [s.index, s]));
+    const v1 = await trackItemsByStart(sequence, "video", 0);
+    let placed = 0;
+    const skipped = [];
+    for (const m of moves) {
+        const from = byIndex.get(m.from_shot);
+        const item = from ? v1.get(from.start_frame * tpf) : null;
+        if (!item) {
+            skipped.push(`at ${(m.cut_frame * tpf / TICKS_PER_SECOND).toFixed(2)} s (the shot before it isn't on V1)`);
+            continue;
+        }
+        try {
+            const transition = await ppro.TransitionFactory.createVideoTransition(m.transition);
+            const options = new ppro.AddTransitionOptions();
+            const length = ppro.TickTime.createWithTicks(String(m.frames * tpf));
+            keepAlive.push(transition, options, length);
+            options.setApplyToStart(false);              // on the END of the outgoing shot, i.e. on the cut
+            options.setTransitionAlignment(0.5);         // centred on the cut
+            options.setDuration(length);
+            await transact(project, "P Corp POST -- Blur move", (compound) => {
+                compound.addAction(item.createAddVideoTransitionAction(transition, options));
+            });
+            placed += 1;
+        } catch (e) {
+            skipped.push(`at ${(m.cut_frame * tpf / TICKS_PER_SECOND).toFixed(2)} s (${e})`);
+        }
+        await sleep(ROUGH_CUT_PAUSE_MS);
+    }
+    return { placed, skipped };
+}
+
+async function placeFinishing(project, sequence, editor, plan, tpf, keepAlive, runId) {
+    const f = plan.finishing;
+    let moves = { placed: 0, skipped: [] };
+    try {
+        moves = await placeBlurMoves(project, sequence, plan, tpf, keepAlive);
+    } catch (e) {
+        log(`Note: the blur moves failed (${e}); the rest continues.`);
+    }
+    for (const s of moves.skipped) log(`Note: skipped the blur move ${s}.`);
+    let whooshes = 0;
+    if ((f.sfx || []).length > 0) {
+        try {   // the same placement as the accents' sound effects (import once, cut a subclip of the exact length, overwrite onto A4)
+            whooshes = (await placeSoundEffects(project, editor, { accents: { sfx: f.sfx } }, tpf, keepAlive, runId)) || 0;
+        } catch (e) {
+            log(`Note: the whooshes failed (${e}).`);
+        }
+    }
+    return `Finishing placed: ${moves.placed} of ${(f.transitions || []).length} blur move(s), ${whooshes} of ${(f.sfx || []).length} whoosh(es).`;
+}
+
 async function placeAccents(project, sequence, editor, plan, tpf, keepAlive, runId) {
     const a = plan.accents;
     const result = { flashes: 0, zoomHits: 0, zoom: 0, bw: 0, logo: 0, sfx: 0 };
@@ -2450,6 +2511,16 @@ async function assembleEdit(learned = null) {
             await project.save();
         }
 
+        if (plan.finishing && ((plan.finishing.transitions || []).length || (plan.finishing.sfx || []).length)) {
+            log("Placing the finishing (blur moves where the section changes, a whoosh under each)…");
+            try {
+                log(await placeFinishing(project, sequence, sequenceEditor, plan, tpf, keepAlive, runId));
+            } catch (e) {
+                log(`Note: the finishing step failed (${e}). The edit itself is fine.`);
+            }
+            await project.save();
+        }
+
         if (plan.graphics) {
             log("Placing brand cards, logo bug and captions over the b-roll (V2 cards, V3 logo bug, V4 captions)…");
             try {
@@ -2480,7 +2551,7 @@ async function assembleEdit(learned = null) {
         }
         log(`Done. ${placed} of ${plan.shots.length} planned shot(s) placed on "${sequenceName}" `
             + `(${placeable.length - restrictedCount} can be stretched past their cut, ${restrictedCount} cannot). `
-            + (plan.accents ? "With the accents listed above." : (plan.graphics ? "Hard cuts with the brand graphics" + ((plan.zooms && plan.zooms.items && plan.zooms.items.length) ? " and slow zooms" : "") + " listed above." : ((plan.zooms && plan.zooms.items && plan.zooms.items.length) ? "Hard cuts with slow zooms on the static shots listed above." : "Hard cuts only -- no effects, flashes or sound effects."))));
+            + (plan.accents ? "With the accents listed above." : plan.finishing ? "With the blur moves and whooshes listed above; every other join is a hard cut." : (plan.graphics ? "Hard cuts with the brand graphics" + ((plan.zooms && plan.zooms.items && plan.zooms.items.length) ? " and slow zooms" : "") + " listed above." : ((plan.zooms && plan.zooms.items && plan.zooms.items.length) ? "Hard cuts with slow zooms on the static shots listed above." : "Hard cuts only -- no effects, flashes or sound effects."))));
     } catch (e) {
         log(`Failed: ${e.message || e}`);
     } finally {
