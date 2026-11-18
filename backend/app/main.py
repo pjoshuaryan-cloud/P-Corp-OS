@@ -1231,6 +1231,7 @@ async def _drive_not_responding(_request: Request, exc: DriveNotResponding) -> J
 # Only the ones that actually call a Claude endpoint manage their own,
 # much shorter-lived checkout instead (see e.g. trade_intelligence_setup).
 _SLOW_ROUTE_PATHS = frozenset({
+    "/trading/festx/read",   # 2026-11-18: a Claude call on chart screenshots (tens of seconds); takes its own short connection afterwards
     "/trade-intelligence/chart-analysis",
     "/trade-intelligence/setup",
     "/trade-intelligence/position-review",
@@ -1813,6 +1814,96 @@ async def trade_intelligence_chart_zones(body: ChartZonesRequest, _: None = Depe
         raise HTTPException(status_code=400, detail="Up to 4 screenshots at a time.")
     reply, history = await analyze_chart_zones(client, _decode_image_payloads(body.images), body.note)
     return {"reply": reply, "history": history}
+
+
+class FestxReadRequest(BaseModel):
+    images: list[ImagePayload] = []
+    note: str | None = None
+
+
+class FestxSizeRequest(BaseModel):
+    current_price: float
+
+
+class FestxLogRequest(BaseModel):
+    status: str
+    fill_price: float | None = None
+    exit_price: float | None = None
+    result_zar: float | None = None
+
+
+class FestxSettingsRequest(BaseModel):
+    balance_zar: float | None = None
+    standard_pct: float | None = None
+    strong_pct: float | None = None
+    daily_loss_trades: int | None = None
+    daily_loss_pct: float | None = None
+    usdzar_override: float | None = None
+    symbols: dict[str, dict[str, Any]] | None = None
+
+
+def _festx_http(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=404 if isinstance(exc, LookupError) else 400, detail=str(exc))
+
+
+@app.post("/trading/festx/read")
+async def trading_festx_read(body: FestxReadRequest, _: None = Depends(verify_token)) -> dict:
+    """FestX signals (2026-11-18): 1-4 screenshots read against the FestX course setups (festx_signals.py). Returns a signal or "no trade" with the
+    reason, the setup's backtest record and the live record of Josh's own logged trades. About a cent of Claude per read. Never places an order."""
+    from app import festx_signals as fx
+    if not body.images:
+        raise HTTPException(status_code=400, detail="Drop in at least one screenshot first.")
+    client = AsyncAnthropic(api_key=_require_api_key())
+    try:
+        reading, usage = await fx.read_chart(client, _decode_image_payloads(body.images), body.note)
+    except fx.FestxError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    async with _relay_db() as conn:
+        row = await fx.record_reading(reading, conn, note=body.note)
+        await record_tool_call("trading_festx_read_ui", {"signal_id": row["id"], "setup": row["setup"], "status": row["status"]}, "ok", conn)
+        return {"signal": row, "summary": await fx.summary(conn), "usage": usage}
+
+
+@app.post("/trading/festx/signals/{signal_id}/size")
+async def trading_festx_size(signal_id: int, body: FestxSizeRequest, _: None = Depends(verify_token)) -> dict:
+    """Josh confirmed the live price: lots for his balance and the signal's strength, with the real risk and possible win in rand."""
+    from app import festx_signals as fx
+    async with _relay_db() as conn:
+        try:
+            return {"signal": await fx.size_signal(signal_id, body.current_price, conn)}
+        except (fx.FestxError, LookupError) as exc:
+            raise _festx_http(exc)
+
+
+@app.post("/trading/festx/signals/{signal_id}/log")
+async def trading_festx_log(signal_id: int, body: FestxLogRequest, _: None = Depends(verify_token)) -> dict:
+    """Took it / skipped it, then the result. A result updates the balance, so the next size follows the account."""
+    from app import festx_signals as fx
+    async with _relay_db() as conn:
+        try:
+            row = await fx.log_outcome(signal_id, body.status, conn, fill_price=body.fill_price, exit_price=body.exit_price, result_zar=body.result_zar)
+        except (fx.FestxError, LookupError) as exc:
+            raise _festx_http(exc)
+        await record_tool_call("trading_festx_log_ui", {"signal_id": signal_id, "status": body.status, "result_zar": row.get("result_zar")}, "ok", conn)
+        return {"signal": row, "summary": await fx.summary(conn)}
+
+
+@app.get("/trading/festx/summary")
+async def trading_festx_summary(_: None = Depends(verify_token)) -> dict:
+    from app import festx_signals as fx
+    async with _relay_db() as conn:
+        return await fx.summary(conn)
+
+
+@app.put("/trading/festx/settings")
+async def trading_festx_settings(body: FestxSettingsRequest, _: None = Depends(verify_token)) -> dict:
+    from app import festx_signals as fx
+    async with _relay_db() as conn:
+        try:
+            await fx.save_settings(body.model_dump(exclude_none=True), conn)
+        except fx.FestxError as exc:
+            raise _festx_http(exc)
+        return await fx.summary(conn)
 
 
 class TradeSetupRequest(BaseModel):

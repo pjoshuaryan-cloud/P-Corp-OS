@@ -267,6 +267,9 @@ public final class ChartDeskClient: ObservableObject {
 public struct ChartDeskView: View {
     @Environment(\.appTheme) private var theme
     @StateObject private var desk = ChartDeskClient()
+    @StateObject private var festx = FestxClient()
+    /// 2026-11-18: "festx" = a signal read against the FestX course setups (FestxSignals.swift); "zones" = the plain buy and sell areas.
+    @AppStorage("trading.mode") private var mode = "festx"
     @State private var screenshots: [ChartScreenshot] = []
     @State private var note = ""
     @State private var isDropTargeted = false
@@ -288,7 +291,15 @@ public struct ChartDeskView: View {
             Divider().overlay(theme.divider)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    if desk.messages.isEmpty {
+                    Picker("", selection: $mode) {
+                        Text("FestX signal").tag("festx")
+                        Text("Buy & sell areas").tag("zones")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    if mode == "festx" {
+                        festxSection
+                    } else if desk.messages.isEmpty {
                         dropZone
                         if !screenshots.isEmpty { thumbnails }
                         TextField("Anything to add? (optional — e.g. \"thinking of a long\")", text: $note)
@@ -320,10 +331,11 @@ public struct ChartDeskView: View {
                                 .font(PCorpFont.body(11)).foregroundStyle(theme.textTertiary)
                         }
                     }
-                    Text("Analysis only — you decide and place every trade yourself.")
+                    Text(mode == "festx" ? "Readings of your FestX rules, not advice — you decide and place every trade yourself in MT5."
+                                         : "Analysis only — you decide and place every trade yourself.")
                         .font(PCorpFont.body(11))
                         .foregroundStyle(theme.textTertiary)
-                    if !desk.recent.isEmpty { recentList }
+                    if mode == "festx" { FestxAccountPanel(festx: festx) } else if !desk.recent.isEmpty { recentList }
                 }
                 .padding(24)
                 .frame(maxWidth: 760, alignment: .leading)
@@ -337,6 +349,38 @@ public struct ChartDeskView: View {
             if desk.messages.isEmpty { load(providers) }
         }
         #endif
+    }
+
+    @ViewBuilder private var festxSection: some View {
+        if let row = festx.current {
+            FestxSignalCard(festx: festx, row: row)
+            Button("New chart") { festx.clear(); screenshots = []; note = "" }
+                .buttonStyle(.bordered)
+        } else {
+            dropZone
+            if !screenshots.isEmpty { thumbnails }
+            TextField("Anything to add? (optional — e.g. the timeframe or the session)", text: $note)
+                .textFieldStyle(.plain)
+                .font(PCorpFont.body(13))
+                .padding(10)
+                .cardSurface(radius: 8)
+            if let message = intakeError ?? festx.errorMessage {
+                Text(message).font(PCorpFont.body(12)).foregroundStyle(theme.statusRisk)
+            }
+            Button {
+                Task { await festx.read(screenshots, note: note) }
+            } label: {
+                HStack(spacing: 8) {
+                    if festx.isWorking { ProgressView().controlSize(.small) }
+                    Text(festx.isWorking ? "Checking the FestX setups…" : "Check for a FestX signal")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.actionFilled)
+            .disabled(screenshots.isEmpty || festx.isWorking)
+            Text("EURUSD, gold or NASDAQ. Show the price scale and the time axis; for gold's Asian break and NASDAQ's New York open, use a 15- or 30-minute chart.")
+                .font(PCorpFont.body(11)).foregroundStyle(theme.textTertiary)
+        }
     }
 
     private var header: some View {
