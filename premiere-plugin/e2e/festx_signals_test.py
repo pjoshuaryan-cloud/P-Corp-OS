@@ -169,5 +169,32 @@ finally:
     main.AsyncAnthropic, main.record_tool_call, main.DATA_BACKEND, main._require_api_key = real
     main.app.dependency_overrides.clear()
 
+# ---- robot results (2026-11-18): the frozen setup D forward test, imported read-only, never mixed with his trades
+async def robot_tests():
+    with tempfile.TemporaryDirectory() as d:
+        fx.DB_PATH = Path(d) / "festx_robot.db"
+        empty = await fx.summary()
+        check("no robot report yet -> robot is empty", empty["robot"] == {}, empty["robot"])
+        report = {"generated": "2026-12-05T10:05:00", "forward_period": "2026-11-19..2026-12-04", "verdict": "CHECKPOINT ONLY: 2 of 40 forward trades -- no decision yet",
+                  "selected": {"forward": {"trades": 2, "avg_r": 0.5, "total_r": 1.0, "profit_factor": float("inf"), "win_rate_pct": 100.0},
+                               "forward_plus_run2_oos": {"trades": 50, "avg_r": 0.162, "total_r": 8.1, "profit_factor": 1.9}},
+                  "approved_defaults": {"forward": {"trades": 1, "avg_r": -1.0, "total_r": -1.0, "profit_factor": 0.0}}}
+        trades = [{"setting": "selected", "day": "2026-11-20", "dir": "1", "entry": "21000.5", "stop": "20800", "exit": "21150", "reason": "TIME", "r": "0.746"},
+                  {"setting": "selected", "day": "2026-11-25", "dir": "-1", "entry": "21300", "stop": "21500", "exit": "21250", "reason": "TIME", "r": "0.25"},
+                  {"setting": "approved_defaults", "day": "2026-11-25", "dir": "-1", "entry": "21300", "stop": "21400", "exit": "21400.5", "reason": "STOP", "r": "-1.0"}]
+        out = (await fx.import_robot_report("D", report, trades))["D"]
+        check("robot report stored with its verdict and forward stats", out["verdict"].startswith("CHECKPOINT ONLY: 2 of 40") and out["forward"]["trades"] == 2, out)
+        check("infinite profit factor (no losses yet) stored as null, so the reply is valid JSON", out["forward"]["profit_factor"] is None and json.dumps(out))
+        check("recent shows only the selected setting, newest first", [t["day"] for t in out["recent"]] == ["2026-11-25", "2026-11-20"] and out["recent"][0]["direction"] == "sell", out["recent"])
+        again = (await fx.import_robot_report("D", report, trades))["D"]
+        check("re-importing the same report is safe (no duplicate days)", len(again["recent"]) == 2)
+        summ = await fx.summary()
+        check("robot results never count in his own live records or warnings", summ["live"]["D"]["trades"] == 0 and summ["warnings"] == [] and "D" in summ["robot"], summ["live"]["D"])
+        check("setup D's backtest record now gives the Black Crown result", "NARROWLY FAILED" in summ["backtest"]["D"]["record"])
+        check("Black Crown's .USTECH_x1. is read as NASDAQ", fx.parse_reading(json.dumps({"instrument": ".USTECH_x1.", "setups": [], "signal": None}))["instrument"] == "NAS100")
+        check("contract sizes are marked confirmed for Black Crown", all(v["confirmed"] for v in fx.DEFAULT_SETTINGS["symbols"].values()))
+
+asyncio.run(robot_tests())
+
 print(f"\nFAILS: {FAILS}")
 sys.exit(1 if FAILS else 0)

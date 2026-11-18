@@ -82,12 +82,29 @@ public struct FestxSettings: Decodable, Sendable {
     public let dailyLossTrades: Int
     public let dailyLossPct: Double
 }
+/// Robot results (2026-11-18): the frozen setup D forward test run from AMM - APP. Read-only; never part of his own trades, balance or warnings.
+public struct FestxRobotStats: Decodable, Sendable { public let trades: Int; public let avgR: Double?; public let totalR: Double?; public let profitFactor: Double? }
+public struct FestxRobotTrade: Decodable, Sendable, Identifiable {
+    public var id: String { day }
+    public let day: String; public let direction: String?; public let entry: Double?; public let stop: Double?; public let exit: Double?
+    public let reason: String?; public let r: Double?
+}
+public struct FestxRobot: Decodable, Sendable {
+    public let name: String
+    public let verdict: String?
+    public let forwardPeriod: String?
+    public let forward: FestxRobotStats?
+    public let combined: FestxRobotStats?
+    public let updatedAt: String
+    public let recent: [FestxRobotTrade]
+}
 public struct FestxSummary: Decodable, Sendable {
     public let settings: FestxSettings
     public let recent: [FestxSignalRow]
     public let live: [String: FestxLive]
     public let backtest: [String: FestxBacktest]
     public let warnings: [String]
+    public let robot: [String: FestxRobot]?
 }
 
 @MainActor
@@ -333,6 +350,7 @@ struct FestxAccountPanel: View {
                         }
                     }
                 }
+                if let robots = s.robot, let d = robots["D"] { robotSection(d) }
             } else if let e = festx.errorMessage {
                 Text(e).font(PCorpFont.body(12)).foregroundStyle(theme.statusRisk)
             }
@@ -340,6 +358,28 @@ struct FestxAccountPanel: View {
         .padding(14)
         .cardSurface(radius: 10)
         .task { await festx.load() }
+    }
+
+    /// Read-only: what the frozen setup D rules did on Black Crown prices since 19 Nov 2026. No orders are placed by anything here.
+    @ViewBuilder private func robotSection(_ d: FestxRobot) -> some View {
+        Text("ROBOT TEST: SETUP D ON BLACK CROWN (NO REAL TRADES)").font(PCorpFont.label()).trackedLabel().foregroundStyle(theme.textTertiary).padding(.top, 6)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(d.verdict ?? "No report yet").font(PCorpFont.body(12.5, weight: .semibold)).foregroundStyle(theme.textPrimary)
+            if let f = d.forward {
+                Text(f.trades == 0 ? "New trades since 19 Nov: none yet" :
+                        "New trades since 19 Nov: \(f.trades)" + (f.avgR.map { String(format: ", %+.2fR a trade", $0) } ?? "") + (f.totalR.map { String(format: ", %+.1fR total", $0) } ?? ""))
+                    .font(PCorpFont.body(11.5)).foregroundStyle(theme.textSecondary)
+            }
+            if let c = d.combined, let a = c.avgR {
+                Text(String(format: "With the 48 backtest trades: %d trades, %+.2fR a trade. Decision at 40 new trades (needs +0.15R).", c.trades, a))
+                    .font(PCorpFont.body(11)).foregroundStyle(theme.textTertiary)
+            }
+            ForEach(d.recent.prefix(5)) { t in
+                Text("\(t.day) · \((t.direction ?? "").uppercased()) · \(t.reason ?? "")" + (t.r.map { String(format: " · %+.2fR", $0) } ?? ""))
+                    .font(PCorpFont.mono(11)).foregroundStyle(theme.textSecondary)
+            }
+            Text("Updated \(String(d.updatedAt.prefix(10))) · checked monthly").font(PCorpFont.body(10.5)).foregroundStyle(theme.textTertiary)
+        }
     }
 
     private func settingsForm(_ s: FestxSummary) -> some View {

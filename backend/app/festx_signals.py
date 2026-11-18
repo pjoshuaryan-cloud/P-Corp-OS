@@ -4,7 +4,8 @@ with the reason, the setup's backtest record, the size in lots for Josh's rand a
 
 Honesty rules, built in (Josh chose to trade it with real money from the start, knowing the record):
   * Every signal carries its setup's BACKTEST record (docs/festx-setup-*-results.md). As of 2026-11-18 no setup has passed: A and C lost, G is about
-    break-even, D is untested. The live log, next to it, records how each setup does on Josh's own trades.
+    break-even, D narrowly failed on Black Crown prices and is in a frozen forward test (shown read-only as robot results, never mixed with his
+    trades). The live log, next to it, records how each setup does on Josh's own trades.
   * Size comes from checkable facts, not from Claude feeling sure: "standard" = the setup's rules met (risk standard_pct, 5% by default); "strong" = the
     rules met PLUS at least two named FestX confluences (risk strong_pct, 10% by default, never above MAX_RISK_PCT).
   * The price read off a picture can be off, so the size is worked out only after Josh confirms the current price.
@@ -38,26 +39,32 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "daily_loss_trades": 2,
     "daily_loss_pct": 15.0,
     "usdzar_override": None,        # used when the live rate can't be fetched
-    # Per symbol: US$ that 1.0 of price movement is worth on 1 lot, and the broker's smallest trade / step. Black Crown's own specs are NOT confirmed yet
-    # (its MT5 has never connected): these are the common CFD sizes; check them in MT5 (right-click the symbol > Specification) and correct them here.
+    # Per symbol: US$ that 1.0 of price movement is worth on 1 lot, and the broker's smallest trade / step. CONFIRMED on Black Crown
+    # (BlackCrownHoldings-Live, account 2005001) on 2026-11-18 with MT5's own profit calculation: EURUSD contract 100,000, XAUUSD 100 oz, NASDAQ =
+    # .USTECH_x1. (US$1 a point; the x10/x100 versions are 10x/100x bigger). Black Crown's tick value for indices is wrong (unconverted), so never use it.
     "symbols": {
-        "EURUSD": {"usd_per_point_per_lot": 100000.0, "min_lot": 0.01, "lot_step": 0.01, "confirmed": False},
-        "XAUUSD": {"usd_per_point_per_lot": 100.0, "min_lot": 0.01, "lot_step": 0.01, "confirmed": False},
-        "NAS100": {"usd_per_point_per_lot": 1.0, "min_lot": 0.01, "lot_step": 0.01, "confirmed": False},
+        "EURUSD": {"usd_per_point_per_lot": 100000.0, "min_lot": 0.01, "lot_step": 0.01, "confirmed": True},
+        "XAUUSD": {"usd_per_point_per_lot": 100.0, "min_lot": 0.01, "lot_step": 0.01, "confirmed": True},
+        "NAS100": {"usd_per_point_per_lot": 1.0, "min_lot": 0.01, "lot_step": 0.01, "confirmed": True},
     },
 }
 SYMBOL_ALIASES = {"EURUSD": "EURUSD", "EUR/USD": "EURUSD", "XAUUSD": "XAUUSD", "GOLD": "XAUUSD", "XAU/USD": "XAUUSD",
-                  "NAS100": "NAS100", "NASDAQ": "NAS100", "USTECH": "NAS100", "US100": "NAS100", "USTEC": "NAS100", "USA100": "NAS100", "NDX": "NAS100"}
+                  "NAS100": "NAS100", "NASDAQ": "NAS100", "USTECH": "NAS100", ".USTECH_X1.": "NAS100", "USTECH_X1": "NAS100", "US100": "NAS100", "USTEC": "NAS100", "USA100": "NAS100", "NDX": "NAS100"}
 
 SETUPS: dict[str, dict[str, str]] = {
     "A": {"name": "Structure break + fib 61.8", "markets": "any",
-          "record": "Backtest: LOST. -0.18R a trade with your approved settings (profit factor 0.77) on US30 and NASDAQ, 2024-2026 unseen data; 9 of 26 test periods profitable. Not tested on EURUSD or gold."},
+          "record": "Backtest: LOST. US30 + NASDAQ: -0.18R a trade with your approved settings (profit factor 0.77), 2024-2026 unseen data. EURUSD, GBPUSD "
+                    "+ gold: -0.17R (PF 0.78); about break-even even before overnight costs. Trades with 2+ confluences looked better in 2010-2018 "
+                    "but were no better than the rest in 2019-2026 (test H)."},
     "C": {"name": "Range break + retest", "markets": "any",
-          "record": "Backtest: LOST. -0.17R a trade (profit factor 0.79) on US30 and NASDAQ daily boxes; worst drop about 30%."},
+          "record": "Backtest: LOST. -0.17R a trade (profit factor 0.79) on US30 and NASDAQ daily boxes; worst drop about 30%. A daily round-number "
+                    "break + retest (test I) also lost: -0.14R."},
     "G": {"name": "Asian session break + retest (gold)", "markets": "XAUUSD",
           "record": "Backtest: about break-even. +0.06R a trade with your approved settings (profit factor 1.12) on gold, mid-2025 to 2026 unseen data; below the pass bar."},
     "D": {"name": "NASDAQ Asian range at the New York open", "markets": "NAS100",
-          "record": "Backtest: NOT TESTED YET. The first agreed rules gave no trades; the next test waits on Black Crown's price data."},
+          "record": "Backtest: NARROWLY FAILED on Black Crown prices. Best setting +0.15R a trade (profit factor 1.86) on 48 unseen trades, Aug 2025 to "
+                    "Nov 2026, but under the 60 trades / +0.15R bar, and your approved settings lost (-0.03R). Most trades closed at the 16:45 New York "
+                    "cut-off, not at a target. Stops are wide (~200 points). Being forward-tested on new data, checked monthly."},
 }
 CONFLUENCES = {
     "fib_and_mitigation": "the fib 61.8 zone lines up with the mitigation 50% of the candle that started the move",
@@ -88,9 +95,13 @@ C. Range break + retest (4-hour/daily): a sideways range (several days) with cle
    edge; enter on the retest; stop beyond the retest candle; target = the height of the move into the range, projected from the entry.
 G. Gold only, Asian session break + retest (15/30-minute): the Asian range is 02:00-09:00 South African time; the first 30-minute candle that CLOSES beyond
    its high or low sets the side; enter when price comes back to touch that broken edge; stop on the far side of the range or its middle; 1:3 target.
-D. NASDAQ only, Asian range at the New York open (15-minute): mark the 02:00-09:00 South African time high and low; at the New York open (15:30 South
-   African time) price above the Asian high = buys only, below the low = sells only, inside = no trade; wait for a pullback to the broken edge and 15-minute
-   structure in the trade direction; stop beyond the pullback; target the next level or the far side.
+D. NASDAQ only, Asian range at the New York open (15-minute), as tested: mark the high and low of the 15-minute candles from 02:00 to 09:00 South
+   African time. The side is set by the close of the 15-minute candle ending at the real 09:30 New York open (15:30 South African time while the US is on
+   summer time, 16:30 in US winter): above the Asian high = buys only, below the low = sells only, inside = no trade. Then price must pull back to within a
+   quarter of the Asian range of the broken edge; a 15-minute close more than halfway back inside the range cancels the day. For a sell: after the pullback
+   high, a lower 15-minute swing high, then a 15-minute close below the lowest low between them (buys mirror). Enter at the next candle's open; stop beyond
+   the pullback extreme; no new entry after 15:00 New York; anything open is closed at the 16:45 New York candle. In the test the target was almost never
+   reached, so give tp1 as at least 3x the risk and say the trade is usually closed at the cut-off.
 
 Confluences you may list for a signal (only ones you can actually see): fib_and_mitigation, higher_timeframe_level, reversal_candle, round_number, pattern,
 liquidity_sweep.
@@ -281,6 +292,13 @@ async def ensure_tables(conn: Any = None) -> None:
         fill_price DOUBLE PRECISION, exit_price DOUBLE PRECISION, result_zar DOUBLE PRECISION, closed_at TEXT, note TEXT)""".replace(
         "DOUBLE PRECISION", "DOUBLE PRECISION" if conn is not None else "REAL"))
     await _run(conn, f"CREATE TABLE IF NOT EXISTS {_table(conn, 'settings')} (id INTEGER PRIMARY KEY, settings_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
+    # Robot results (2026-11-18): the frozen setup D forward test from AMM - APP, imported by app/festx_robot_import.py. NEW tables only -- the signals
+    # table is never altered, and robot rows never count in his live records, balance or warnings.
+    await _run(conn, f"""CREATE TABLE IF NOT EXISTS {_table(conn, "robot_trades")} (
+        setup TEXT NOT NULL, setting TEXT NOT NULL, day TEXT NOT NULL, direction TEXT, entry DOUBLE PRECISION, stop DOUBLE PRECISION,
+        exit_price DOUBLE PRECISION, reason TEXT, r DOUBLE PRECISION, imported_at TEXT NOT NULL, PRIMARY KEY (setup, setting, day))""".replace(
+        "DOUBLE PRECISION", "DOUBLE PRECISION" if conn is not None else "REAL"))
+    await _run(conn, f"CREATE TABLE IF NOT EXISTS {_table(conn, 'robot_meta')} (setup TEXT PRIMARY KEY, report_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
 
 
 def _row(row: tuple) -> dict[str, Any]:
@@ -430,10 +448,46 @@ async def warnings(conn: Any = None) -> list[str]:
     return out
 
 
+async def import_robot_report(setup: str, report: dict[str, Any], trades: list[dict[str, Any]], conn: Any = None) -> dict[str, Any]:
+    """Store one forward-test report (run_festx_d_forward.py output). Idempotent: a day already stored is replaced, so re-importing is safe."""
+    await ensure_tables(conn)
+    stamp = now_iso()
+    for t in trades:
+        await _run(conn, f"""INSERT INTO {_table(conn, 'robot_trades')} (setup, setting, day, direction, entry, stop, exit_price, reason, r, imported_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (setup, setting, day) DO UPDATE SET direction = excluded.direction, entry = excluded.entry,
+            stop = excluded.stop, exit_price = excluded.exit_price, reason = excluded.reason, r = excluded.r, imported_at = excluded.imported_at""",
+                   (setup, str(t["setting"]), str(t["day"])[:10], "buy" if int(t["dir"]) == 1 else "sell", float(t["entry"]), float(t["stop"]),
+                    float(t["exit"]), str(t["reason"])[:20], float(t["r"]), stamp))
+    def stats(d: Any) -> dict[str, Any] | None:   # only the numbers the tab shows; infinity (no losing trade yet) is not valid JSON -> None
+        if not isinstance(d, dict):
+            return None
+        return {k: (float(d[k]) if isinstance(d.get(k), (int, float)) and math.isfinite(d[k]) else None) if k != "trades" else int(d.get("trades") or 0)
+                for k in ("trades", "avg_r", "total_r", "profit_factor", "win_rate_pct")}
+    keep = {k: report.get(k) for k in ("generated", "forward_period", "verdict")}
+    sel = report.get("selected") or {}
+    keep.update(forward=stats(sel.get("forward")), combined=stats(sel.get("forward_plus_run2_oos")),
+                defaults_forward=stats((report.get("approved_defaults") or {}).get("forward")))
+    await _run(conn, f"""INSERT INTO {_table(conn, 'robot_meta')} (setup, report_json, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT (setup) DO UPDATE SET report_json = excluded.report_json, updated_at = excluded.updated_at""", (setup, json.dumps(keep), stamp))
+    return await robot_summary(conn)
+
+
+async def robot_summary(conn: Any = None) -> dict[str, Any]:
+    """Read-only robot results for the Trading tab: the latest forward-test report and its most recent trades (selected setting only)."""
+    await ensure_tables(conn)
+    out: dict[str, Any] = {}
+    for setup, report_json, updated in await _run(conn, f"SELECT setup, report_json, updated_at FROM {_table(conn, 'robot_meta')}"):
+        rows = await _run(conn, f"""SELECT day, direction, entry, stop, exit_price, reason, r FROM {_table(conn, 'robot_trades')}
+            WHERE setup = ? AND setting = 'selected' ORDER BY day DESC LIMIT 10""", (setup,))
+        out[setup] = {**json.loads(report_json), "updated_at": updated, "name": SETUPS.get(setup, {}).get("name", setup),
+                      "recent": [dict(zip(("day", "direction", "entry", "stop", "exit", "reason", "r"), r)) for r in rows]}
+    return out
+
+
 async def summary(conn: Any = None) -> dict[str, Any]:
     settings = await load_settings(conn)
     rows = await _run(conn, f"SELECT {', '.join(_COLUMNS)} FROM {_table(conn, 'signals')} ORDER BY id DESC LIMIT 15")
     trades = await closed_trades(conn)
     return {"settings": settings, "recent": [_row(r) for r in rows], "live": live_records(trades),
             "backtest": {k: {"name": v["name"], "record": v["record"], "markets": v["markets"]} for k, v in SETUPS.items()},
-            "warnings": await warnings(conn), "max_risk_pct": MAX_RISK_PCT}
+            "warnings": await warnings(conn), "max_risk_pct": MAX_RISK_PCT, "robot": await robot_summary(conn)}
