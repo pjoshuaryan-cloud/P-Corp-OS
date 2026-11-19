@@ -62,9 +62,10 @@ SETUPS: dict[str, dict[str, str]] = {
     "G": {"name": "Asian session break + retest (gold)", "markets": "XAUUSD",
           "record": "Backtest: about break-even. +0.06R a trade with your approved settings (profit factor 1.12) on gold, mid-2025 to 2026 unseen data; below the pass bar."},
     "D": {"name": "NASDAQ Asian range at the New York open", "markets": "NAS100",
-          "record": "Backtest: NARROWLY FAILED on Black Crown prices. Best setting +0.15R a trade (profit factor 1.86) on 48 unseen trades, Aug 2025 to "
-                    "Nov 2026, but under the 60 trades / +0.15R bar, and your approved settings lost (-0.03R). Most trades closed at the 16:45 New York "
-                    "cut-off, not at a target. Stops are wide (~200 points). Being forward-tested on new data, checked monthly."},
+          "record": "Backtest: NARROWLY FAILED on Black Crown prices. Best setting +0.16R a trade (profit factor 1.99) on 47 unseen trades, Aug 2025 to "
+                    "Nov 2026 (corrected for Black Crown's 30 Jul 2026 server-clock change), but under the 60-trade bar, and your approved settings lost "
+                    "(-0.02R). Most trades closed at the 16:45 New York cut-off, not at a target. Stops are wide (~200 points). Being forward-tested on "
+                    "new data, checked monthly."},
 }
 CONFLUENCES = {
     "fib_and_mitigation": "the fib 61.8 zone lines up with the mitigation 50% of the candle that started the move",

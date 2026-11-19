@@ -371,7 +371,7 @@ struct FestxAccountPanel: View {
                     .font(PCorpFont.body(11.5)).foregroundStyle(theme.textSecondary)
             }
             if let c = d.combined, let a = c.avgR {
-                Text(String(format: "With the 48 backtest trades: %d trades, %+.2fR a trade. Decision at 40 new trades (needs +0.15R).", c.trades, a))
+                Text(String(format: "With the 47 backtest trades: %d trades, %+.2fR a trade. Decision at 40 new trades (needs +0.15R).", c.trades, a))
                     .font(PCorpFont.body(11)).foregroundStyle(theme.textTertiary)
             }
             ForEach(d.recent.prefix(5)) { t in
