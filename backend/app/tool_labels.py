@@ -25,6 +25,7 @@ from app.decision_journal import DECISION_JOURNAL_TOOL_NAMES
 from app.design_agent import DESIGN_AGENT_TOOL_NAMES
 from app.documents import DOCUMENTS_TOOL_NAMES
 from app.email_tools import EMAIL_TOOL_NAMES
+from app.mac_tools import MAC_TOOL_NAMES
 from app.engineering_agent import ENGINEERING_AGENT_TOOL_NAMES
 from app.finance_tools import FINANCE_TOOL_NAMES
 from app.focus import FOCUS_TOOL_NAMES
@@ -143,6 +144,8 @@ def label_for_tool(tool_name: str) -> str:
         return "Checking your calendar"
     if tool_name in EMAIL_TOOL_NAMES:
         return "Checking your email"
+    if tool_name in MAC_TOOL_NAMES:
+        return "Sending it to your phone" if tool_name == "send_file_to_phone" else "Working on your Mac"
     if tool_name in DATA_ANALYSIS_TOOL_NAMES:
         return "Analyzing the data"
     if tool_name in CONNECTED_APPS_TOOL_NAMES:

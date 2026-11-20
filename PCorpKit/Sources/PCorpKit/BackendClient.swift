@@ -152,6 +152,8 @@ public enum ApprovalKind {
     case automationRule
     case alphaModeChange
     case emailSend
+    /// 2026-11-20: Frank sending a file to the phone, or copying/moving/binning on the Mac (backend mac_tools.py). Same title/details shape as .emailSend.
+    case macAction
 }
 
 /// A pending approval of any kind, sent by the backend via one of five
@@ -825,6 +827,7 @@ public final class BackendClient: ObservableObject {
     private static let automationApprovalRequestPrefix = "\n[automation_approval_request]"
     private static let alphaModeApprovalRequestPrefix = "\n[alpha_mode_approval_request]"
     private static let emailApprovalRequestPrefix = "\n[email_approval_request]"
+    private static let macApprovalRequestPrefix = "\n[mac_approval_request]"
     private static let toolStartPrefix = "\n[tool_start]"
     private static let documentGeneratedPrefix = "\n[document_generated]"
     private static let pingSentinel = "\n[ping]"
@@ -913,6 +916,17 @@ public final class BackendClient: ObservableObject {
                                let w = try? JSONDecoder().decode(EmailApprovalWire.self, from: data) {
                                 self.pendingApproval = ApprovalRequest(
                                     id: w.id, tool: w.tool, kind: .emailSend,
+                                    path: nil, summary: nil, diff: nil,
+                                    title: w.title, details: w.details, start: nil, end: nil,
+                                    name: nil, description: nil, triggerTool: nil, agent: nil, instruction: nil
+                                )
+                            }
+                        } else if text.hasPrefix(Self.macApprovalRequestPrefix) {
+                            let payloadText = String(text.dropFirst(Self.macApprovalRequestPrefix.count))
+                            if let data = payloadText.data(using: .utf8),
+                               let w = try? JSONDecoder().decode(EmailApprovalWire.self, from: data) {
+                                self.pendingApproval = ApprovalRequest(
+                                    id: w.id, tool: w.tool, kind: .macAction,
                                     path: nil, summary: nil, diff: nil,
                                     title: w.title, details: w.details, start: nil, end: nil,
                                     name: nil, description: nil, triggerTool: nil, agent: nil, instruction: nil

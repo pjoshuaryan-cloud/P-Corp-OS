@@ -43,6 +43,7 @@ import asyncio
 import contextlib
 import base64
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -129,6 +130,7 @@ from app.calendar_db import init_calendar_db, sync_calendar_cache
 from app.system_calendar import check_calendar_available
 from app.email_db import init_email_db
 from app.email_tools import EMAIL_TOOL_NAMES, EMAIL_TOOLS, execute_email_tool_call
+from app.mac_tools import MAC_TOOL_NAMES, MAC_TOOLS, execute_mac_tool_call
 from app import google_oauth
 from app.finance_tools import FINANCE_TOOL_NAMES, FINANCE_TOOLS, build_finance_block, execute_finance_tool_call
 from app.documents import DOCS_DIR, DOCUMENTS_TOOL_NAMES, DOCUMENTS_TOOLS, execute_documents_tool_call
@@ -1159,6 +1161,9 @@ async def lifespan(app: FastAPI):
         # shared database (post_chat_relay.py); this loop understands it, writes the card back, and runs it when the phone presses Go.
         if DATA_BACKEND == "postgres" and not hasattr(app.state, "edit_chat_relay_task"):
             app.state.edit_chat_relay_task = asyncio.create_task(_edit_chat_relay_loop(app))
+        # Frank's hands on the Mac, asked from the phone (2026-11-20, mac_tools.py) -- Mac-only by definition: it runs what the phone queued.
+        if DATA_BACKEND == "postgres" and not hasattr(app.state, "mac_actions_task"):
+            app.state.mac_actions_task = asyncio.create_task(_mac_actions_loop(app))
     # Frank's background information, kept ready (2026-11-14, app/frank_context.py). Read-only, so it runs on the Mac and on
     # Render alike. Each refresh borrows a pool connection for one pass (`pool.connection()` hands it back reset).
     if not hasattr(app.state, "frank_context_task"):
@@ -1195,6 +1200,9 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, "edit_chat_relay_task"):
         app.state.edit_chat_relay_task.cancel()
         del app.state.edit_chat_relay_task
+    if hasattr(app.state, "mac_actions_task"):
+        app.state.mac_actions_task.cancel()
+        del app.state.mac_actions_task
     if hasattr(app.state, "elevenlabs_client"):
         await app.state.elevenlabs_client.aclose()
         del app.state.elevenlabs_client
@@ -1592,7 +1600,9 @@ async def generated_document(filename: str, _: None = Depends(verify_token)) -> 
         try:
             content = await download_document(filename)
             if content is not None:
-                return Response(content=content, media_type="application/pdf")
+                # A file Frank sent from the Mac to the phone (mac_actions.py) can be any kind -- a photo, a video, a spreadsheet.
+                media_type = (mimetypes.guess_type(filename)[0] or "application/octet-stream") if filename.startswith("macinbox-") else "application/pdf"
+                return Response(content=content, media_type=media_type)
         except Exception as exc:
             print(f"[documents] Supabase Storage lookup failed for {filename}: {exc}")
     candidate = (DOCS_DIR / filename).resolve()
@@ -5260,6 +5270,30 @@ async def _edit_chat_relay_pass(conn, state: dict) -> None:
                 await relay.update(req["id"], conn, status="failed", message=detail)
 
 
+MAC_ACTIONS_POLL_SECONDS = 2.0
+
+
+async def _mac_actions_loop(app: FastAPI) -> None:
+    """Mac-only: runs what Frank queued from the phone (mac_tools.py) and beats so the phone knows the Mac is on. Makes its tables once, so the very
+    first phone request already sees the Mac online."""
+    from app import mac_actions
+    from app.mac_tools import relay_pass
+    made = False
+    while True:
+        try:
+            async with _pooled_postgres_conn() as conn:
+                if not made:
+                    await mac_actions.ensure_tables(conn)
+                    made = True
+                ran = await relay_pass(conn)
+            await asyncio.sleep(0.2 if ran else MAC_ACTIONS_POLL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:   # a failed pass (network, database) never stops the loop
+            print(f"[mac relay] pass failed: {type(exc).__name__}: {str(exc)[:200]}")
+            await asyncio.sleep(10)
+
+
 async def _edit_chat_relay_loop(app: FastAPI) -> None:
     """Mac-only: picks up sentences typed on the phone, every few seconds. Waits quietly until the phone has sent one (the tables are made then)."""
     from app.post_chat_relay import tables_exist
@@ -6594,6 +6628,7 @@ async def run_claude_turn(
                 *CONNECTED_APPS_TOOLS,
                 *CALENDAR_TOOLS,
                 *EMAIL_TOOLS,
+                *MAC_TOOLS,
                 *AUTOMATION_TOOLS,
                 *DATA_ANALYSIS_TOOLS,
                 *WEB_TOOLS,
@@ -6752,6 +6787,13 @@ async def run_claude_turn(
                 result = await execute_calendar_tool_call(block.name, block.input, websocket, postgres_conn)
             elif block.name in EMAIL_TOOL_NAMES:
                 result = await execute_email_tool_call(block.name, block.input, websocket, postgres_conn)
+            elif block.name in MAC_TOOL_NAMES:
+                # Frank's hands on the Mac (2026-11-20, mac_tools.py). A file sent to the phone rides the same attachment as a generated PDF, so it
+                # opens (and can be saved or shared) from this chat on either device and survives reopening the conversation.
+                result, sent_file = await execute_mac_tool_call(block.name, block.input, websocket, postgres_conn)
+                if sent_file:
+                    generated_documents.append(sent_file)
+                    await _safe_send(websocket, f"\n[document_generated]{json.dumps(sent_file)}")
             elif block.name in AUTOMATION_TOOL_NAMES:
                 result = await execute_automation_tool_call(block.name, block.input, websocket, postgres_conn)
             elif block.name in DATA_ANALYSIS_TOOL_NAMES:

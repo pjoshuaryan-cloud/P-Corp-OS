@@ -137,6 +137,13 @@ public struct GeneratedDocumentRow: View {
         self.onTap = onTap
     }
 
+    /// 2026-11-20: files Frank sends from the Mac (any kind) ride this same row; their stored names start "macinbox-".
+    private var kindLabel: String {
+        guard document.filename.hasPrefix("macinbox-") else { return "PDF — tap to open" }
+        let ext = (document.filename as NSString).pathExtension.uppercased()
+        return "From your Mac\(ext.isEmpty ? "" : " · " + ext) — tap to open"
+    }
+
     public var body: some View {
         Button(action: onTap) {
             HStack(spacing: 10) {
@@ -153,7 +160,7 @@ public struct GeneratedDocumentRow: View {
                         .font(PCorpFont.body(13, weight: .semibold))
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(2)
-                    Text("PDF — tap to open")
+                    Text(kindLabel)
                         .font(PCorpFont.body(10.5))
                         .foregroundStyle(theme.textTertiary)
                 }

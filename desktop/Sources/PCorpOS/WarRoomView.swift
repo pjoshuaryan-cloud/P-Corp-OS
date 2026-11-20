@@ -747,7 +747,7 @@ private struct ApprovalCard: View {
             case .calendarChange: calendarChangeBody
             case .automationRule: automationRuleBody
             case .alphaModeChange: alphaModeChangeBody
-            case .emailSend: emailSendBody
+            case .emailSend, .macAction: emailSendBody
             }
             HStack(spacing: 10) {
                 Button("Reject", role: .destructive, action: onReject)
@@ -781,6 +781,9 @@ private struct ApprovalCard: View {
             case .emailSend:
                 Image(systemName: "paperplane").foregroundStyle(theme.accentText)
                 Text("FRANK WANTS TO SEND AN EMAIL")
+            case .macAction:
+                Image(systemName: "desktopcomputer").foregroundStyle(theme.accentText)
+                Text("FRANK WANTS TO USE YOUR MAC")
             }
         }
         .font(PCorpFont.label(10))
